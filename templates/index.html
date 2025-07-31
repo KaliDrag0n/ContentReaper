@@ -81,9 +81,9 @@ async function fetchLog(logId) {
     try {
         const res = await fetch(`/history/log/${logId}`);
         const data = await res.json();
-        document.getElementById('logModalContent').textContent = data.log;
+        document.getElementById('logModalContent').textContent = data.log; // .textContent is safe
         logModalInstance.show();
-    } catch (error) { showToast('Could not fetch log.', 'Error', 'error'); }
+    } catch (error) { showToast('Could not fetch log.', 'Error', 'danger'); }
 }
 
 async function postRequest(url, body = null, method = 'POST') {
@@ -96,12 +96,9 @@ async function postRequest(url, body = null, method = 'POST') {
         const res = await fetch(url, options);
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || 'Request failed');
-        showToast(data.message, 'Success');
-        if (url.includes('/history/') || url.includes('/retry') || url.includes('/queue/clear') || url.includes('/queue/delete')) {
-            fetchHistory(); // Force history and queue refresh after direct actions
-        }
+        showToast(data.message, 'Success', 'success');
         fetchStatus();
-    } catch (error) { showToast(error.message, 'Error', 'error'); }
+    } catch (error) { showToast(error.message, 'Error', 'danger'); }
 }
 
 const cancelDownload = () => postRequest('/cancel');
@@ -112,65 +109,156 @@ const refetchJob = (job) => postRequest('/queue/retry', { ...job, refetch: true 
 const clearHistory = () => postRequest('/history/clear');
 const deleteFromHistory = (logId) => postRequest(`/history/delete/${logId}`);
 
-async function fetchHistory() {
-    try {
-        const res = await fetch("/history");
-        const data = await res.json();
-        const historyList = document.getElementById("history-list");
-        document.getElementById("clear-history-btn").style.display = data.history.length > 0 ? 'block' : 'none';
-        historyList.innerHTML = "";
-        if (data.history.length === 0) {
-            historyList.innerHTML = "<li class='list-group-item'>Nothing in history.</li>";
-        } else {
-            data.history.slice().reverse().forEach(item => {
-                const li = document.createElement("li");
-                li.className = "list-group-item";
-                
-                const mainDiv = document.createElement('div');
-                mainDiv.className = 'd-flex justify-content-between align-items-center';
+function renderHistory(history) {
+    const historyList = document.getElementById("history-list");
+    historyList.innerHTML = "";
+    document.getElementById("clear-history-btn").style.display = history.length > 0 ? 'block' : 'none';
 
-                const leftDiv = document.createElement('div');
-                let badgeClass = 'bg-secondary';
-                if (item.status === 'COMPLETED') badgeClass = 'bg-success';
-                if (['FAILED', 'ERROR', 'CANCELLED'].includes(item.status)) badgeClass = 'bg-danger';
-                leftDiv.innerHTML = `<span class="badge ${badgeClass} me-2">${item.status}</span><strong>${item.title || "Unknown Title"}</strong>`;
-                
-                const buttonDiv = document.createElement('div');
-                buttonDiv.className = 'history-buttons';
+    if (history.length === 0) {
+        const li = document.createElement("li");
+        li.className = "list-group-item";
+        li.textContent = "Nothing in history.";
+        historyList.appendChild(li);
+        return;
+    }
 
-                const deleteBtn = document.createElement('button');
-                deleteBtn.className = 'btn btn-outline-danger btn-sm'; deleteBtn.innerHTML = '✖';
-                deleteBtn.onclick = () => deleteFromHistory(item.log_id);
-                buttonDiv.appendChild(deleteBtn);
+    history.slice().reverse().forEach(item => {
+        const li = document.createElement("li");
+        li.className = "list-group-item";
 
-                const logBtn = document.createElement('button');
-                logBtn.className = 'btn btn-info btn-sm'; logBtn.textContent = 'View Log';
-                logBtn.onclick = () => fetchLog(item.log_id);
-                buttonDiv.appendChild(logBtn);
-                
-                if (['FAILED', 'ERROR', 'CANCELLED'].includes(item.status)) {
-                    const retryBtn = document.createElement('button');
-                    retryBtn.className = 'btn btn-primary btn-sm'; retryBtn.textContent = 'Retry';
-                    retryBtn.onclick = () => retryJob(item.job_data);
-                    buttonDiv.appendChild(retryBtn);
-                    if (item.url && item.url.includes("playlist?list=")) {
-                        const refetchBtn = document.createElement('button');
-                        refetchBtn.className = 'btn btn-warning btn-sm'; refetchBtn.textContent = 'Refetch';
-                        refetchBtn.onclick = () => refetchJob(item.job_data);
-                        buttonDiv.appendChild(refetchBtn);
-                    }
-                }
+        const mainDiv = document.createElement('div');
+        mainDiv.className = 'd-flex justify-content-between align-items-center';
 
-                const smallText = document.createElement('small');
-                smallText.className = 'text-muted';
-                smallText.textContent = `${item.folder ? `Folder: ${item.folder} | ` : ''}URL: ${item.url}`;
+        const leftDiv = document.createElement('div');
+        const statusBadge = document.createElement('span');
+        statusBadge.className = 'badge me-2';
+        statusBadge.textContent = item.status;
+        if (item.status === 'COMPLETED') statusBadge.classList.add('bg-success');
+        else if (['FAILED', 'ERROR', 'CANCELLED'].includes(item.status)) statusBadge.classList.add('bg-danger');
+        else statusBadge.classList.add('bg-secondary');
 
-                mainDiv.appendChild(leftDiv); mainDiv.appendChild(buttonDiv);
-                li.appendChild(mainDiv); li.appendChild(smallText);
-                historyList.appendChild(li);
-            });
+        const titleStrong = document.createElement('strong');
+        titleStrong.textContent = item.title || "Unknown Title";
+        leftDiv.appendChild(statusBadge);
+        leftDiv.appendChild(titleStrong);
+
+        const buttonDiv = document.createElement('div');
+        buttonDiv.className = 'history-buttons';
+
+        const createButton = (text, className, onClick) => {
+            const btn = document.createElement('button');
+            btn.className = `btn btn-sm ${className}`;
+            btn.innerHTML = text; // Using innerHTML for '✖' is fine for static, trusted content
+            btn.onclick = onClick;
+            return btn;
+        };
+
+        buttonDiv.appendChild(createButton('✖', 'btn-outline-danger', () => deleteFromHistory(item.log_id)));
+        buttonDiv.appendChild(createButton('View Log', 'btn-info', () => fetchLog(item.log_id)));
+
+        if (['FAILED', 'ERROR', 'CANCELLED'].includes(item.status)) {
+            buttonDiv.appendChild(createButton('Retry', 'btn-primary', () => retryJob(item.job_data)));
+            if (item.url && item.url.includes("playlist?list=")) {
+                buttonDiv.appendChild(createButton('Refetch', 'btn-warning', () => refetchJob(item.job_data)));
+            }
         }
-    } catch (error) { console.error("Failed to fetch history:", error); }
+
+        const smallText = document.createElement('small');
+        smallText.className = 'text-muted';
+        smallText.textContent = `${item.folder ? `Folder: ${item.folder} | ` : ''}URL: ${item.url}`;
+
+        mainDiv.appendChild(leftDiv);
+        mainDiv.appendChild(buttonDiv);
+        li.appendChild(mainDiv);
+        li.appendChild(smallText);
+        historyList.appendChild(li);
+    });
+}
+
+function renderQueue(queue) {
+    const queueList = document.getElementById("queue-list");
+    queueList.innerHTML = "";
+    document.getElementById("clear-queue-btn").style.display = queue.length > 0 ? 'block' : 'none';
+
+    if (queue.length === 0) {
+        const li = document.createElement("li");
+        li.className = "list-group-item";
+        li.textContent = "Queue is empty.";
+        queueList.appendChild(li);
+        return;
+    }
+
+    queue.forEach(job => {
+        const li = document.createElement("li");
+        li.className = "list-group-item d-flex justify-content-between align-items-center";
+
+        const span = document.createElement("span");
+        span.textContent = `${job.url} `;
+
+        if (job.folder) {
+            const i = document.createElement("i");
+            i.textContent = `→ ${job.folder}`;
+            span.appendChild(i);
+        }
+
+        const button = document.createElement("button");
+        button.className = "btn-close btn-close-custom";
+        button.setAttribute("aria-label", "Remove");
+        button.onclick = () => deleteFromQueueById(job.id);
+
+        li.appendChild(span);
+        li.appendChild(button);
+        queueList.appendChild(li);
+    });
+}
+
+function renderCurrentStatus(current) {
+    const currentDiv = document.getElementById("current-status");
+    currentDiv.innerHTML = "";
+
+    if (!current) {
+        const p = document.createElement("p");
+        p.textContent = "No active download.";
+        currentDiv.appendChild(p);
+        return;
+    }
+
+    const cancelButton = document.createElement("button");
+    cancelButton.className = "btn btn-danger btn-sm float-end";
+    cancelButton.textContent = "Cancel";
+    cancelButton.onclick = cancelDownload;
+    
+    const titleP = document.createElement("p");
+    const titleStrong = document.createElement("strong");
+    titleStrong.textContent = current.title || current.url;
+    titleP.appendChild(titleStrong);
+
+    if (current.playlist_count > 0) {
+        const playlistBadge = document.createElement("span");
+        playlistBadge.className = "ms-2 badge bg-secondary";
+        playlistBadge.textContent = `${current.playlist_index || '0'}/${current.playlist_count}`;
+        titleP.appendChild(playlistBadge);
+    }
+    
+    const progressDiv = document.createElement("div");
+    progressDiv.className = "progress mb-2";
+    const progressBar = document.createElement("div");
+    const progress = current.progress || 0;
+    progressBar.className = "progress-bar progress-bar-striped progress-bar-animated";
+    progressBar.style.width = `${progress}%`;
+    progressBar.style.transition = "width 0.5s ease";
+    progressBar.textContent = `${progress.toFixed(1)}%`;
+    progressDiv.appendChild(progressBar);
+
+    const statusP = document.createElement("p");
+    statusP.className = "mb-1";
+    statusP.textContent = current.status;
+
+    const statsDiv = document.createElement("div");
+    statsDiv.className = "d-flex justify-content-between mt-2 download-stats";
+    statsDiv.innerHTML = `<small class="text-muted">Size: ${current.file_size || 'N/A'}</small><small class="text-muted">Speed: ${current.speed || 'N/A'}</small><small class="text-muted">ETA: ${current.eta || 'N/A'}</small>`;
+
+    currentDiv.append(cancelButton, titleP, progressDiv, statusP, statsDiv);
 }
 
 async function fetchStatus() {
@@ -179,29 +267,14 @@ async function fetchStatus() {
         if (!res.ok) throw new Error(`Server error: ${res.status}`);
         const data = await res.json();
 
-        const current = data.current;
-        const currentDiv = document.getElementById("current-status");
-        if (current) {
-            let playlistIndicator = current.playlist_count > 0 ? `<span class="ms-2 badge bg-secondary">${current.playlist_index || '0'}/${current.playlist_count}</span>` : '';
-            let cancelButton = `<button class="btn btn-danger btn-sm float-end" onclick="cancelDownload()">Cancel</button>`;
-            let statsHTML = `<div class="d-flex justify-content-between mt-2 download-stats"><small class="text-muted">Size: ${current.file_size || 'N/A'}</small><small class="text-muted">Speed: ${current.speed || 'N/A'}</small><small class="text-muted">ETA: ${current.eta || 'N/A'}</small></div>`;
-            currentDiv.innerHTML = `${cancelButton}<p><strong>${current.title || current.url}</strong>${playlistIndicator}</p><div class="progress mb-2"><div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: ${current.progress}%; transition: width 0.5s ease;">${current.progress.toFixed(1)}%</div></div><p class="mb-1">${current.status}</p>${statsHTML}`;
-        } else {
-            currentDiv.innerHTML = "<p>No active download.</p>";
-        }
-
-        const queueList = document.getElementById("queue-list");
-        document.getElementById("clear-queue-btn").style.display = data.queue.length > 0 ? 'block' : 'none';
-        queueList.innerHTML = data.queue.length === 0 ? "<li class='list-group-item'>Queue is empty.</li>" : data.queue.map(job =>
-            `<li class="list-group-item d-flex justify-content-between align-items-center">
-                <span>${job.url} ${job.folder ? `→ <i>${job.folder}</i>` : ""}</span>
-                <button class="btn btn-close btn-close-custom" onclick="deleteFromQueueById(${job.id})"></button>
-            </li>`
-        ).join('');
+        renderCurrentStatus(data.current);
+        renderQueue(data.queue);
 
         if (data.history_version !== currentHistoryVersion) {
             currentHistoryVersion = data.history_version;
-            fetchHistory();
+            const historyRes = await fetch("/history");
+            const historyData = await historyRes.json();
+            renderHistory(historyData.history);
         }
 
     } catch (error) {
@@ -219,7 +292,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     
     fetchStatus();
-    fetchHistory();
     setInterval(fetchStatus, 2000);
 });
 </script>
