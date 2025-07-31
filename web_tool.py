@@ -1,5 +1,5 @@
 from flask import Flask, request, render_template, jsonify, redirect, url_for
-import threading, queue, subprocess, os, re, json, atexit
+import threading, queue, subprocess, os, re, json, atexit, datetime
 
 app = Flask(__name__)
 
@@ -25,8 +25,7 @@ current_download = {
 download_history = []
 next_log_id = 0
 next_queue_id = 0
-# -- FIX: Added a dedicated version counter for any history state change --
-history_state_version = 0 
+history_state_version = 0
 
 #~ --- Config & State Persistence --- ~#
 def save_config():
@@ -43,14 +42,13 @@ def load_config():
             print(f"Could not load config.json. Error: {e}")
 
 def save_state():
-    # This function should only be called within a `download_lock` block
     state = {
         "queue": list(download_queue.queue),
         "history": download_history,
         "current_job": current_download.get("job_data"),
         "next_log_id": next_log_id,
         "next_queue_id": next_queue_id,
-        "history_state_version": history_state_version # Save the new version
+        "history_state_version": history_state_version
     }
     with open(CONF_STATE_FILE, 'w', encoding='utf-8') as f:
         json.dump(state, f, indent=4)
@@ -71,32 +69,49 @@ def load_state():
     with download_lock:
         abandoned_job = state.get("current_job")
         if abandoned_job: download_queue.put(abandoned_job)
-            
+
         download_history = state.get("history", [])
         next_log_id = state.get("next_log_id", len(download_history))
         next_queue_id = state.get("next_queue_id", 0)
-        # -- FIX: Load the saved history version --
         history_state_version = state.get("history_state_version", 0)
-        
+
         for job in state.get("queue", []):
             if 'id' not in job:
                 job['id'] = next_queue_id
                 next_queue_id += 1
             download_queue.put(job)
-    
+
     print(f"Loaded {download_queue.qsize()} items from queue and {len(download_history)} history entries.")
 
 #~ --- Worker Helper Functions --- ~#
+def format_bytes(b):
+    if b is None: return "N/A"
+    if b < 1024: return f"{b} B"
+    if b < 1024**2: return f"{b/1024:.2f} KiB"
+    if b < 1024**3: return f"{b/1024**2:.2f} MiB"
+    return f"{b/1024**3:.2f} GiB"
+
+def format_seconds(s):
+    if s is None: return "N/A"
+    try:
+        return str(datetime.timedelta(seconds=int(s)))
+    except: 
+        return "N/A"
+
 def build_yt_dlp_command(job, albumName, outputFolder):
     is_playlist = "playlist?list=" in job["url"]
     cmd = [
-        'yt-dlp', '-f', 'bestaudio', '-x', '--audio-format', job.get("format", "mp3"),
-        '--audio-quality', job.get("quality", "0"), '--sleep-interval', '3', '--max-sleep-interval', '10',
-        '--embed-thumbnail', '--embed-metadata', '--postprocessor-args', f'-metadata album="{albumName}"',
-        '--parse-metadata', 'playlist_index:%(track_number)s', '--parse-metadata', 'uploader:%(artist)s',
-        '--progress-template', '%(progress)j', # Use JSON progress template
+        'yt-dlp', '-f', 'bestaudio',
+        '-x', '--audio-format', job.get("format", "mp3"),
+        '--audio-quality', job.get("quality", "0"),
+        '--sleep-interval', '3', '--max-sleep-interval', '10',
+        '--embed-thumbnail', '--embed-metadata',
+        '--parse-metadata', 'playlist_index:%(track_number)s',
+        '--parse-metadata', 'uploader:%(artist)s',
+        '--postprocessor-args', f'-metadata album="{albumName}" -metadata date="{datetime.datetime.now().year}"',
+        '--progress-template', '%(progress)j',
         '-o', outputFolder,
-    ]
+    ]   
     if is_playlist or job.get("refetch"): cmd.append('--ignore-errors')
     if os.path.exists(CONF_COOKIE_FILE) and CONFIG.get("cookie_file_content"):
         cmd.extend(['--cookies', CONF_COOKIE_FILE])
@@ -130,7 +145,7 @@ def yt_dlp_worker():
                 result = subprocess.run(fetch_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
                 if result.returncode == 0: albumName = result.stdout.strip().split('\n')[0]
              except Exception as e: print(f'Failed to acquire playlist title. Error: {e}')
-        
+
         sanitized_album = re.sub(r'[^a-zA-Z0-9 _-]', '', albumName or "Misc Downloads").strip()
         download_path = os.path.join(CONFIG["download_dir"], sanitized_album)
         if not os.path.abspath(download_path).startswith(os.path.abspath(CONFIG["download_dir"])):
@@ -139,18 +154,18 @@ def yt_dlp_worker():
 
         outputFolder = os.path.join(download_path, "%(title)s.%(ext)s")
         cmd = build_yt_dlp_command(job, sanitized_album, outputFolder)
-        
+
         process = None
         try:
             process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding='utf-8', errors='replace', bufsize=1
             )
             for line in iter(process.stdout.readline, ''):
                 if cancel_event.is_set():
                     process.kill()
                     break
-                
+
                 line = line.strip()
                 log_output.append(line)
 
@@ -160,24 +175,26 @@ def yt_dlp_worker():
                             progress_data = json.loads(line)
                             current_download["status"] = progress_data.get("status", "Downloading...").capitalize()
                             if current_download["status"] == 'Downloading':
+                                # -- FIX: Use correct JSON keys and format them --
                                 current_download["progress"] = progress_data.get("percentage", 0)
-                                current_download["speed"] = progress_data.get("speed_string", "N/A")
-                                current_download["eta"] = progress_data.get("eta_string", "N/A")
-                                current_download["file_size"] = progress_data.get("total_bytes_string", "N/A")
+                                speed_bytes = progress_data.get("speed")
+                                current_download["speed"] = f"{format_bytes(speed_bytes)}/s" if speed_bytes is not None else "N/A"
+                                current_download["eta"] = format_seconds(progress_data.get("eta"))
+                                current_download["file_size"] = format_bytes(progress_data.get("total_bytes"))
                                 current_download["title"] = os.path.basename(progress_data.get("filename", "...")).rsplit('.', 1)[0]
                         except json.JSONDecodeError:
                             print(f"Could not parse progress JSON: {line}")
                     elif '[download] Downloading item' in line:
                         match = re.search(r'Downloading item (\d+) of (\d+)', line)
-                        if match: 
+                        if match:
                             current_download['playlist_index'] = int(match.group(1))
                             current_download['playlist_count'] = int(match.group(2))
                     elif line.startswith("[ExtractAudio] Destination:"):
                         current_download["status"] = 'Converting...'
                         current_download["progress"] = 100
-            
+
             process.wait(timeout=7200)
-            
+
             with download_lock:
                 title = sanitized_album if is_playlist else current_download.get("title", "Unknown Title")
                 history_item = {"url": job["url"], "title": title, "folder": sanitized_album, "job_data": job, "log": "\n".join(log_output), "log_id": next_log_id}
@@ -186,13 +203,13 @@ def yt_dlp_worker():
                 elif process.returncode == 0: history_item["status"] = "COMPLETED"
                 else: history_item["status"] = "FAILED"; history_item["error_code"] = process.returncode
                 download_history.append(history_item)
-                history_state_version += 1 # -- FIX: Increment version on new item
+                history_state_version += 1
         except Exception as e:
             with download_lock:
                 history_item = {"url": job["url"], "title": "Worker Error", "folder": sanitized_album, "job_data": job, "log": "\n".join(log_output), "log_id": next_log_id}
                 next_log_id += 1; history_item["status"] = "ERROR"; history_item["error_message"] = f"{type(e).__name__}: {e}"
                 download_history.append(history_item)
-                history_state_version += 1 # -- FIX: Increment version on new item
+                history_state_version += 1
         finally:
             with download_lock:
                 current_download.update({ "url": None, "job_data": None })
@@ -221,8 +238,7 @@ def status_route():
         return jsonify({
             "queue": list(download_queue.queue),
             "current": current_download if current_download["url"] else None,
-            # -- FIX: Return the new state version instead of the log counter --
-            "history_version": history_state_version 
+            "history_version": history_state_version
         })
 
 @app.route('/history')
@@ -237,7 +253,7 @@ def add_to_queue_route():
     global next_queue_id
     url = request.form.get("url")
     if not url: return jsonify({"message": "A URL is required."}), 400
-    
+
     with download_lock:
         job = {
             "id": next_queue_id,
@@ -250,7 +266,7 @@ def add_to_queue_route():
         next_queue_id += 1
         download_queue.put(job)
         save_state()
-        
+
     return jsonify({"message": f"Added to queue: {url}"})
 
 @app.route("/queue/retry", methods=["POST"])
@@ -258,20 +274,20 @@ def retry_queue_route():
     global next_queue_id
     job = request.json
     if not job or "url" not in job: return jsonify({"message": "Invalid job data."}), 400
-    
+
     with download_lock:
         job['id'] = next_queue_id
         next_queue_id += 1
         download_queue.put(job)
         save_state()
-        
+
     return jsonify({"message": f"Retrying: {job['url']}"})
 
 @app.route('/history/log/<int:log_id>')
 def history_log_route(log_id):
     with download_lock:
         item_to_log = next((item for item in download_history if item.get("log_id") == log_id), None)
-    
+
     if item_to_log:
         return jsonify({"log": item_to_log.get("log", "No log available.")})
     return jsonify({"log": "Log not found."}), 404
@@ -280,7 +296,7 @@ def history_log_route(log_id):
 def clear_history_route():
     global history_state_version
     with download_lock:
-        if download_history: # Only increment if there was something to clear
+        if download_history:
              history_state_version += 1
         download_history.clear()
         save_state()
@@ -293,7 +309,7 @@ def delete_from_history_route(log_id):
         item_to_delete = next((item for item in download_history if item.get("log_id") == log_id), None)
         if item_to_delete:
             download_history.remove(item_to_delete)
-            history_state_version += 1 # -- FIX: Increment version on delete
+            history_state_version += 1
             save_state()
             return jsonify({"message": "History item deleted."})
     return jsonify({"message": "History item not found."}), 404
@@ -319,7 +335,7 @@ def delete_from_queue_by_id_route(job_id):
         if download_queue.qsize() < initial_size:
             job_found = True
             save_state()
-            
+
     if job_found:
         return jsonify({"message": f"Job {job_id} deleted from queue."})
     else:
