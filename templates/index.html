@@ -1,223 +1,391 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
+  <meta charset="utf-t">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <title>Downloader Dashboard</title>
   <style>
-    .toast-container { z-index: 1100; }
-    .btn-close-custom { padding: 0.2rem 0.4rem; font-size: 0.8rem; }
-    .history-buttons .btn { margin-left: 0.25rem; }
-    .download-stats { font-size: 0.85rem; }
+    :root { --bs-body-bg: #f8f9fa; --bs-body-color: #212529; --bs-border-color: #dee2e6; --bs-card-bg: #fff; }
+    [data-bs-theme="dark"] { --bs-body-bg: #212529; --bs-body-color: #dee2e6; --bs-border-color: #495057; --bs-card-bg: #343a40; }
+    body { transition: background-color 0.2s linear, color 0.2s linear; }
+    .mode-options, .advanced-options, #file-manager-view, #url-preview, #queue-controls { display: none; }
+    .mode-selector .btn { width: 100%; }
+    #url-preview img { max-width: 120px; max-height: 90px; object-fit: cover; }
+    .file-icon { cursor: pointer; }
+    .file-manager-actions .btn { margin-left: 0.5rem; }
   </style>
 </head>
-<body class="bg-light">
+<body>
 
-  <div class="toast-container position-fixed top-0 end-0 p-3">
+  <div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 1100;">
     <div id="actionToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
-      <div class="toast-header">
-        <strong class="me-auto" id="toastTitle">Notification</strong>
-        <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
-      </div>
+      <div class="toast-header"><strong class="me-auto" id="toastTitle"></strong><button type="button" class="btn-close" data-bs-dismiss="toast"></button></div>
       <div class="toast-body" id="toastBody"></div>
     </div>
   </div>
 
-  <div class="modal fade" id="logModal" tabindex="-1">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title">Job Log</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-        </div>
-        <div class="modal-body">
-          <pre id="logModalContent" style="white-space: pre-wrap; word-wrap: break-word;"></pre>
-        </div>
-      </div>
-    </div>
-  </div>
+  <div class="modal fade" id="logModal" tabindex="-1"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Job Log</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><pre id="logModalContent"></pre></div></div></div></div>
 
   <div class="container py-4">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-      <h2 class="m-0">Downloader Dashboard</h2>
-      <a href="/settings" class="btn btn-secondary">Settings</a>
-    </div>
+    <header class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom">
+      <h2 class="m-0"><i class="bi bi-cloud-arrow-down-fill"></i> Downloader Dashboard</h2>
+      <div class="d-flex align-items-center">
+        <a href="/settings" class="btn btn-secondary me-3"><i class="bi bi-gear-fill"></i> Settings</a>
+        <div class="form-check form-switch"><input class="form-check-input" type="checkbox" role="switch" id="theme-toggle"><label class="form-check-label" for="theme-toggle"><i class="bi bi-moon-stars-fill"></i></label></div>
+      </div>
+    </header>
 
-    <div class="card mb-4">
-      <div class="card-body">
-        <form id="add-job-form">
-          <div class="mb-3"><label class="form-label">YouTube URL or Playlist</label><input type="url" name="url" class="form-control" placeholder="https://..." required></div>
-          <div class="mb-3"><label class="form-label">Custom Folder Name (optional)</label><input type="text" name="foldername" class="form-control" placeholder="Playlist Folder"></div>
-          <div class="row mb-3"><div class="col-md-6"><label class="form-label">Audio Format</label><select name="audio_format" class="form-select"><option value="mp3" selected>MP3</option><option value="flac">FLAC</option><option value="wav">WAV</option><option value="opus">Opus</option></select></div><div class="col-md-6"><label class="form-label">Audio Quality (0=best)</label><select name="audio_quality" class="form-select"><option value="0" selected>0 - Best</option><option value="3">3</option><option value="5">5 - Standard</option><option value="7">7</option><option value="9">9 - Smallest</option></select></div></div>
-          <div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="use_archive" value="yes" checked><label class="form-check-label">Use Archive to skip already-downloaded videos</label></div>
-          <button type="submit" class="btn btn-primary">Add to Queue</button>
-        </form>
+    <ul class="nav nav-tabs mb-3" id="main-tabs" role="tablist">
+      <li class="nav-item" role="presentation"><button class="nav-link active" id="downloader-tab-btn" data-bs-toggle="tab" data-bs-target="#downloader-view" type="button" role="tab">Downloader</button></li>
+      <li class="nav-item" role="presentation"><button class="nav-link" id="file-manager-tab-btn" data-bs-toggle="tab" data-bs-target="#file-manager-view" type="button" role="tab">File Manager</button></li>
+    </ul>
+
+    <div class="tab-content">
+      <div class="tab-pane fade show active" id="downloader-view" role="tabpanel">
+        <div class="card mb-4"><div class="card-body">
+            <div class="row text-center mode-selector mb-4 g-2">
+              <div class="col"><button class="btn btn-outline-primary" data-mode="music"><i class="bi bi-music-note-beamed"></i> Music</button></div>
+              <div class="col"><button class="btn btn-outline-primary" data-mode="video"><i class="bi bi-film"></i> Video</button></div>
+              <div class="col"><button class="btn btn-outline-primary" data-mode="clip"><i class="bi bi-scissors"></i> Clip</button></div>
+            </div>
+            <form id="add-job-form">
+              <input type="hidden" name="download_mode" id="download_mode_input">
+              <div class="mb-3"><label class="form-label">URL(s) <small>(one per line)</small></label><textarea name="urls" class="form-control" placeholder="https://..." required rows="2"></textarea></div>
+              <div id="url-preview" class="d-flex align-items-center p-2 border rounded mb-3 bg-light-subtle"><img src="" class="me-3 rounded"><strong id="preview-title"></strong></div>
+              
+              <div id="music-options" class="mode-options"><div class="row"><div class="col-md-6 mb-3"><label class="form-label">Album/Playlist Name <small>(optional)</small></label><input type="text" name="music_foldername" class="form-control"></div><div class="col-md-6 mb-3"><label class="form-label">Audio Format</label><select name="music_audio_format" class="form-select"><option value="mp3">MP3 (Best Quality)</option><option value="flac">FLAC (Lossless)</option><option value="opus">Opus (High Efficiency)</option></select></div></div><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="music_embed_art" checked><label class="form-check-label">Embed Album Art</label></div></div>
+              <div id="video-options" class="mode-options"><div class="row"><div class="col-md-6 mb-3"><label class="form-label">Folder Name <small>(optional)</small></label><input type="text" name="video_foldername" class="form-control"></div><div class="col-md-4 mb-3"><label class="form-label">Video Quality</label><select name="video_quality" class="form-select"><option value="best">Best Available</option><option value="1080p">1080p (Full HD)</option><option value="720p">720p (HD)</option></select></div><div class="col-md-2 mb-3"><label class="form-label">Format</label><select name="video_format" class="form-select"><option value="mp4" selected>MP4</option><option value="mkv">MKV</option></select></div></div><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="video_embed_subs"><label class="form-check-label">Embed Subtitles</label></div></div>
+              <div id="clip-options" class="mode-options"><div class="mb-3"><label class="form-label">Format</label><select name="clip_format" class="form-select"><option value="video">Quick Video (Best)</option><option value="audio">Quick Audio (MP3)</option></select></div></div>
+
+              <div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="use_archive" value="yes" checked><label class="form-check-label">Use Archive to skip already-downloaded files in playlists</label></div>
+              <div class="accordion accordion-flush mb-3" id="advanced-accordion"><div class="accordion-item"><h2 class="accordion-header"><button class="accordion-button collapsed p-2" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-advanced">Advanced Options</button></h2><div id="collapse-advanced" class="accordion-collapse collapse"><div class="accordion-body"><label class="form-label">Custom Output Path <small>(optional)</small></label><input type="text" name="custom_path" class="form-control" placeholder="e.g., %(uploader)s/%(playlist)s/%(title)s.%(ext)s"><div class="form-text">Overrides folder name. See yt-dlp docs for variables.</div></div></div></div></div>
+              <button type="submit" class="btn btn-primary w-100">Add to Queue</button>
+            </form>
+        </div></div>
+
+        <div class="card mb-4"><div class="card-header bg-info text-white">Now Downloading</div><div class="card-body" id="current-status"><p>No active download.</p></div></div>
+        <div class="card mb-4"><div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center"><span>Download Queue</span><div id="queue-controls"><button class="btn btn-sm btn-danger" id="clear-queue-btn">Clear All</button><button class="btn btn-sm btn-secondary ms-2" id="pause-resume-btn" data-state="running">Pause</button></div></div><ul class="list-group list-group-flush" id="queue-list"></ul></div>
+        <div class="card mb-4"><div class="card-header bg-success text-white d-flex justify-content-between align-items-center"><span>Download History</span><button class="btn btn-danger btn-sm" id="clear-history-btn">Clear History</button></div><ul class="list-group list-group-flush" id="history-list"></ul></div>
+      </div>
+
+      <div class="tab-pane fade" id="file-manager-view" role="tabpanel">
+        <div class="card"><div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <nav id="fm-breadcrumbs" style="--bs-breadcrumb-divider: '>';" aria-label="breadcrumb"><ol class="breadcrumb m-0"></ol></nav>
+              <div class="file-manager-actions"><button class="btn btn-primary" id="fm-zip-btn" disabled><i class="bi bi-file-earmark-zip-fill"></i> Download as .zip</button></div>
+            </div>
+            <div id="file-list" class="list-group"></div>
+        </div></div>
       </div>
     </div>
-    
-    <div class="card mb-4"><div class="card-header bg-info text-white">Now Downloading</div><div class="card-body" id="current-status"><p>No active download.</p></div></div>
-    <div class="card mb-4"><div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center"><span>Download Queue</span><button class="btn btn-danger btn-sm" id="clear-queue-btn" onclick="clearQueue()">Clear Queue</button></div><ul class="list-group list-group-flush" id="queue-list"></ul></div>
-    <div class="card mb-4"><div class="card-header bg-success text-white d-flex justify-content-between align-items-center"><span>Download History</span><button class="btn btn-danger btn-sm" id="clear-history-btn" onclick="clearHistory()">Clear History</button></div><ul class="list-group list-group-flush" id="history-list"></ul></div>
   </div>
 
 <script>
-let logModalInstance;
+// --- GLOBAL STATE & CONFIG ---
+let logModalInstance, toastInstance;
 let currentHistoryVersion = -1;
+let previewTimeout;
+const APP_STATE = {
+    isQueuePaused: false,
+    currentPath: '.',
+    selectedFiles: new Set()
+};
 
-function showToast(message, title = 'Notification', type = 'success') {
+// --- CORE UTILITY FUNCTIONS ---
+const showToast = (message, title = 'Notification', type = 'success') => {
     const toastEl = document.getElementById('actionToast');
-    const toastTitleEl = document.getElementById('toastTitle');
-    const toastBodyEl = document.getElementById('toastBody');
-    toastTitleEl.textContent = title;
-    toastBodyEl.textContent = message;
-    toastEl.classList.remove('bg-success', 'bg-danger', 'text-white');
-    toastEl.classList.add(type === 'success' ? 'bg-success' : 'bg-danger', 'text-white');
-    new bootstrap.Toast(toastEl).show();
-}
+    document.getElementById('toastTitle').textContent = title;
+    document.getElementById('toastBody').textContent = message;
+    toastEl.classList.remove('bg-success', 'bg-danger', 'bg-info', 'text-white');
+    toastEl.classList.add(type === 'danger' ? 'bg-danger' : (type === 'info' ? 'bg-info' : 'bg-success'), 'text-white');
+    if (!toastInstance) toastInstance = new bootstrap.Toast(toastEl);
+    toastInstance.show();
+};
 
-async function fetchLog(logId) {
+async function apiRequest(endpoint, options = {}) {
     try {
-        const res = await fetch(`/history/log/${logId}`);
-        const data = await res.json();
-        document.getElementById('logModalContent').textContent = data.log;
-        logModalInstance.show();
-    } catch (error) { showToast('Could not fetch log.', 'Error', 'error'); }
+        const res = await fetch(endpoint, options);
+        if (!res.ok) {
+            const errorData = await res.json().catch(() => ({ message: res.statusText }));
+            throw new Error(errorData.message || 'Request failed');
+        }
+        if (options.method === 'POST') {
+             fetchStatus();
+        }
+        return res;
+    } catch (error) {
+        showToast(error.message, 'Error', 'danger');
+        throw error;
+    }
 }
 
-async function postRequest(url, body = null, method = 'POST') {
+// --- UI THEME & MODE LOGIC ---
+const applyTheme = (theme) => {
+    document.documentElement.dataset.bsTheme = theme;
+    document.getElementById('theme-toggle').checked = theme === 'dark';
+};
+
+const switchMode = (mode) => {
+    document.querySelectorAll('.mode-selector .btn').forEach(b => b.classList.remove('active'));
+    document.querySelector(`.mode-selector .btn[data-mode="${mode}"]`).classList.add('active');
+    document.querySelectorAll('.mode-options').forEach(el => el.style.display = 'none');
+    document.getElementById(`${mode}-options`).style.display = 'block';
+    document.getElementById('download_mode_input').value = mode;
+    localStorage.setItem('downloader_mode', mode);
+};
+
+// --- API-DRIVEN FEATURES ---
+const fetchAndRenderFiles = async (path = '.') => {
     try {
-        const options = { method };
-        if (body) {
-            options.body = body instanceof FormData ? body : JSON.stringify(body);
-            if (!(body instanceof FormData)) options.headers = { 'Content-Type': 'application/json' };
-        }
-        const res = await fetch(url, options);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.message || 'Request failed');
-        showToast(data.message, 'Success');
-        if (url.includes('/history/') || url.includes('/retry') || url.includes('/queue/clear') || url.includes('/queue/delete')) {
-            fetchHistory(); // Force history and queue refresh after direct actions
-        }
-        fetchStatus();
-    } catch (error) { showToast(error.message, 'Error', 'error'); }
-}
+        const res = await apiRequest(`/files?path=${encodeURIComponent(path)}`);
+        const { files, current_path } = await res.json();
+        APP_STATE.currentPath = current_path;
+        renderFileManager(files, current_path);
+    } catch (error) { console.error("File manager error:", error); }
+};
 
-const cancelDownload = () => postRequest('/cancel');
-const clearQueue = () => postRequest('/queue/clear');
-const deleteFromQueueById = (jobId) => postRequest(`/queue/delete/by-id/${jobId}`);
-const retryJob = (job) => postRequest('/queue/retry', job);
-const refetchJob = (job) => postRequest('/queue/retry', { ...job, refetch: true });
-const clearHistory = () => postRequest('/history/clear');
-const deleteFromHistory = (logId) => postRequest(`/history/delete/${logId}`);
+const fetchUrlPreview = () => {
+    const url = document.querySelector('textarea[name="urls"]').value.trim().split('\n')[0];
+    const previewEl = document.getElementById('url-preview');
+    if (!url) { previewEl.style.display = 'none'; return; }
+    
+    clearTimeout(previewTimeout);
+    previewTimeout = setTimeout(async () => {
+        try {
+            const res = await apiRequest(`/preview?url=${encodeURIComponent(url)}`);
+            const data = await res.json();
+            if (data.message) {
+                 previewEl.style.display = 'none';
+                 return;
+            }
+            document.getElementById('preview-title').textContent = data.title;
+            previewEl.querySelector('img').src = data.thumbnail;
+            previewEl.style.display = 'flex';
+        } catch (error) { previewEl.style.display = 'none'; }
+    }, 500);
+};
 
 async function fetchHistory() {
     try {
-        const res = await fetch(`/history?_=${new Date().getTime()}`);
+        const res = await apiRequest('/history');
         const data = await res.json();
+        const history = data.history;
         const historyList = document.getElementById("history-list");
-        document.getElementById("clear-history-btn").style.display = data.history.length > 0 ? 'block' : 'none';
+        document.getElementById("clear-history-btn").style.display = history.length > 0 ? 'block' : 'none';
         historyList.innerHTML = "";
-        if (data.history.length === 0) {
+        if (history.length === 0) {
             historyList.innerHTML = "<li class='list-group-item'>Nothing in history.</li>";
         } else {
-            data.history.slice().reverse().forEach(item => {
+            history.slice().reverse().forEach(item => {
+                const badgeClass = item.status === 'COMPLETED' ? 'bg-success' : (item.status === 'CANCELLED' ? 'bg-warning text-dark' : 'bg-danger');
                 const li = document.createElement("li");
                 li.className = "list-group-item";
-                
-                const mainDiv = document.createElement('div');
-                mainDiv.className = 'd-flex justify-content-between align-items-center';
-
-                const leftDiv = document.createElement('div');
-                let badgeClass = 'bg-secondary';
-                if (item.status === 'COMPLETED') badgeClass = 'bg-success';
-                if (['FAILED', 'ERROR', 'CANCELLED'].includes(item.status)) badgeClass = 'bg-danger';
-                leftDiv.innerHTML = `<span class="badge ${badgeClass} me-2">${item.status}</span><strong>${item.title || "Unknown Title"}</strong>`;
-                
-                const buttonDiv = document.createElement('div');
-                buttonDiv.className = 'history-buttons';
-
-                const deleteBtn = document.createElement('button');
-                deleteBtn.className = 'btn btn-outline-danger btn-sm'; deleteBtn.innerHTML = '✖';
-                deleteBtn.onclick = () => deleteFromHistory(item.log_id);
-                buttonDiv.appendChild(deleteBtn);
-
-                const logBtn = document.createElement('button');
-                logBtn.className = 'btn btn-info btn-sm'; logBtn.textContent = 'View Log';
-                logBtn.onclick = () => fetchLog(item.log_id);
-                buttonDiv.appendChild(logBtn);
-                
-                if (['FAILED', 'ERROR', 'CANCELLED'].includes(item.status)) {
-                    const retryBtn = document.createElement('button');
-                    retryBtn.className = 'btn btn-primary btn-sm'; retryBtn.textContent = 'Retry';
-                    retryBtn.onclick = () => retryJob(item.job_data);
-                    buttonDiv.appendChild(retryBtn);
-                    if (item.url && item.url.includes("playlist?list=")) {
-                        const refetchBtn = document.createElement('button');
-                        refetchBtn.className = 'btn btn-warning btn-sm'; refetchBtn.textContent = 'Refetch';
-                        refetchBtn.onclick = () => refetchJob(item.job_data);
-                        buttonDiv.appendChild(refetchBtn);
-                    }
-                }
-
-                const smallText = document.createElement('small');
-                smallText.className = 'text-muted';
-                smallText.textContent = `${item.folder ? `Folder: ${item.folder} | ` : ''}URL: ${item.url}`;
-
-                mainDiv.appendChild(leftDiv); mainDiv.appendChild(buttonDiv);
-                li.appendChild(mainDiv); li.appendChild(smallText);
+                li.innerHTML = `
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div><span class="badge ${badgeClass} me-2">${item.status}</span><strong>${item.title || "Unknown"}</strong><br><small class="text-muted">${item.folder ? `Folder: ${item.folder}` : `URL: ${item.url}`}</small></div>
+                        <div class="btn-group"><button class="btn btn-sm btn-outline-secondary" title="Download Again"><i class="bi bi-arrow-clockwise"></i></button><button class="btn btn-sm btn-outline-info" title="View Log"><i class="bi bi-file-text"></i></button><button class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash-fill"></i></button></div>
+                    </div>`;
+                li.querySelector('.bi-arrow-clockwise').onclick = () => downloadAgain(item.job_data);
+                li.querySelector('.bi-file-text').onclick = () => viewLog(item.log_id);
+                li.querySelector('.bi-trash-fill').onclick = () => apiRequest(`/history/delete/${item.log_id}`, { method: 'POST' });
                 historyList.appendChild(li);
             });
         }
-    } catch (error) { console.error("Failed to fetch history:", error); }
+    } catch(error) { console.error("Could not render history:", error); }
 }
 
-async function fetchStatus() {
+// --- RENDER FUNCTIONS ---
+const renderFileManager = (files, path) => {
+    const fileListEl = document.getElementById('file-list');
+    fileListEl.innerHTML = '';
+    APP_STATE.selectedFiles.clear();
+    document.getElementById('fm-zip-btn').disabled = true;
+
+    const breadcrumbsEl = document.querySelector('#fm-breadcrumbs ol');
+    breadcrumbsEl.innerHTML = '';
+    const parts = path === '.' ? ['Downloads'] : ['Downloads', ...path.split(/[/\\]+/)];
+    parts.forEach((part, i) => {
+        let cumulativePath = '.';
+        if (i > 0) {
+            cumulativePath = parts.slice(1, i + 1).join('/');
+        }
+        const li = document.createElement('li');
+        li.className = `breadcrumb-item ${i === parts.length - 1 ? 'active' : ''}`;
+        li.innerHTML = i < parts.length - 1 ? `<a href="#" data-path="${cumulativePath}">${part}</a>` : part;
+        breadcrumbsEl.appendChild(li);
+    });
+
+    if (path !== '.') {
+        const parentPath = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : (path.includes('\\') ? path.substring(0, path.lastIndexOf('\\')) : '.');
+        const backItem = `<a href="#" class="list-group-item list-group-item-action file-item" data-path="${parentPath}"><i class="bi bi-arrow-left-circle-fill"></i> .. (Parent Directory)</a>`;
+        fileListEl.insertAdjacentHTML('beforeend', backItem);
+    }
+
+    files.sort((a, b) => (a.type === b.type) ? a.name.localeCompare(b.name) : (a.type === 'folder' ? -1 : 1));
+
+    files.forEach(file => {
+        const icon = file.type === 'folder' ? 'bi-folder-fill text-warning' : 'bi-file-earmark-music-fill';
+        const item = `
+            <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center file-item" data-path="${file.path}" data-type="${file.type}">
+                <div><input class="form-check-input me-3" type="checkbox" data-path="${file.path}"><i class="bi ${icon} me-2 file-icon"></i><span>${file.name}</span></div>
+                <div>
+                    ${file.type !== 'folder' ? `<a href="/download?path=${encodeURIComponent(file.path)}" class="btn btn-sm btn-outline-success"><i class="bi bi-download"></i></a>` : ''}
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteFile('${file.path}')"><i class="bi bi-trash-fill"></i></button>
+                </div>
+            </div>`;
+        fileListEl.insertAdjacentHTML('beforeend', item);
+    });
+};
+
+const fetchStatus = async () => {
     try {
         const res = await fetch("/status");
         if (!res.ok) throw new Error(`Server error: ${res.status}`);
         const data = await res.json();
-
+        
         const current = data.current;
         const currentDiv = document.getElementById("current-status");
         if (current) {
-            let playlistIndicator = current.playlist_count > 0 ? `<span class="ms-2 badge bg-secondary">${current.playlist_index || '0'}/${current.playlist_count}</span>` : '';
-            let cancelButton = `<button class="btn btn-danger btn-sm float-end" onclick="cancelDownload()">Cancel</button>`;
-            let statsHTML = `<div class="d-flex justify-content-between mt-2 download-stats"><small class="text-muted">Size: ${current.file_size || 'N/A'}</small><small class="text-muted">Speed: ${current.speed || 'N/A'}</small><small class="text-muted">ETA: ${current.eta || 'N/A'}</small></div>`;
-            currentDiv.innerHTML = `${cancelButton}<p><strong>${current.title || current.url}</strong>${playlistIndicator}</p><div class="progress mb-2"><div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: ${current.progress}%; transition: width 0.5s ease;">${current.progress.toFixed(1)}%</div></div><p class="mb-1">${current.status}</p>${statsHTML}`;
+            // --- FIX: Use a flexbox layout to prevent the cancel button from wrapping ---
+            const playlistIndicator = current.playlist_count > 0 ? `<span class="ms-2 badge bg-secondary">${current.playlist_index || '0'}/${current.playlist_count}</span>` : '';
+            const headerHTML = `
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <div class="text-truncate">
+                        <strong>${current.title || current.url}</strong>
+                    </div>
+                    <button class="btn btn-danger btn-sm ms-3 flex-shrink-0" onclick="apiRequest('/cancel', { method: 'POST' })">Cancel</button>
+                </div>
+            `;
+            const statsHTML = `<div class="d-flex justify-content-between mt-2 small text-muted"><small>Size: ${current.file_size || 'N/A'}</small><small>Speed: ${current.speed || 'N/A'}</small><small>ETA: ${current.eta || 'N/A'}</small></div>`;
+            const progress = current.progress ? current.progress.toFixed(1) : 0;
+            currentDiv.innerHTML = `
+                ${headerHTML}
+                <div class="progress mb-2" role="progressbar" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated" style="width: ${progress}%;">${progress}%</div>
+                </div>
+                <p class="mb-1 small">${current.status}</p>
+                ${statsHTML}
+            `;
         } else {
             currentDiv.innerHTML = "<p>No active download.</p>";
         }
 
         const queueList = document.getElementById("queue-list");
-        document.getElementById("clear-queue-btn").style.display = data.queue.length > 0 ? 'block' : 'none';
-        queueList.innerHTML = data.queue.length === 0 ? "<li class='list-group-item'>Queue is empty.</li>" : data.queue.map(job =>
-            `<li class="list-group-item d-flex justify-content-between align-items-center">
-                <span>${job.url} ${job.folder ? `→ <i>${job.folder}</i>` : ""}</span>
-                <button class="btn btn-close btn-close-custom" onclick="deleteFromQueueById(${job.id})"></button>
-            </li>`
-        ).join('');
+        document.getElementById("queue-controls").style.display = data.queue.length > 0 ? 'flex' : 'none';
+        queueList.innerHTML = data.queue.length === 0 ? "<li class='list-group-item'>Queue is empty.</li>" : data.queue.map(job => `<li class="list-group-item d-flex justify-content-between align-items-center"><span>${job.title || job.url}</span><button class="btn-close" onclick="apiRequest('/queue/delete/${job.id}', {method: 'POST'})"></button></li>`).join('');
 
         if (data.history_version !== currentHistoryVersion) {
             currentHistoryVersion = data.history_version;
             fetchHistory();
         }
 
-    } catch (error) {
-        console.error("Failed to fetch or render status:", error);
-        document.getElementById("current-status").innerHTML = `<div class="alert alert-danger"><strong>Dashboard Error:</strong> Could not update status. Check console.</div>`;
-    }
-}
+    } catch (error) { console.error("Status update failed:", error); }
+};
 
+// --- EVENT HANDLERS & ACTIONS ---
+const downloadAgain = (job) => {
+    document.getElementById('downloader-tab-btn').click();
+    switchMode(job.mode || 'clip');
+    document.querySelector('textarea[name="urls"]').value = job.url;
+    const folderInput = document.querySelector(`#${job.mode}-options input[type="text"]`);
+    if(folderInput && job.folder) folderInput.value = job.folder;
+    showToast('Form repopulated from history item.', 'Info', 'info');
+};
+
+const viewLog = async (logId) => {
+    try {
+        const res = await apiRequest(`/history/log/${logId}`);
+        const data = await res.json();
+        document.getElementById('logModalContent').textContent = data.log;
+        if (!logModalInstance) logModalInstance = new bootstrap.Modal(document.getElementById('logModal'));
+        logModalInstance.show();
+    } catch (error) { console.error("Could not fetch log:", error); }
+};
+
+const deleteFile = async (path) => {
+    if (!confirm(`Are you sure you want to delete "${path}"? This cannot be undone.`)) return;
+    try {
+        await apiRequest('/delete_file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) });
+        showToast('File deleted successfully.');
+        fetchAndRenderFiles(APP_STATE.currentPath);
+    } catch (error) { console.error("Delete failed:", error); }
+};
+
+// --- INITIALIZATION ---
 document.addEventListener('DOMContentLoaded', () => {
-    logModalInstance = new bootstrap.Modal(document.getElementById('logModal'));
-    document.getElementById('add-job-form').addEventListener('submit', function(e) {
-        e.preventDefault();
-        postRequest('/queue', new FormData(this));
-        this.reset();
+    const savedTheme = localStorage.getItem('downloader_theme') || 'light';
+    applyTheme(savedTheme);
+    document.getElementById('theme-toggle').addEventListener('click', () => {
+        const newTheme = document.documentElement.dataset.bsTheme === 'dark' ? 'light' : 'dark';
+        applyTheme(newTheme);
+        localStorage.setItem('downloader_theme', newTheme);
     });
-    
+
+    const savedMode = localStorage.getItem('downloader_mode') || 'clip';
+    switchMode(savedMode);
+    document.querySelectorAll('.mode-selector .btn').forEach(btn => btn.addEventListener('click', () => switchMode(btn.dataset.mode)));
+
+    document.getElementById('add-job-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        try {
+            const res = await apiRequest('/queue', { method: 'POST', body: new FormData(this) });
+            const data = await res.json();
+            showToast(data.message, 'Success', 'success');
+            this.reset();
+            document.getElementById('url-preview').style.display = 'none';
+            switchMode(localStorage.getItem('downloader_mode') || 'clip');
+        } catch(error) { console.error("Failed to add job:", error); }
+    });
+
+    document.querySelector('textarea[name="urls"]').addEventListener('input', fetchUrlPreview);
+
+    document.getElementById('pause-resume-btn').addEventListener('click', async function() {
+        APP_STATE.isQueuePaused = !APP_STATE.isQueuePaused;
+        const endpoint = APP_STATE.isQueuePaused ? '/queue/pause' : '/queue/resume';
+        this.textContent = APP_STATE.isQueuePaused ? 'Resume' : 'Pause';
+        try {
+            const res = await apiRequest(endpoint, { method: 'POST' });
+            const data = await res.json();
+            showToast(data.message, 'Info', 'info');
+        } catch(error) { console.error("Pause/resume failed:", error); }
+    });
+    document.getElementById('clear-queue-btn').addEventListener('click', () => apiRequest('/queue/clear', { method: 'POST' }));
+    document.getElementById('clear-history-btn').addEventListener('click', () => { if(confirm('Are you sure you want to clear the entire history?')) apiRequest('/history/clear', { method: 'POST' }) });
+
+    document.getElementById('file-manager-tab-btn').addEventListener('click', () => fetchAndRenderFiles('.'));
+    document.body.addEventListener('click', e => {
+        const fileItem = e.target.closest('.file-item');
+        if (fileItem && e.target.tagName !== 'INPUT' && !e.target.closest('button') && !e.target.closest('a[href^="/download"]')) {
+             if (fileItem.dataset.type === 'folder') fetchAndRenderFiles(fileItem.dataset.path);
+        }
+        const breadcrumbLink = e.target.closest('.breadcrumb-item a');
+        if (breadcrumbLink) { e.preventDefault(); fetchAndRenderFiles(breadcrumbLink.dataset.path); }
+    });
+
+    document.getElementById('file-list').addEventListener('change', e => {
+        if (e.target.type === 'checkbox') {
+            const path = e.target.dataset.path;
+            e.target.checked ? APP_STATE.selectedFiles.add(path) : APP_STATE.selectedFiles.delete(path);
+            document.getElementById('fm-zip-btn').disabled = APP_STATE.selectedFiles.size === 0;
+        }
+    });
+
+    document.getElementById('fm-zip-btn').addEventListener('click', async () => {
+        const paths = Array.from(APP_STATE.selectedFiles);
+        try {
+            const res = await apiRequest('/zip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paths }) });
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none'; a.href = url; a.download = 'download.zip';
+            document.body.appendChild(a); a.click();
+            window.URL.revokeObjectURL(url); a.remove();
+        } catch(error) { console.error("Zip download failed:", error); }
+    });
+
     fetchStatus();
     fetchHistory();
     setInterval(fetchStatus, 2000);
