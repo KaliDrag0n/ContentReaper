@@ -498,18 +498,18 @@ def preview_route():
 
         if is_playlist:
             title_cmd = ['yt-dlp', '--print', 'playlist_title', '--playlist-items', '1', '-s', url]
-            proc_title = subprocess.run(title_cmd, capture_output=True, text=True, timeout=15, check=True, encoding='utf-8', errors='replace')
+            proc_title = subprocess.run(title_cmd, capture_output=True, text=True, timeout=60, check=True, encoding='utf-8', errors='replace')
             output_lines = proc_title.stdout.strip().splitlines()
             if not output_lines: raise Exception("Could not fetch playlist title.")
             title = output_lines[0]
             
             thumb_cmd = ['yt-dlp', '--print', '%(thumbnail)s', '--playlist-items', '1', '-s', url]
-            proc_thumb = subprocess.run(thumb_cmd, capture_output=True, text=True, timeout=15, check=True, encoding='utf-8', errors='replace')
+            proc_thumb = subprocess.run(thumb_cmd, capture_output=True, text=True, timeout=60, check=True, encoding='utf-8', errors='replace')
             thumb_lines = proc_thumb.stdout.strip().splitlines()
             if thumb_lines: thumbnail_url = thumb_lines[0]
         else:
-            json_cmd = ['yt-dlp', '--print-json', '-s', url]
-            proc_json = subprocess.run(json_cmd, capture_output=True, text=True, timeout=15, check=True, encoding='utf-8', errors='replace')
+            json_cmd = ['yt-dlp', '--print-json', '--skip-download', url]
+            proc_json = subprocess.run(json_cmd, capture_output=True, text=True, timeout=60, check=True, encoding='utf-8', errors='replace')
             data = json.loads(proc_json.stdout)
             title = data.get('title', 'No Title Found')
             thumbnail_url = data.get('thumbnail', '')
