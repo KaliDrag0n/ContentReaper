@@ -14,11 +14,12 @@
     .mode-options, #playlist-range-options, #url-preview, #queue-controls { display: none; }
     .mode-selector .btn { width: 100%; }
     #url-preview img { max-width: 120px; max-height: 90px; object-fit: cover; }
+    .word-break-all { word-break: break-all; }
   </style>
 </head>
 <body>
 
-  <div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 1100;">
+  <div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 1150;">
     <div id="actionToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
       <div class="toast-header"><strong class="me-auto" id="toastTitle"></strong><button type="button" class="btn-close" data-bs-dismiss="toast"></button></div>
       <div class="toast-body" id="toastBody"></div>
@@ -26,6 +27,25 @@
   </div>
 
   <div class="modal fade" id="logModal" tabindex="-1"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Job Log</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><pre id="logModalContent"></pre></div></div></div></div>
+  
+  <div class="modal fade" id="confirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="confirmModalTitle">Are you sure?</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body" id="confirmModalBody">
+          This action cannot be undone.
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-danger" id="confirmModalButton">Confirm</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
 
   <div class="container py-4">
     <header class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom">
@@ -45,9 +65,39 @@
         <form id="add-job-form">
           <input type="hidden" name="download_mode" id="download_mode_input">
           <div class="mb-3"><label class="form-label">URL(s) <small>(one per line)</small></label><textarea name="urls" class="form-control" placeholder="https://..." required rows="2"></textarea></div>
-          <div id="url-preview" class="d-flex align-items-center p-2 border rounded mb-3 bg-light-subtle"><img src="" class="me-3 rounded"><strong id="preview-title"></strong></div>
+          <div id="url-preview" class="d-flex align-items-center p-2 border rounded mb-3 bg-body-tertiary"><img src="" class="me-3 rounded"><strong id="preview-title"></strong></div>
           
-          <div id="music-options" class="mode-options"><div class="row"><div class="col-md-6 mb-3"><label class="form-label">Album/Playlist Name <small>(optional)</small></label><input type="text" name="music_foldername" class="form-control"></div><div class="col-md-6 mb-3"><label class="form-label">Audio Format</label><select name="music_audio_format" class="form-select"><option value="mp3">MP3 (Best Quality)</option><option value="flac">FLAC (Lossless)</option><option value="opus">Opus (High Efficiency)</option></select></div></div><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="music_embed_art" checked><label class="form-check-label">Embed Album Art</label></div></div>
+          <div id="music-options" class="mode-options">
+            <div class="row">
+              <div class="col-md-5 mb-3">
+                <label class="form-label">Album/Playlist Name <small>(optional)</small></label>
+                <input type="text" name="music_foldername" class="form-control">
+              </div>
+              <div class="col-md-4 mb-3">
+                <label class="form-label">Audio Format</label>
+                <select name="music_audio_format" class="form-select">
+                  <option value="mp3">MP3 (VBR)</option>
+                  <option value="flac">FLAC (Lossless)</option>
+                  <option value="opus">Opus (High Efficiency)</option>
+                </select>
+              </div>
+              <div class="col-md-3 mb-3">
+                <label class="form-label">Audio Quality</label>
+                <select name="music_audio_quality" class="form-select">
+                  <option value="0">Best (VBR ~245k)</option>
+                  <option value="3">High (VBR ~190k)</option>
+                  <option value="5">Standard (VBR ~165k)</option>
+                  <option value="7">Low (VBR ~130k)</option>
+                  <option value="9">Worst (VBR ~65k)</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-check mb-3">
+              <input class="form-check-input" type="checkbox" name="music_embed_art" checked>
+              <label class="form-check-label">Embed Album Art</label>
+            </div>
+          </div>
+
           <div id="video-options" class="mode-options"><div class="row"><div class="col-md-6 mb-3"><label class="form-label">Folder Name <small>(optional)</small></label><input type="text" name="video_foldername" class="form-control"></div><div class="col-md-4 mb-3"><label class="form-label">Video Quality</label><select name="video_quality" class="form-select"><option value="best">Best Available</option><option value="1080p">1080p (Full HD)</option><option value="720p">720p (HD)</option></select></div><div class="col-md-2 mb-3"><label class="form-label">Format</label><select name="video_format" class="form-select"><option value="mp4" selected>MP4</option><option value="mkv">MKV</option></select></div></div><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="video_embed_subs"><label class="form-check-label">Embed Subtitles</label></div></div>
           <div id="clip-options" class="mode-options"><div class="mb-3"><label class="form-label">Format</label><select name="clip_format" class="form-select"><option value="video">Quick Video (Best)</option><option value="audio">Quick Audio (MP3)</option></select></div></div>
 
@@ -61,14 +111,14 @@
         </form>
     </div></div>
 
-    <div class="card mb-4"><div class="card-header bg-info text-white">Now Downloading</div><div class="card-body" id="current-status"><p>No active download.</p></div></div>
-    <div class="card mb-4"><div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center"><span>Download Queue</span><div id="queue-controls"><button class="btn btn-sm btn-danger" id="clear-queue-btn">Clear All</button></div></div><ul class="list-group list-group-flush" id="queue-list"></ul></div>
-    <div class="card mb-4"><div class="card-header bg-success text-white d-flex justify-content-between align-items-center"><span>Download History</span><button class="btn btn-danger btn-sm" id="clear-history-btn">Clear History</button></div><ul class="list-group list-group-flush" id="history-list"></ul></div>
+    <div class="card mb-4"><div class="card-header bg-info-subtle text-emphasis-info">Now Downloading</div><div class="card-body" id="current-status"><p>No active download.</p></div></div>
+    <div class="card mb-4"><div class="card-header bg-warning-subtle text-emphasis-warning d-flex justify-content-between align-items-center"><span>Download Queue</span><div id="queue-controls"><button class="btn btn-sm btn-danger" id="clear-queue-btn">Clear All</button></div></div><ul class="list-group list-group-flush" id="queue-list"></ul></div>
+    <div class="card mb-4"><div class="card-header bg-success-subtle text-emphasis-success d-flex justify-content-between align-items-center"><span>Download History</span><button class="btn btn-danger btn-sm" id="clear-history-btn">Clear History</button></div><ul class="list-group list-group-flush" id="history-list"></ul></div>
   </div>
 
 <script>
 // --- GLOBAL STATE & CONFIG ---
-let logModalInstance, toastInstance;
+let logModalInstance, toastInstance, confirmModalInstance;
 let currentHistoryVersion = -1;
 let previewTimeout;
 
@@ -117,6 +167,9 @@ const switchMode = (mode) => {
 
 // --- API-DRIVEN FEATURES ---
 const handleUrlInput = () => {
+    document.querySelector('input[name="music_foldername"]').value = '';
+    document.querySelector('input[name="video_foldername"]').value = '';
+
     const url = document.querySelector('textarea[name="urls"]').value.trim().split('\n')[0];
     const isPlaylist = url.includes('playlist?list=');
     document.getElementById('playlist-range-options').style.display = isPlaylist ? 'flex' : 'none';
@@ -162,7 +215,7 @@ async function fetchHistory() {
                     case 'PARTIAL': badgeClass = 'bg-info text-dark'; break;
                     case 'STOPPED': 
                         badgeClass = 'bg-warning text-dark'; 
-                        actionButton = `<button class="btn btn-sm btn-outline-success" title="Continue Download"><i class="bi bi-play-fill"></i></button>`;
+                        actionButton = `<button class="btn btn-sm btn-outline-success" title="Retry Download"><i class="bi bi-play-fill"></i></button>`;
                         break;
                     case 'CANCELLED': badgeClass = 'bg-secondary'; break;
                     case 'FAILED':
@@ -196,24 +249,22 @@ const fetchStatus = async () => {
         if (current) {
             const playlistIndicator = current.playlist_count > 0 ? `<span class="ms-2 badge bg-secondary">${current.playlist_index || '0'}/${current.playlist_count}</span>` : '';
             
-            // --- UI DISPLAY FIX ---
-            // Check for separate playlist/track titles and render accordingly
             let titleHTML;
             if (current.playlist_title) {
                 titleHTML = `
-                    <strong>${current.playlist_title}</strong>${playlistIndicator}<br>
-                    <small class="text-muted">${current.track_title || 'Loading track...'}</small>
+                    <strong class="word-break-all">${current.playlist_title}</strong>${playlistIndicator}<br>
+                    <small class="text-muted word-break-all">${current.track_title || 'Loading track...'}</small>
                 `;
             } else {
-                titleHTML = `<strong>${current.title || current.url}</strong>`;
+                titleHTML = `<strong class="word-break-all">${current.title || current.url}</strong>`;
             }
 
             const headerHTML = `
-                <div class="d-flex justify-content-between align-items-center mb-1">
-                    <div class="text-truncate">
+                <div class="d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center mb-1">
+                    <div class="w-100">
                         ${titleHTML}
                     </div>
-                    <div class="btn-group ms-3 flex-shrink-0" role="group">
+                    <div class="btn-group ms-sm-3 mt-2 mt-sm-0 flex-shrink-0" role="group">
                         <button class="btn btn-warning btn-sm" onclick="apiRequest('/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'save' }) })" title="Stop download and save completed files.">Stop & Save</button>
                         <button class="btn btn-danger btn-sm" onclick="apiRequest('/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'cancel' }) })" title="Cancel download and delete all temporary files.">Cancel</button>
                     </div>
@@ -235,7 +286,7 @@ const fetchStatus = async () => {
 
         const queueList = document.getElementById("queue-list");
         document.getElementById("queue-controls").style.display = data.queue.length > 0 ? 'flex' : 'none';
-        queueList.innerHTML = data.queue.length === 0 ? "<li class='list-group-item'>Queue is empty.</li>" : data.queue.map(job => `<li class="list-group-item d-flex justify-content-between align-items-center"><span>${job.url}</span><button class="btn-close" onclick="apiRequest('/queue/delete/by-id/${job.id}', {method: 'POST'})"></button></li>`).join('');
+        queueList.innerHTML = data.queue.length === 0 ? "<li class='list-group-item'>Queue is empty.</li>" : data.queue.map(job => `<li class="list-group-item d-flex justify-content-between align-items-center"><span class="word-break-all" style="max-width: 80%;">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span><button class="btn-close" onclick="apiRequest('/queue/delete/by-id/${job.id}', {method: 'POST'})"></button></li>`).join('');
 
         if (data.history_version !== currentHistoryVersion) {
             currentHistoryVersion = data.history_version;
@@ -270,6 +321,26 @@ const viewLog = async (logId) => {
     } catch (error) { console.error("Could not fetch log:", error); }
 };
 
+const showConfirmModal = (title, body, onConfirm) => {
+    document.getElementById('confirmModalTitle').textContent = title;
+    document.getElementById('confirmModalBody').textContent = body;
+    const confirmButton = document.getElementById('confirmModalButton');
+    
+    const newConfirmButton = confirmButton.cloneNode(true);
+    confirmButton.parentNode.replaceChild(newConfirmButton, confirmButton);
+    
+    newConfirmButton.addEventListener('click', () => {
+        onConfirm();
+        confirmModalInstance.hide();
+    });
+
+    if (!confirmModalInstance) {
+        confirmModalInstance = new bootstrap.Modal(document.getElementById('confirmModal'));
+    }
+    confirmModalInstance.show();
+};
+
+
 // --- INITIALIZATION ---
 document.addEventListener('DOMContentLoaded', () => {
     const savedTheme = localStorage.getItem('downloader_theme') || 'light';
@@ -299,8 +370,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.querySelector('textarea[name="urls"]').addEventListener('input', handleUrlInput);
     
-    document.getElementById('clear-queue-btn').addEventListener('click', () => apiRequest('/queue/clear', { method: 'POST' }));
-    document.getElementById('clear-history-btn').addEventListener('click', () => { if(confirm('Are you sure you want to clear the entire history?')) apiRequest('/history/clear', { method: 'POST' }) });
+    document.getElementById('clear-queue-btn').addEventListener('click', () => {
+        showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => {
+            apiRequest('/queue/clear', { method: 'POST' });
+        });
+    });
+    document.getElementById('clear-history-btn').addEventListener('click', () => {
+        showConfirmModal('Clear History?', 'Are you sure you want to clear the entire download history? This cannot be undone.', () => {
+            apiRequest('/history/clear', { method: 'POST' });
+        });
+    });
 
     fetchStatus();
     setInterval(fetchStatus, 2000);
@@ -308,3 +387,4 @@ document.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>
+	

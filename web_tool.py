@@ -1,6 +1,6 @@
 from flask import Flask, request, render_template, jsonify, redirect, url_for
 import threading, queue, subprocess, os, re, json, atexit, datetime
-import io, shutil
+import io, shutil, unicodedata
 from zipfile import ZipFile, ZIP_DEFLATED
 
 app = Flask(__name__)
@@ -14,6 +14,7 @@ CONFIG = {
 CONF_CONFIG_FILE = os.path.join(APP_ROOT, "config.json")
 CONF_STATE_FILE = os.path.join(APP_ROOT, "state.json")
 CONF_COOKIE_FILE = os.path.join(APP_ROOT, "cookies.txt")
+LOG_DIR = os.path.join(APP_ROOT, "logs")
 
 #~ --- Global State & Threading --- ~#
 download_lock = threading.RLock()
@@ -24,6 +25,7 @@ stop_mode = "CANCEL"
 
 current_download = {
     "url": None, "job_data": None, "progress": 0, "status": "", "title": None,
+    "playlist_title": None, "track_title": None,
     "playlist_count": 0, "playlist_index": 0,
     "speed": None, "eta": None, "file_size": None
 }
@@ -44,8 +46,31 @@ def load_config():
         except Exception as e: print(f"Error loading config: {e}")
 
 def save_state():
-    state = {"queue": list(download_queue.queue), "history": download_history, "current_job": current_download.get("job_data"),"next_log_id": next_log_id,"next_queue_id": next_queue_id, "history_state_version": history_state_version}
-    with open(CONF_STATE_FILE, 'w', encoding='utf-8') as f: json.dump(state, f, indent=4)
+    """Saves the current application state to a file."""
+    state_to_save = {}
+    # Create a deep-enough copy of the state while holding the lock.
+    # This is a fast, in-memory operation.
+    with download_lock:
+        job_data_copy = current_download.get("job_data")
+        if job_data_copy:
+            job_data_copy = job_data_copy.copy()
+
+        state_to_save = {
+            "queue": [job.copy() for job in download_queue.queue],
+            "history": [item.copy() for item in download_history],
+            "current_job": job_data_copy,
+            "next_log_id": next_log_id,
+            "next_queue_id": next_queue_id,
+            "history_state_version": history_state_version
+        }
+    
+    # Perform the slow file write operation *outside* the lock to avoid blocking the UI.
+    try:
+        with open(CONF_STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(state_to_save, f, indent=4)
+    except Exception as e:
+        print(f"ERROR: Could not save state to file: {e}")
+
 
 def load_state():
     global download_history, next_log_id, next_queue_id, history_state_version
@@ -97,7 +122,7 @@ def build_yt_dlp_command(job, temp_dir_path):
         album_metadata = final_folder_name if is_playlist else '%(album)s'
         cmd.extend([
             '-f', 'bestaudio', '-x', '--audio-format', job.get("format", "mp3"),
-            '--audio-quality', '0', '--embed-metadata', '--embed-thumbnail',
+            '--audio-quality', job.get("quality", "0"), '--embed-metadata', '--embed-thumbnail',
             '--postprocessor-args', f'-metadata album="{album_metadata}" -metadata date="{datetime.datetime.now().year}"',
             '--parse-metadata', 'playlist_index:%(track_number)s',
             '--parse-metadata', 'uploader:%(artist)s'
@@ -128,8 +153,10 @@ def build_yt_dlp_command(job, temp_dir_path):
     if os.path.exists(CONF_COOKIE_FILE) and CONFIG.get("cookie_file_content"): cmd.extend(['--cookies', CONF_COOKIE_FILE])
     
     if job.get("archive"):
-        temp_archive_file = os.path.join(temp_dir_path, "archive.temp.txt")
-        cmd.extend(['--download-archive', temp_archive_file])
+        archive_folder_path = os.path.join(CONFIG["download_dir"], job.get("folder"))
+        os.makedirs(archive_folder_path, exist_ok=True)
+        main_archive_file = os.path.join(archive_folder_path, "archive.txt")
+        cmd.extend(['--download-archive', main_archive_file])
 
     cmd.append(job["url"])
     return cmd
@@ -155,9 +182,21 @@ def _finalize_job(job, final_status, log_output):
     if os.path.exists(temp_dir_path):
         for f in os.listdir(temp_dir_path):
             if f.endswith(f'.{target_format}'):
+                source_path = os.path.join(temp_dir_path, f)
+                dest_path = os.path.join(final_dest_dir, f)
+
+                # If a file with the same name exists, find a new name (e.g., file (1).ext).
+                if os.path.exists(dest_path):
+                    base, ext = os.path.splitext(f)
+                    counter = 1
+                    while os.path.exists(dest_path):
+                        dest_path = os.path.join(final_dest_dir, f"{base} ({counter}){ext}")
+                        counter += 1
+                    log_output.append(f"WARNING: File '{f}' already existed. Saving as '{os.path.basename(dest_path)}'.")
+
                 try:
-                    shutil.move(os.path.join(temp_dir_path, f), os.path.join(final_dest_dir, f))
-                    final_title = f.rsplit('.', 1)[0]
+                    shutil.move(source_path, dest_path)
+                    final_title = os.path.basename(dest_path).rsplit('.', 1)[0]
                     moved_count += 1
                 except Exception as e:
                     log_output.append(f"ERROR: Could not move completed file {f}: {e}")
@@ -170,18 +209,12 @@ def _finalize_job(job, final_status, log_output):
         else:
             log_output.append("No completed files matching target format found to move.")
 
-        temp_archive_file = os.path.join(temp_dir_path, "archive.temp.txt")
-        if os.path.exists(temp_archive_file):
-            main_archive_file = os.path.join(final_dest_dir, "archive.txt")
-            try:
-                shutil.copy2(temp_archive_file, main_archive_file)
-                log_output.append(f"Updated archive file at {main_archive_file}")
-            except Exception as e:
-                log_output.append(f"ERROR: Could not update archive file: {e}")
-
     log_output.append("Cleaning up temporary folder.")
     if os.path.exists(temp_dir_path):
-        shutil.rmtree(temp_dir_path)
+        try:
+            shutil.rmtree(temp_dir_path)
+        except OSError as e:
+            log_output.append(f"Error removing temp folder {temp_dir_path}: {e}")
 
     return final_status, final_folder_name, final_title
 
@@ -202,19 +235,16 @@ def yt_dlp_worker():
             os.makedirs(temp_dir_path, exist_ok=True)
             log_output.append(f"Created temporary directory: {temp_dir_path}")
             
-            if job.get("archive"):
-                final_folder_name = job.get("folder") or "Misc Downloads"
-                main_archive_file = os.path.join(CONFIG["download_dir"], final_folder_name, "archive.txt")
-                if os.path.exists(main_archive_file):
-                    temp_archive_file = os.path.join(temp_dir_path, "archive.temp.txt")
-                    shutil.copy2(main_archive_file, temp_archive_file)
-                    log_output.append(f"Copied existing archive to temp directory for processing.")
-
             cmd = build_yt_dlp_command(job, temp_dir_path)
             
             with download_lock:
-                current_download.update({ "url": job["url"], "progress": 0, "status": "Starting...", "title": "Starting Download...", "job_data": job})
-                save_state()
+                current_download.update({ 
+                    "url": job["url"], "progress": 0, "status": "Starting...", 
+                    "title": "Starting Download...", "job_data": job,
+                    "playlist_title": None, "track_title": None,
+                    "playlist_count": 0, "playlist_index": 0,
+                    "speed": None, "eta": None, "file_size": None
+                })
 
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace', bufsize=1)
             
@@ -270,12 +300,31 @@ def yt_dlp_worker():
         finally:
             status, final_folder, final_title = _finalize_job(job, status, log_output)
             
+            log_content = "\n".join(log_output)
+            log_file_path = os.path.join(LOG_DIR, f"job_{next_log_id}.log")
+            try:
+                with open(log_file_path, 'w', encoding='utf-8') as f:
+                    f.write(log_content)
+            except Exception as e:
+                print(f"ERROR: Could not write log file {log_file_path}: {e}")
+                log_file_path = "LOG_SAVE_ERROR"
+
             with download_lock:
-                history_item = {"url": job["url"], "title": final_title, "folder": final_folder, "job_data": job, "log": "\n".join(log_output), "log_id": next_log_id, "status": status}
+                history_item = {
+                    "url": job["url"], 
+                    "title": final_title, 
+                    "folder": final_folder, 
+                    "job_data": job, 
+                    "log_path": log_file_path,
+                    "log_id": next_log_id, 
+                    "status": status
+                }
                 download_history.append(history_item)
                 next_log_id += 1; history_state_version += 1
                 current_download.update({"url": None, "job_data": None})
-                download_queue.task_done(); save_state()
+                download_queue.task_done()
+            
+            save_state()
 
 #~ --- Flask Routes --- ~#
 @app.route("/")
@@ -288,7 +337,7 @@ def settings_route():
             CONFIG["download_dir"] = request.form.get("download_dir", CONFIG["download_dir"])
             CONFIG["cookie_file_content"] = request.form.get("cookie_content", "")
             with open(CONF_COOKIE_FILE, 'w', encoding='utf-8') as f: f.write(CONFIG["cookie_file_content"])
-            save_config()
+        save_config()
         return redirect(url_for('settings_route', saved='true'))
     return render_template("settings.html", config=CONFIG, saved=request.args.get('saved'))
 
@@ -315,17 +364,39 @@ def add_to_queue_route():
     elif mode == 'video':
         folder_name = video_folder or music_folder
     
-    if mode == 'music' and not folder_name and any("playlist?list=" in url for url in urls):
+    if not folder_name:
         try:
-            first_playlist_url = next(url for url in urls if "playlist?list=" in url)
-            fetch_cmd = ['yt-dlp', '--print', 'playlist_title', '--playlist-items', '1', '-s', first_playlist_url]
+            first_url = next(url for url in urls if url)
+            is_playlist = "playlist?list=" in first_url
+            
+            print_field = 'playlist_title' if is_playlist else 'title'
+            fetch_cmd = ['yt-dlp', '--print', print_field, '--playlist-items', '1', '-s', first_url]
+            
             result = subprocess.run(fetch_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, check=True)
             output_lines = result.stdout.strip().splitlines()
             if output_lines:
-                folder_name = output_lines[0]
+                raw_name = output_lines[0]
+                # A more robust, Unicode-aware sanitization process
+                # Step 1: Normalize the string to convert special characters (e.g., ’ to ')
+                safe_name = unicodedata.normalize('NFKC', raw_name)
+                # Step 2: Encode to ASCII, ignoring any characters that can't be represented (e.g., emojis)
+                safe_name = safe_name.encode('ascii', 'ignore').decode('ascii')
+                # Step 3: Remove characters that are illegal in filenames
+                safe_name = re.sub(r'[\\/*?:"<>|]', '', safe_name)
+                # Step 4: Replace colons with a hyphen
+                safe_name = safe_name.replace(':', '-')
+                # Step 5: Clean up whitespace and trailing periods
+                safe_name = re.sub(r'\s+', ' ', safe_name).strip().strip('.')
+                # Step 6: Use a fallback if the name is now empty
+                if not safe_name:
+                    folder_name = "Misc Download"
+                else:
+                    folder_name = safe_name
+
         except Exception as e:
-            print(f"Could not auto-fetch playlist title: {e}")
-            folder_name = "Misc Music"
+            print(f"Could not auto-fetch title for folder name: {e}")
+            if mode == 'music': folder_name = "Misc Music"
+            else: folder_name = "Misc Videos"
 
     print(f"DEBUG: Mode: {mode}, Chosen Folder: '{folder_name}'")
 
@@ -346,8 +417,7 @@ def add_to_queue_route():
             if mode == 'music':
                 job.update({
                     "format": request.form.get("music_audio_format", "mp3"),
-                    "quality": "0",
-                    "embed_art": request.form.get("music_embed_art") == "on"
+                    "quality": request.form.get("music_audio_quality", "0"),
                 })
             elif mode == 'video':
                 job.update({
@@ -367,6 +437,36 @@ def add_to_queue_route():
         
     return jsonify({"message": f"Added {jobs_added} job(s) to the queue."})
 
+@app.route('/queue/clear', methods=['POST'])
+def clear_queue_route():
+    with download_lock:
+        while not download_queue.empty():
+            try:
+                download_queue.get_nowait()
+            except queue.Empty:
+                break
+    save_state()
+    return jsonify({"message": "Queue cleared."})
+
+@app.route('/queue/delete/by-id/<int:job_id>', methods=['POST'])
+def delete_from_queue_route(job_id):
+    with download_lock:
+        items = []
+        while not download_queue.empty():
+            try:
+                items.append(download_queue.get_nowait())
+            except queue.Empty:
+                break
+        
+        updated_queue = [job for job in items if job.get('id') != job_id]
+        
+        for job in updated_queue:
+            download_queue.put(job)
+
+    save_state()
+    return jsonify({"message": "Queue item removed."})
+
+
 @app.route("/queue/continue", methods=['POST'])
 def continue_job_route():
     global next_queue_id
@@ -378,7 +478,7 @@ def continue_job_route():
         job['id'] = next_queue_id
         next_queue_id += 1
         download_queue.put(job)
-        save_state()
+    save_state()
 
     return jsonify({"message": f"Re-queued job: {job.get('title', job['url'])}"})
 
@@ -417,32 +517,77 @@ def preview_route():
 def get_history_route():
     with download_lock:
         history_summary = [h.copy() for h in download_history]
-        for item in history_summary: item.pop("log", None)
-        return jsonify({"history": history_summary})
+        for item in history_summary:
+            item.pop("log_path", None)
+    return jsonify({"history": history_summary})
 
 @app.route('/history/log/<int:log_id>')
 def history_log_route(log_id):
+    log_content = "Log not found or could not be read."
+    log_path = None
+
     with download_lock:
         item = next((h for h in download_history if h.get("log_id") == log_id), None)
-    return jsonify({"log": item.get("log", "Log not found.")}) if item else ("", 404)
+        if item:
+            log_path = item.get("log_path")
+
+    if log_path and log_path != "LOG_SAVE_ERROR" and os.path.exists(log_path):
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                log_content = f.read()
+        except Exception as e:
+            log_content = f"ERROR: Could not read log file at {log_path}. Reason: {e}"
+    elif log_path == "LOG_SAVE_ERROR":
+        log_content = "There was an error saving the log file for this job."
+    
+    return jsonify({"log": log_content})
 
 @app.route('/history/clear', methods=['POST'])
 def clear_history_route():
     global history_state_version
+    paths_to_delete = []
     with download_lock:
-        download_history.clear(); history_state_version += 1; save_state()
+        for item in download_history:
+            if item.get("log_path") and item.get("log_path") != "LOG_SAVE_ERROR":
+                paths_to_delete.append(item["log_path"])
+        download_history.clear()
+        history_state_version += 1
+    
+    save_state()
+
+    for path in paths_to_delete:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception as e:
+            print(f"ERROR: Could not delete log file {path}: {e}")
+
     return jsonify({"message": "History cleared."})
 
 @app.route('/history/delete/<int:log_id>', methods=['POST'])
 def delete_from_history_route(log_id):
     global history_state_version
+    path_to_delete = None
+
     with download_lock:
-        initial_len = len(download_history)
+        item_to_delete = next((h for h in download_history if h.get("log_id") == log_id), None)
+        if not item_to_delete:
+            return jsonify({"message": "Item not found."}), 404
+        
+        path_to_delete = item_to_delete.get("log_path")
+        
         download_history[:] = [h for h in download_history if h.get("log_id") != log_id]
-        if len(download_history) < initial_len:
-            history_state_version += 1; save_state()
-            return jsonify({"message": "History item deleted."})
-    return jsonify({"message": "Item not found."}), 404
+        history_state_version += 1
+
+    save_state()
+    
+    if path_to_delete and path_to_delete != "LOG_SAVE_ERROR" and os.path.exists(path_to_delete):
+        try:
+            os.remove(path_to_delete)
+        except Exception as e:
+            print(f"ERROR: Could not delete log file {path_to_delete}: {e}")
+            
+    return jsonify({"message": "History item deleted."})
 
 @app.route("/stop", methods=['POST'])
 def stop_route():
@@ -467,9 +612,10 @@ if __name__ == "__main__":
     load_config()
     os.makedirs(CONFIG["download_dir"], exist_ok=True)
     os.makedirs(os.path.join(CONFIG["download_dir"], ".temp"), exist_ok=True)
+    os.makedirs(LOG_DIR, exist_ok=True)
     atexit.register(save_state)
     load_state()
     queue_paused_event.set()
     threading.Thread(target=yt_dlp_worker, daemon=True).start()
-    print("Starting Server with Waitress...")
+    print("Starting server with Waitress...")
     serve(app, host="0.0.0.0", port=8080)
