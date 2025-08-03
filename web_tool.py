@@ -9,6 +9,7 @@ app = Flask(__name__)
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIG = {
     "download_dir": os.path.join(APP_ROOT, "downloads"),
+    "temp_dir": os.path.join(APP_ROOT, ".temp"), # New configurable setting
     "cookie_file_content": ""
 }
 CONF_CONFIG_FILE = os.path.join(APP_ROOT, "config.json")
@@ -46,10 +47,7 @@ def load_config():
         except Exception as e: print(f"Error loading config: {e}")
 
 def save_state():
-    """Saves the current application state to a file."""
     state_to_save = {}
-    # Create a deep-enough copy of the state while holding the lock.
-    # This is a fast, in-memory operation.
     with download_lock:
         job_data_copy = current_download.get("job_data")
         if job_data_copy:
@@ -64,7 +62,6 @@ def save_state():
             "history_state_version": history_state_version
         }
     
-    # Perform the slow file write operation *outside* the lock to avoid blocking the UI.
     try:
         with open(CONF_STATE_FILE, 'w', encoding='utf-8') as f:
             json.dump(state_to_save, f, indent=4)
@@ -130,7 +127,7 @@ def build_yt_dlp_command(job, temp_dir_path):
     elif mode == 'video':
         quality = job.get('quality', 'best')
         video_format = job.get('format', 'mp4')
-        format_str = f"bestvideo[height<={quality[:-1]}][ext={video_format}]+bestaudio/best[ext={video_format}]/best" if quality != 'best' else f'bestvideo[ext={video_format}]+bestaudio/best[ext={video_format}]/best'
+        format_str = f"bestvideo[height<={quality[:-1]}]+bestaudio/best" if quality != 'best' else 'bestvideo+bestaudio/best'
         cmd.extend(['-f', format_str, '--merge-output-format', video_format])
         if job.get('embed_subs'):
             cmd.extend(['--embed-subs', '--sub-langs', 'en.*,en-US,en-GB'])
@@ -153,16 +150,14 @@ def build_yt_dlp_command(job, temp_dir_path):
     if os.path.exists(CONF_COOKIE_FILE) and CONFIG.get("cookie_file_content"): cmd.extend(['--cookies', CONF_COOKIE_FILE])
     
     if job.get("archive"):
-        archive_folder_path = os.path.join(CONFIG["download_dir"], job.get("folder"))
-        os.makedirs(archive_folder_path, exist_ok=True)
-        main_archive_file = os.path.join(archive_folder_path, "archive.txt")
-        cmd.extend(['--download-archive', main_archive_file])
+        temp_archive_file = os.path.join(temp_dir_path, "archive.temp.txt")
+        cmd.extend(['--download-archive', temp_archive_file])
 
     cmd.append(job["url"])
     return cmd
 
 def _finalize_job(job, final_status, log_output):
-    temp_dir_path = os.path.join(CONFIG["download_dir"], ".temp", f"job_{job['id']}")
+    temp_dir_path = os.path.join(CONFIG["temp_dir"], f"job_{job['id']}")
     
     final_folder_name = job.get("folder") or "Misc Downloads"
     final_dest_dir = os.path.join(CONFIG["download_dir"], final_folder_name)
@@ -185,7 +180,6 @@ def _finalize_job(job, final_status, log_output):
                 source_path = os.path.join(temp_dir_path, f)
                 dest_path = os.path.join(final_dest_dir, f)
 
-                # If a file with the same name exists, find a new name (e.g., file (1).ext).
                 if os.path.exists(dest_path):
                     base, ext = os.path.splitext(f)
                     counter = 1
@@ -209,6 +203,15 @@ def _finalize_job(job, final_status, log_output):
         else:
             log_output.append("No completed files matching target format found to move.")
 
+        temp_archive_file = os.path.join(temp_dir_path, "archive.temp.txt")
+        if os.path.exists(temp_archive_file):
+            main_archive_file = os.path.join(final_dest_dir, "archive.txt")
+            try:
+                shutil.copy2(temp_archive_file, main_archive_file)
+                log_output.append(f"Updated archive file at {main_archive_file}")
+            except Exception as e:
+                log_output.append(f"ERROR: Could not update archive file: {e}")
+
     log_output.append("Cleaning up temporary folder.")
     if os.path.exists(temp_dir_path):
         try:
@@ -229,12 +232,20 @@ def yt_dlp_worker():
         
         log_output = []
         status = "PENDING"
-        temp_dir_path = os.path.join(CONFIG["download_dir"], ".temp", f"job_{job['id']}")
+        temp_dir_path = os.path.join(CONFIG["temp_dir"], f"job_{job['id']}")
 
         try:
             os.makedirs(temp_dir_path, exist_ok=True)
             log_output.append(f"Created temporary directory: {temp_dir_path}")
             
+            if job.get("archive"):
+                final_folder_name = job.get("folder") or "Misc Downloads"
+                main_archive_file = os.path.join(CONFIG["download_dir"], final_folder_name, "archive.txt")
+                if os.path.exists(main_archive_file):
+                    temp_archive_file = os.path.join(temp_dir_path, "archive.temp.txt")
+                    shutil.copy2(main_archive_file, temp_archive_file)
+                    log_output.append(f"Copied existing archive to temp directory for processing.")
+
             cmd = build_yt_dlp_command(job, temp_dir_path)
             
             with download_lock:
@@ -335,6 +346,7 @@ def settings_route():
     if request.method == "POST":
         with download_lock:
             CONFIG["download_dir"] = request.form.get("download_dir", CONFIG["download_dir"])
+            CONFIG["temp_dir"] = request.form.get("temp_dir", CONFIG["temp_dir"])
             CONFIG["cookie_file_content"] = request.form.get("cookie_content", "")
             with open(CONF_COOKIE_FILE, 'w', encoding='utf-8') as f: f.write(CONFIG["cookie_file_content"])
         save_config()
@@ -376,18 +388,11 @@ def add_to_queue_route():
             output_lines = result.stdout.strip().splitlines()
             if output_lines:
                 raw_name = output_lines[0]
-                # A more robust, Unicode-aware sanitization process
-                # Step 1: Normalize the string to convert special characters (e.g., ’ to ')
                 safe_name = unicodedata.normalize('NFKC', raw_name)
-                # Step 2: Encode to ASCII, ignoring any characters that can't be represented (e.g., emojis)
                 safe_name = safe_name.encode('ascii', 'ignore').decode('ascii')
-                # Step 3: Remove characters that are illegal in filenames
                 safe_name = re.sub(r'[\\/*?:"<>|]', '', safe_name)
-                # Step 4: Replace colons with a hyphen
                 safe_name = safe_name.replace(':', '-')
-                # Step 5: Clean up whitespace and trailing periods
                 safe_name = re.sub(r'\s+', ' ', safe_name).strip().strip('.')
-                # Step 6: Use a fallback if the name is now empty
                 if not safe_name:
                     folder_name = "Misc Download"
                 else:
@@ -611,7 +616,7 @@ if __name__ == "__main__":
     from waitress import serve
     load_config()
     os.makedirs(CONFIG["download_dir"], exist_ok=True)
-    os.makedirs(os.path.join(CONFIG["download_dir"], ".temp"), exist_ok=True)
+    os.makedirs(CONFIG["temp_dir"], exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
     atexit.register(save_state)
     load_state()
