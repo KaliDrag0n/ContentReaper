@@ -69,8 +69,9 @@
 
 
   <div class="container py-4">
-    <header class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom">
-      <h2 class="m-0"><i class="bi bi-cloud-arrow-down-fill"></i> Downloader Dashboard</h2>
+    <!-- RESPONSIVE HEADER FIX: Changed flex classes to stack on mobile -->
+    <header class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4 pb-2 border-bottom">
+      <h2 class="m-0 mb-2 mb-md-0"><i class="bi bi-cloud-arrow-down-fill"></i> Downloader Dashboard</h2>
       <div class="d-flex align-items-center">
         <!-- New Update Notification Button -->
         <button id="update-notification-btn" class="btn btn-warning me-3" style="display: none;" title="A new update is available!">
