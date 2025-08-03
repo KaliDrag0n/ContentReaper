@@ -1,11 +1,13 @@
 from flask import Flask, request, render_template, jsonify, redirect, url_for
-import threading, queue, subprocess, os, re, json, atexit, datetime
-import io, shutil, unicodedata
+import threading, queue, subprocess, os, re, json, atexit, datetime, time
+import io, shutil, unicodedata, requests
 from zipfile import ZipFile, ZIP_DEFLATED
 
 app = Flask(__name__)
 
 #~ --- Configuration --- ~#
+APP_VERSION = "1.0.0" # The current version of this application
+GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI" # Your GitHub repo slug
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIG = {
     "download_dir": os.path.join(APP_ROOT, "downloads"),
@@ -34,6 +36,55 @@ download_history = []
 next_log_id = 0
 next_queue_id = 0
 history_state_version = 0
+
+# New global state for update checking
+update_status = {
+    "update_available": False,
+    "latest_version": APP_VERSION,
+    "release_url": "",
+    "release_notes": ""
+}
+
+#~ --- Update Checker --- ~#
+def check_for_updates():
+    """Checks GitHub for the latest release and updates the global status."""
+    global update_status
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO_SLUG}/releases/latest"
+    
+    while True:
+        try:
+            print("UPDATE: Checking for new version...")
+            res = requests.get(api_url, timeout=15)
+            res.raise_for_status() # Raises an error for bad responses (4xx or 5xx)
+            
+            latest_release = res.json()
+            latest_version_tag = latest_release.get("tag_name", "").lstrip('v')
+            
+            # Simple version comparison
+            if latest_version_tag and latest_version_tag != APP_VERSION:
+                print(f"UPDATE: New version found! Latest: {latest_version_tag}, Current: {APP_VERSION}")
+                with download_lock:
+                    update_status["update_available"] = True
+                    update_status["latest_version"] = latest_version_tag
+                    update_status["release_url"] = latest_release.get("html_url")
+                    update_status["release_notes"] = latest_release.get("body")
+            else:
+                print("UPDATE: You are on the latest version.")
+                with download_lock:
+                     update_status["update_available"] = False
+
+
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                print("UPDATE: No releases found for this repository on GitHub.")
+            else:
+                print(f"UPDATE: HTTP Error checking for updates: {e}")
+        except Exception as e:
+            print(f"UPDATE: An unexpected error occurred while checking for updates: {e}")
+        
+        # Wait for 1 hour before checking again
+        time.sleep(3600)
+
 
 #~ --- Config & State Persistence --- ~#
 def save_config():
@@ -358,6 +409,12 @@ def status_route():
     with download_lock:
         return jsonify({"queue": list(download_queue.queue),"current": current_download if current_download["url"] else None,"history_version": history_state_version})
 
+@app.route("/api/update_check")
+def update_check_route():
+    """Endpoint for the frontend to check for updates."""
+    with download_lock:
+        return jsonify(update_status)
+
 @app.route("/queue", methods=["POST"])
 def add_to_queue_route():
     global next_queue_id
@@ -620,6 +677,11 @@ if __name__ == "__main__":
     os.makedirs(LOG_DIR, exist_ok=True)
     atexit.register(save_state)
     load_state()
+    
+    # Start the update checker in a background thread
+    update_thread = threading.Thread(target=check_for_updates, daemon=True)
+    update_thread.start()
+
     queue_paused_event.set()
     threading.Thread(target=yt_dlp_worker, daemon=True).start()
     print("Starting server with Waitress...")
