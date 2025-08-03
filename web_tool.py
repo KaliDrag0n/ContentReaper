@@ -6,7 +6,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 app = Flask(__name__)
 
 #~ --- Configuration --- ~#
-APP_VERSION = "1.0.0" # The current version of this application
+APP_VERSION = "1.0.1" # The current version of this application
 GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI" # Your GitHub repo slug
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIG = {
@@ -444,6 +444,22 @@ def shutdown_route():
     # Use a timer to delay the shutdown slightly, allowing the HTTP response to be sent.
     threading.Timer(1.0, shutdown_server).start()
     return jsonify({"message": "Server is shutting down."})
+
+@app.route('/api/install_update', methods=['POST'])
+def install_update_route():
+    """Triggers the update.bat script to update the application (Windows)."""
+    update_script_path = os.path.join(APP_ROOT, "update.bat")
+    if os.path.exists(update_script_path):
+        try:
+            # Launch the batch script in a new console window.
+            # This is crucial because it will kill the current process.
+            subprocess.Popen([update_script_path], creationflags=subprocess.CREATE_NEW_CONSOLE)
+            return jsonify({"message": "Update process initiated. The server will restart shortly."})
+        except Exception as e:
+            print(f"ERROR: Failed to start update script: {e}")
+            return jsonify({"message": f"Failed to start update script: {e}"}), 500
+    else:
+        return jsonify({"message": "update.bat not found!"}), 404
 
 
 @app.route("/queue", methods=["POST"])

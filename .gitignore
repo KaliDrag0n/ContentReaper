@@ -3,3 +3,4 @@ state.json
 cookies.txt
 downloads
 logs
+__pycache__

@@ -94,7 +94,10 @@
                     <h4 class="alert-heading"><i class="bi bi-gift-fill"></i> Update Available!</h4>
                     <p>A new version, <strong>{{ update_info.latest_version }}</strong>, is ready for you.</p>
                     <hr>
-                    <a href="{{ update_info.release_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-warning">Go to Download Page</a>
+                    <div class="d-flex justify-content-start gap-2">
+                        <a href="{{ update_info.release_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">View on GitHub</a>
+                        <button class="btn btn-success" id="install-update-btn"><i class="bi bi-windows"></i> Install Update & Restart (Windows)</button>
+                    </div>
                 </div>
             {% else %}
                 <p class="text-success"><i class="bi bi-check-circle-fill"></i> You are running the latest version.</p>
@@ -108,11 +111,11 @@
             <i class="bi bi-exclamation-triangle-fill"></i> Danger Zone
         </div>
         <div class="card-body">
-            <p>These actions can interrupt ongoing downloads and require a service like <strong>systemd</strong> to automatically restart the application.</p>
+            <p>These actions can interrupt ongoing downloads and may require manual or automatic restarting of the application.</p>
             <button class="btn btn-danger" id="shutdown-btn">
-                <i class="bi bi-power"></i> Shutdown Server
+                <i class="bi bi-power"></i> Shutdown Server (Linux/systemd)
             </button>
-            <div class="form-text mt-2">This will stop the server process.</div>
+            <div class="form-text mt-2">This will stop the server process, relying on a service manager like systemd to restart it.</div>
         </div>
     </div>
   </div>
@@ -188,6 +191,37 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // --- WINDOWS INSTALL UPDATE LOGIC ---
+    const installUpdateBtn = document.getElementById('install-update-btn');
+    if (installUpdateBtn) {
+        installUpdateBtn.addEventListener('click', () => {
+            showConfirmModal(
+                'Install Update?',
+                'This will stop the server, download the latest version, and restart the application. All ongoing downloads will be cancelled. Are you sure?',
+                async () => {
+                    try {
+                        installUpdateBtn.disabled = true;
+                        installUpdateBtn.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Starting Update...`;
+                        
+                        await fetch('/api/install_update', { method: 'POST' });
+
+                        document.querySelector('.container').innerHTML = `
+                            <div class="alert alert-info" role="alert">
+                                The update process has been started. A new command window should appear to show progress. The server will restart automatically. You can close this page.
+                            </div>`;
+
+                    } catch (error) {
+                        console.log("Update request sent. The connection will now be lost.");
+                         document.querySelector('.container').innerHTML = `
+                            <div class="alert alert-info" role="alert">
+                                The update process has been started. A new command window should appear to show progress. The server will restart automatically. You can close this page.
+                            </div>`;
+                    }
+                }
+            )
+        });
+    }
+
     // --- SHUTDOWN BUTTON LOGIC ---
     const shutdownBtn = document.getElementById('shutdown-btn');
     if (shutdownBtn) {
@@ -197,20 +231,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 'Are you sure you want to shut down the server? This will stop all downloads. The server will only restart if you have a service manager like systemd configured.',
                 async () => {
                     try {
-                        // Disable the button to prevent multiple clicks
                         shutdownBtn.disabled = true;
                         shutdownBtn.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Shutting down...`;
                         
                         await fetch('/api/shutdown', { method: 'POST' });
                         
-                        // Let the user know the command was sent.
                         document.querySelector('.container').innerHTML = `
                             <div class="alert alert-info" role="alert">
                                 The shutdown command has been sent. The server should restart shortly if managed by a service. You can now close this page.
                             </div>`;
 
                     } catch (error) {
-                        // This will likely fail because the server is shutting down, which is expected.
                         console.log("Shutdown request sent. The connection will now be lost.");
                         document.querySelector('.container').innerHTML = `
                             <div class="alert alert-info" role="alert">
