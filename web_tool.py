@@ -1,5 +1,5 @@
 from flask import Flask, request, render_template, jsonify, redirect, url_for
-import threading, queue, subprocess, os, re, json, atexit, datetime, time
+import threading, queue, subprocess, os, re, json, atexit, datetime, time, signal
 import io, shutil, unicodedata, requests
 from zipfile import ZipFile, ZIP_DEFLATED
 
@@ -46,45 +46,44 @@ update_status = {
 }
 
 #~ --- Update Checker --- ~#
-def check_for_updates():
-    """Checks GitHub for the latest release and updates the global status."""
+def _run_update_check():
+    """The core logic for checking GitHub for updates."""
     global update_status
     api_url = f"https://api.github.com/repos/{GITHUB_REPO_SLUG}/releases/latest"
-    
-    while True:
-        try:
-            print("UPDATE: Checking for new version...")
-            res = requests.get(api_url, timeout=15)
-            res.raise_for_status() # Raises an error for bad responses (4xx or 5xx)
-            
-            latest_release = res.json()
-            latest_version_tag = latest_release.get("tag_name", "").lstrip('v')
-            
-            # Simple version comparison
-            if latest_version_tag and latest_version_tag != APP_VERSION:
-                print(f"UPDATE: New version found! Latest: {latest_version_tag}, Current: {APP_VERSION}")
-                with download_lock:
-                    update_status["update_available"] = True
-                    update_status["latest_version"] = latest_version_tag
-                    update_status["release_url"] = latest_release.get("html_url")
-                    update_status["release_notes"] = latest_release.get("body")
-            else:
-                print("UPDATE: You are on the latest version.")
-                with download_lock:
-                     update_status["update_available"] = False
-
-
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 404:
-                print("UPDATE: No releases found for this repository on GitHub.")
-            else:
-                print(f"UPDATE: HTTP Error checking for updates: {e}")
-        except Exception as e:
-            print(f"UPDATE: An unexpected error occurred while checking for updates: {e}")
+    try:
+        print("UPDATE: Checking for new version...")
+        res = requests.get(api_url, timeout=15)
+        res.raise_for_status()
         
-        # Wait for 1 hour before checking again
-        time.sleep(3600)
+        latest_release = res.json()
+        latest_version_tag = latest_release.get("tag_name", "").lstrip('v')
+        
+        if latest_version_tag and latest_version_tag != APP_VERSION:
+            print(f"UPDATE: New version found! Latest: {latest_version_tag}, Current: {APP_VERSION}")
+            with download_lock:
+                update_status["update_available"] = True
+                update_status["latest_version"] = latest_version_tag
+                update_status["release_url"] = latest_release.get("html_url")
+                update_status["release_notes"] = latest_release.get("body")
+        else:
+            print("UPDATE: You are on the latest version.")
+            with download_lock:
+                 update_status["update_available"] = False
+        return True
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            print("UPDATE: No releases found for this repository on GitHub.")
+        else:
+            print(f"UPDATE: HTTP Error checking for updates: {e}")
+    except Exception as e:
+        print(f"UPDATE: An unexpected error occurred while checking for updates: {e}")
+    return False
 
+def scheduled_update_check():
+    """Runs the update check on a schedule."""
+    while True:
+        _run_update_check()
+        time.sleep(3600)
 
 #~ --- Config & State Persistence --- ~#
 def save_config():
@@ -402,7 +401,16 @@ def settings_route():
             with open(CONF_COOKIE_FILE, 'w', encoding='utf-8') as f: f.write(CONFIG["cookie_file_content"])
         save_config()
         return redirect(url_for('settings_route', saved='true'))
-    return render_template("settings.html", config=CONFIG, saved=request.args.get('saved'))
+    
+    with download_lock:
+        # Make a copy to avoid issues with threading
+        current_update_status = update_status.copy()
+
+    return render_template("settings.html", 
+                           config=CONFIG, 
+                           saved=request.args.get('saved'),
+                           app_version=APP_VERSION,
+                           update_info=current_update_status)
 
 @app.route("/status")
 def status_route():
@@ -414,6 +422,29 @@ def update_check_route():
     """Endpoint for the frontend to check for updates."""
     with download_lock:
         return jsonify(update_status)
+
+@app.route("/api/force_update_check", methods=['POST'])
+def force_update_check_route():
+    """Forces an immediate check for updates."""
+    success = _run_update_check()
+    if success:
+        return jsonify({"message": "Update check completed."})
+    else:
+        return jsonify({"message": "Update check failed. See server logs for details."}), 500
+
+@app.route('/api/shutdown', methods=['POST'])
+def shutdown_route():
+    """Shuts down the server process."""
+    def shutdown_server():
+        print("SHUTDOWN: Server is shutting down...")
+        # Send a SIGINT signal to the current process, which is what Ctrl+C does.
+        # This allows atexit handlers to run for a graceful shutdown.
+        os.kill(os.getpid(), signal.SIGINT)
+
+    # Use a timer to delay the shutdown slightly, allowing the HTTP response to be sent.
+    threading.Timer(1.0, shutdown_server).start()
+    return jsonify({"message": "Server is shutting down."})
+
 
 @app.route("/queue", methods=["POST"])
 def add_to_queue_route():
@@ -679,7 +710,7 @@ if __name__ == "__main__":
     load_state()
     
     # Start the update checker in a background thread
-    update_thread = threading.Thread(target=check_for_updates, daemon=True)
+    update_thread = threading.Thread(target=scheduled_update_check, daemon=True)
     update_thread.start()
 
     queue_paused_event.set()
