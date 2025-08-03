@@ -41,7 +41,12 @@ Description=Downloader Web UI
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 ${SERVICE_DIR}/web_tool.py
+# This command now does three things in order:
+# 1. Pulls the latest code from git.
+# 2. Installs any new dependencies from requirements.txt.
+# 3. Starts the web server.
+ExecStart=/bin/sh -c 'git pull && /usr/bin/python3 ${SERVICE_DIR}/web_tool.py'
+
 WorkingDirectory=${SERVICE_DIR}
 Restart=always
 User=${SERVICE_USER}
@@ -65,5 +70,5 @@ systemctl start downloader.service
 echo "--- Setup Complete ---"
 echo "The Downloader Web UI is now running as a background service."
 echo "You can check its status with: sudo systemctl status downloader.service"
-echo "It will automatically start on boot."
+echo "It will automatically start on boot and pull updates on restart."
 
