@@ -3,44 +3,34 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Downloader Dashboard</title>
+  
+  <script>
+    (function() {
+      const savedTheme = localStorage.getItem('downloader_theme') || 'light';
+      document.documentElement.dataset.bsTheme = savedTheme;
+    })();
+  </script>
+  
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
-  <title>Downloader Dashboard</title>
+  <script src="/static/js/app.js" defer></script>
   <style>
     :root { --bs-body-bg: #f8f9fa; --bs-body-color: #212529; --bs-border-color: #dee2e6; --bs-card-bg: #fff; }
     [data-bs-theme="dark"] { --bs-body-bg: #212529; --bs-body-color: #dee2e6; --bs-border-color: #495057; --bs-card-bg: #343a40; }
     body { transition: background-color 0.2s linear, color 0.2s linear; }
+    /* ##-- MOBILE FIX: Use word-break: break-word for better wrapping --## */
+    .word-break { word-break: break-word; }
     .mode-options, #playlist-range-options, #url-preview, #queue-controls { display: none; }
     .mode-selector .btn { width: 100%; }
     #url-preview img { max-width: 120px; max-height: 90px; object-fit: cover; }
-    .word-break-all { word-break: break-all; }
     .queue-handle { cursor: move; color: #6c757d; }
     .sortable-ghost { opacity: 0.4; background: #c8ebfb; }
     .optimistic-item { opacity: 0.6; pointer-events: none; }
-    /* Style for the paused overlay */
-    .paused-overlay {
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background-color: rgba(0, 0, 0, 0.5);
-        color: white;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        font-size: 1.5rem;
-        font-weight: bold;
-        z-index: 10;
-        border-radius: var(--bs-card-border-radius);
-    }
-    /* FIX: Lift the queue header above the overlay */
-    #queue-header {
-        position: relative;
-        z-index: 11;
-    }
+    .paused-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0, 0, 0, 0.5); color: white; display: flex; justify-content: center; align-items: center; font-size: 1.5rem; font-weight: bold; z-index: 10; border-radius: var(--bs-card-border-radius); }
+    #queue-header { position: relative; z-index: 11; }
   </style>
 </head>
 <body>
@@ -57,17 +47,9 @@
   <div class="modal fade" id="confirmModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
       <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title" id="confirmModalTitle">Are you sure?</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-        </div>
-        <div class="modal-body" id="confirmModalBody">
-          This action cannot be undone.
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-          <button type="button" class="btn btn-danger" id="confirmModalButton">Confirm</button>
-        </div>
+        <div class="modal-header"><h5 class="modal-title" id="confirmModalTitle">Are you sure?</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+        <div class="modal-body" id="confirmModalBody">This action cannot be undone.</div>
+        <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button><button type="button" class="btn btn-danger" id="confirmModalButton">Confirm</button></div>
       </div>
     </div>
   </div>
@@ -75,31 +57,25 @@
   <div class="modal fade" id="updateModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
       <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title"><i class="bi bi-gift-fill"></i> Update Available!</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-        </div>
+        <div class="modal-header"><h5 class="modal-title"><i class="bi bi-gift-fill"></i> Update Available!</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
         <div class="modal-body">
           <p>A new version, <strong id="update-version-text"></strong>, is available.</p>
           <h5>Release Notes:</h5>
           <div id="update-notes-content" style="max-height: 300px; overflow-y: auto;" class="p-2 border rounded bg-body-tertiary"></div>
         </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Later</button>
-          <a href="#" id="update-release-link" target="_blank" rel="noopener noreferrer" class="btn btn-primary">Go to Download Page</a>
+        <div class="modal-footer justify-content-between">
+            <div><a href="#" id="update-release-link" target="_blank" rel="noopener noreferrer" class="btn btn-outline-secondary"><i class="bi bi-box-arrow-up-right"></i> View Release Notes</a></div>
+            <div><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Later</button><a href="/settings" class="btn btn-primary"><i class="bi bi-gear-fill"></i> Go to Settings to Install</a></div>
         </div>
       </div>
     </div>
   </div>
 
-
   <div class="container py-4">
     <header class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4 pb-2 border-bottom">
       <h2 class="m-0 mb-2 mb-md-0"><i class="bi bi-cloud-arrow-down-fill"></i> Downloader Dashboard</h2>
       <div class="d-flex align-items-center">
-        <button id="update-notification-btn" class="btn btn-warning me-3" style="display: none;" title="A new update is available!">
-            <i class="bi bi-bell-fill"></i> Update
-        </button>
+        <button id="update-notification-btn" class="btn btn-warning me-3" style="display: none;" title="A new update is available!"><i class="bi bi-bell-fill"></i> Update</button>
         <a href="/file_manager" class="btn btn-info me-3"><i class="bi bi-folder-fill"></i> File Manager</a>
         <a href="/settings" class="btn btn-secondary me-3"><i class="bi bi-gear-fill"></i> Settings</a>
         <div class="form-check form-switch"><input class="form-check-input" type="checkbox" role="switch" id="theme-toggle"><label class="form-check-label" for="theme-toggle"><i class="bi bi-moon-stars-fill"></i></label></div>
@@ -107,7 +83,6 @@
     </header>
 
     <div class="card mb-4"><div class="card-body">
-        <!-- NEW: Added Custom button -->
         <div class="row text-center mode-selector mb-4 g-2">
           <div class="col"><button class="btn btn-outline-primary" data-mode="music"><i class="bi bi-music-note-beamed"></i> Music</button></div>
           <div class="col"><button class="btn btn-outline-primary" data-mode="video"><i class="bi bi-film"></i> Video</button></div>
@@ -118,89 +93,13 @@
           <input type="hidden" name="download_mode" id="download_mode_input">
           <div class="mb-3"><label class="form-label">URL(s) <small>(one per line)</small></label><textarea name="urls" class="form-control" placeholder="https://..." required rows="2"></textarea></div>
           <div id="url-preview" class="d-flex align-items-center p-2 border rounded mb-3 bg-body-tertiary"><img src="" class="me-3 rounded"><strong id="preview-title"></strong></div>
-          
-          <div id="music-options" class="mode-options">
-            <div class="row">
-              <div class="col-md-5 mb-3">
-                <label class="form-label">Album/Playlist Name <small>(optional)</small></label>
-                <input type="text" name="music_foldername" class="form-control">
-              </div>
-              <div class="col-md-4 mb-3">
-                <label class="form-label">Audio Format</label>
-                <select name="music_audio_format" class="form-select">
-                  <option value="mp3">MP3 (VBR)</option>
-                  <option value="flac">FLAC (Lossless)</option>
-                  <option value="opus">Opus (High Efficiency)</option>
-                </select>
-              </div>
-              <div class="col-md-3 mb-3">
-                <label class="form-label">Audio Quality</label>
-                <select name="music_audio_quality" class="form-select">
-                  <option value="0">Best (VBR ~245k)</option>
-                  <option value="3">High (VBR ~190k)</option>
-                  <option value="5">Standard (VBR ~165k)</option>
-                  <option value="7">Low (VBR ~130k)</option>
-                  <option value="9">Worst (VBR ~65k)</option>
-                </select>
-              </div>
-            </div>
-            <div class="form-check mb-3">
-              <input class="form-check-input" type="checkbox" name="music_embed_art" checked>
-              <label class="form-check-label">Embed Album Art</label>
-            </div>
-          </div>
-
+          <div id="music-options" class="mode-options"><div class="row"><div class="col-md-5 mb-3"><label class="form-label">Album/Playlist Name <small>(optional)</small></label><input type="text" name="music_foldername" class="form-control"></div><div class="col-md-4 mb-3"><label class="form-label">Audio Format</label><select name="music_audio_format" class="form-select"><option value="mp3">MP3 (VBR)</option><option value="flac">FLAC (Lossless)</option><option value="opus">Opus (High Efficiency)</option></select></div><div class="col-md-3 mb-3"><label class="form-label">Audio Quality</label><select name="music_audio_quality" class="form-select"><option value="0">Best (VBR ~245k)</option><option value="3">High (VBR ~190k)</option><option value="5">Standard (VBR ~165k)</option><option value="7">Low (VBR ~130k)</option><option value="9">Worst (VBR ~65k)</option></select></div></div><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="music_embed_art" checked><label class="form-check-label">Embed Album Art</label></div></div>
           <div id="video-options" class="mode-options"><div class="row"><div class="col-md-6 mb-3"><label class="form-label">Folder Name <small>(optional)</small></label><input type="text" name="video_foldername" class="form-control"></div><div class="col-md-4 mb-3"><label class="form-label">Video Quality</label><select name="video_quality" class="form-select"><option value="best">Best Available</option><option value="1080p">1080p (Full HD)</option><option value="720p">720p (HD)</option></select></div><div class="col-md-2 mb-3"><label class="form-label">Format</label><select name="video_format" class="form-select"><option value="mp4" selected>MP4</option><option value="mkv">MKV</option></select></div></div><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="video_embed_subs"><label class="form-check-label">Embed Subtitles</label></div></div>
           <div id="clip-options" class="mode-options"><div class="mb-3"><label class="form-label">Format</label><select name="clip_format" class="form-select"><option value="video">Quick Video (Best)</option><option value="audio">Quick Audio (MP3)</option></select></div></div>
-
-          <!-- NEW: Custom mode options -->
-          <div id="custom-options" class="mode-options">
-            <div class="mb-3">
-              <label class="form-label">Folder Name <small>(optional)</small></label>
-              <input type="text" name="custom_foldername" class="form-control" placeholder="Leave blank to use video/playlist title">
-            </div>
-            <div class="mb-3">
-                <label for="custom_args" class="form-label">Custom yt-dlp Flags</label>
-                <textarea class="form-control" id="custom_args" name="custom_args" rows="3" placeholder="-f best -x --audio-format mp3"></textarea>
-                <div class="form-text">
-                    Enter the command line arguments for yt-dlp. The URL and output path will be added automatically.
-                    <strong class="text-warning">Note:</strong> Progress may not display in the UI if you override the progress template.
-                </div>
-            </div>
-          </div>
-
-
-          <div id="playlist-range-options" class="row mb-3">
-            <div class="col-md-6"><label class="form-label">Start Index <small>(optional)</small></label><input type="number" name="playlist_start" class="form-control" min="1" placeholder="e.g., 5"></div>
-            <div class="col-md-6"><label class="form-label">End Index <small>(optional)</small></label><input type="number" name="playlist_end" class="form-control" min="1" placeholder="e.g., 20"></div>
-          </div>
-          
-          <div class="accordion mb-3" id="advancedAccordion">
-            <div class="accordion-item">
-              <h2 class="accordion-header" id="headingOne">
-                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" aria-expanded="false" aria-controls="collapseOne">
-                  Advanced Options
-                </button>
-              </h2>
-              <div id="collapseOne" class="accordion-collapse collapse" aria-labelledby="headingOne" data-bs-parent="#advancedAccordion">
-                <div class="accordion-body">
-                  <div class="row">
-                    <div class="col-md-6 mb-3">
-                      <label class="form-label">Proxy URL <small>(optional)</small></label>
-                      <input type="text" name="proxy" class="form-control" placeholder="e.g., socks5://127.0.0.1:1080">
-                    </div>
-                    <div class="col-md-6 mb-3">
-                      <label class="form-label">Rate Limit <small>(optional)</small></label>
-                      <input type="text" name="rate_limit" class="form-control" placeholder="e.g., 5M for 5MB/s">
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
+          <div id="custom-options" class="mode-options"><div class="mb-3"><label class="form-label">Folder Name <small>(optional)</small></label><input type="text" name="custom_foldername" class="form-control" placeholder="Leave blank to use video/playlist title"></div><div class="mb-3"><label for="custom_args" class="form-label">Custom yt-dlp Flags</label><textarea class="form-control" id="custom_args" name="custom_args" rows="3" placeholder="-f best -x --audio-format mp3"></textarea><div class="form-text">Enter the command line arguments for yt-dlp. The URL and output path will be added automatically.<strong class="text-warning">Note:</strong> Progress may not display in the UI if you override the progress template.</div></div></div>
+          <div id="playlist-range-options" class="row mb-3"><div class="col-md-6"><label class="form-label">Start Index <small>(optional)</small></label><input type="number" name="playlist_start" class="form-control" min="1" placeholder="e.g., 5"></div><div class="col-md-6"><label class="form-label">End Index <small>(optional)</small></label><input type="number" name="playlist_end" class="form-control" min="1" placeholder="e.g., 20"></div></div>
+          <div class="accordion mb-3" id="advancedAccordion"><div class="accordion-item"><h2 class="accordion-header" id="headingOne"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" aria-expanded="false" aria-controls="collapseOne">Advanced Options</button></h2><div id="collapseOne" class="accordion-collapse collapse" aria-labelledby="headingOne" data-bs-parent="#advancedAccordion"><div class="accordion-body"><div class="row"><div class="col-md-6 mb-3"><label class="form-label">Proxy URL <small>(optional)</small></label><input type="text" name="proxy" class="form-control" placeholder="e.g., socks5://127.0.0.1:1080"></div><div class="col-md-6 mb-3"><label class="form-label">Rate Limit <small>(optional)</small></label><input type="text" name="rate_limit" class="form-control" placeholder="e.g., 5M for 5MB/s"></div></div></div></div></div></div>
           <div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="use_archive" value="yes" checked><label class="form-check-label">Use Archive to skip already-downloaded files in playlists</label></div>
-          
           <button type="submit" class="btn btn-primary w-100">Add to Queue</button>
         </form>
     </div></div>
@@ -208,17 +107,10 @@
     <div class="card mb-4"><div class="card-header bg-info-subtle text-emphasis-info">Now Downloading</div><div class="card-body" id="current-status"><p>No active download.</p></div></div>
     
     <div class="card mb-4 position-relative">
-        <div id="paused-overlay" class="paused-overlay" style="display: none;">
-            <i class="bi bi-pause-circle-fill me-2"></i> PAUSED
-        </div>
+        <div id="paused-overlay" class="paused-overlay" style="display: none;"><i class="bi bi-pause-circle-fill me-2"></i> PAUSED</div>
         <div class="card-header bg-warning-subtle text-emphasis-warning d-flex justify-content-between align-items-center" id="queue-header">
             <span>Download Queue</span>
-            <div id="queue-controls">
-                <button class="btn btn-sm btn-secondary" id="pause-resume-btn" data-action="pause">
-                    <i class="bi bi-pause-fill"></i> Pause
-                </button>
-                <button class="btn btn-sm btn-danger" id="clear-queue-btn">Clear All</button>
-            </div>
+            <div id="queue-controls"><button class="btn btn-sm btn-secondary" id="pause-resume-btn" data-action="pause"><i class="bi bi-pause-fill"></i> Pause</button><button class="btn btn-sm btn-danger" id="clear-queue-btn">Clear All</button></div>
         </div>
         <ul class="list-group list-group-flush" id="queue-list"></ul>
     </div>
@@ -228,7 +120,7 @@
 
 <script>
 // --- GLOBAL STATE & CONFIG ---
-let logModalInstance, toastInstance, confirmModalInstance, updateModalInstance;
+let logModalInstance, toastInstance, updateModalInstance;
 let currentHistoryVersion = -1;
 let previewTimeout;
 let liveLogEventSource = null;
@@ -262,12 +154,7 @@ async function apiRequest(endpoint, options = {}) {
     }
 }
 
-// --- UI THEME & MODE LOGIC ---
-const applyTheme = (theme) => {
-    document.documentElement.dataset.bsTheme = theme;
-    document.getElementById('theme-toggle').checked = theme === 'dark';
-};
-
+// --- UI MODE LOGIC ---
 const switchMode = (mode) => {
     document.querySelectorAll('.mode-selector .btn').forEach(b => b.classList.remove('active'));
     document.querySelector(`.mode-selector .btn[data-mode="${mode}"]`).classList.add('active');
@@ -317,16 +204,10 @@ const updatePreviewFromText = (text) => {
     const musicFolderInput = document.querySelector('input[name="music_foldername"]');
     const videoFolderInput = document.querySelector('input[name="video_foldername"]');
     const customFolderInput = document.querySelector('input[name="custom_foldername"]');
-    if (firstUrl) {
-        const placeholderText = 'Leave blank to use video/playlist title';
-        musicFolderInput.placeholder = placeholderText;
-        videoFolderInput.placeholder = placeholderText;
-        customFolderInput.placeholder = placeholderText;
-    } else {
-        musicFolderInput.placeholder = '';
-        videoFolderInput.placeholder = '';
-        customFolderInput.placeholder = '';
-    }
+    const placeholderText = firstUrl ? 'Leave blank to use video/playlist title' : '';
+    musicFolderInput.placeholder = placeholderText;
+    videoFolderInput.placeholder = placeholderText;
+    customFolderInput.placeholder = placeholderText;
 
     fetchUrlPreview(firstUrl);
 };
@@ -335,9 +216,7 @@ const handleUrlPaste = (event) => {
     setTimeout(() => {
         const textarea = event.target;
         const urls = extractUrls(textarea.value);
-        if (urls.length > 0) {
-            textarea.value = urls.join('\n');
-        }
+        if (urls.length > 0) textarea.value = urls.join('\n');
         updatePreviewFromText(textarea.value);
     }, 50);
 };
@@ -347,38 +226,27 @@ const fetchUrlPreview = (url) => {
     const titleEl = document.getElementById('preview-title');
     const imgEl = previewEl.querySelector('img');
 
-    if (previewAbortController) {
-        previewAbortController.abort();
-    }
-
+    if (previewAbortController) previewAbortController.abort();
     if (!url) {
         previewEl.style.display = 'none';
         return;
     }
     
     clearTimeout(previewTimeout);
-    
     previewEl.style.display = 'flex';
     titleEl.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Fetching preview...';
     imgEl.src = '';
 
     previewTimeout = setTimeout(async () => {
         previewAbortController = new AbortController();
-        const signal = previewAbortController.signal;
+        const { signal } = previewAbortController;
         try {
             const res = await apiRequest(`/preview?url=${encodeURIComponent(url)}`, { signal });
             const data = await res.json();
-            if (data.message) {
-                 titleEl.textContent = data.message;
-                 imgEl.src = '';
-                 return;
-            }
-            titleEl.textContent = data.title;
-            imgEl.src = data.thumbnail;
+            titleEl.textContent = data.message || data.title;
+            imgEl.src = data.thumbnail || '';
         } catch (error) { 
-            if (error.name !== 'AbortError') {
-                titleEl.textContent = 'Preview failed to load.';
-            }
+            if (error.name !== 'AbortError') titleEl.textContent = 'Preview failed to load.';
         }
     }, 300);
 };
@@ -389,50 +257,38 @@ async function fetchHistory() {
         const data = await res.json();
         globalHistoryData = data.history; 
         const historyForDisplay = [...globalHistoryData].reverse();
-
         const historyList = document.getElementById("history-list");
         document.getElementById("clear-history-btn").style.display = historyForDisplay.length > 0 ? 'block' : 'none';
-        historyList.innerHTML = "";
-        if (historyForDisplay.length === 0) {
-            historyList.innerHTML = "<li class='list-group-item'>Nothing in history.</li>";
-        } else {
-            historyForDisplay.forEach(item => {
-                let badgeClass = 'bg-secondary';
-                let actionButton = `<button class="btn btn-sm btn-outline-secondary history-action-btn" data-action="requeue" title="Download Again"><i class="bi bi-arrow-clockwise"></i></button>`;
-                switch(item.status) {
-                    case 'COMPLETED': badgeClass = 'bg-success'; break;
-                    case 'PARTIAL': badgeClass = 'bg-info text-dark'; break;
-                    case 'STOPPED': 
-                        badgeClass = 'bg-warning text-dark'; 
-                        actionButton = `<button class="btn btn-sm btn-outline-success history-action-btn" data-action="requeue" title="Retry Download"><i class="bi bi-play-fill"></i></button>`;
-                        break;
-                    case 'CANCELLED': badgeClass = 'bg-secondary'; break;
-                    case 'FAILED':
-                    case 'ERROR':
-                        badgeClass = 'bg-danger'; break;
-                }
-
-                const li = document.createElement("li");
-                li.className = "list-group-item";
-                li.dataset.logId = item.log_id;
-                li.innerHTML = `
-                    <div class="d-flex justify-content-between align-items-center">
-                        <div>
-                            <span class="badge ${badgeClass} me-2">${item.status}</span>
-                            <strong>${item.title || "Unknown"}</strong>
-                            <br>
-                            <small class="text-muted">${item.folder ? `Folder: ${item.folder}` : `URL: ${item.url}`}</small>
-                        </div>
-                        <div class="btn-group">
-                            ${actionButton}
-                            <button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log"><i class="bi bi-file-text"></i></button>
-                            <button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete"><i class="bi bi-trash-fill"></i></button>
-                        </div>
-                    </div>`;
-                
-                historyList.appendChild(li);
-            });
-        }
+        historyList.innerHTML = historyForDisplay.length === 0 ? "<li class='list-group-item'>Nothing in history.</li>" : "";
+        
+        historyForDisplay.forEach(item => {
+            let badgeClass = 'bg-secondary';
+            let actionButton = `<button class="btn btn-sm btn-outline-secondary history-action-btn" data-action="requeue" title="Download Again"><i class="bi bi-arrow-clockwise"></i></button>`;
+            switch(item.status) {
+                case 'COMPLETED': badgeClass = 'bg-success'; break;
+                case 'PARTIAL': badgeClass = 'bg-info text-dark'; break;
+                case 'STOPPED': 
+                    badgeClass = 'bg-warning text-dark'; 
+                    actionButton = `<button class="btn btn-sm btn-outline-success history-action-btn" data-action="requeue" title="Retry Download"><i class="bi bi-play-fill"></i></button>`;
+                    break;
+                case 'CANCELLED': badgeClass = 'bg-secondary'; break;
+                case 'FAILED': case 'ERROR': badgeClass = 'bg-danger'; break;
+            }
+            const li = document.createElement("li");
+            li.className = "list-group-item";
+            li.dataset.logId = item.log_id;
+            // ##-- MOBILE FIX: Added word-break class to prevent overflow --##
+            li.innerHTML = `<div class="d-flex justify-content-between align-items-center">
+                <div class="flex-grow-1" style="min-width: 0;">
+                    <span class="badge ${badgeClass} me-2">${item.status}</span>
+                    <strong class="word-break">${item.title || "Unknown"}</strong>
+                    <br>
+                    <small class="text-muted word-break">${item.folder ? `Folder: ${item.folder}` : `URL: ${item.url}`}</small>
+                </div>
+                <div class="btn-group ms-2">${actionButton}<button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log"><i class="bi bi-file-text"></i></button><button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete"><i class="bi bi-trash-fill"></i></button></div>
+            </div>`;
+            historyList.appendChild(li);
+        });
     } catch(error) { console.error("Could not render history:", error); }
 }
 
@@ -445,59 +301,30 @@ const fetchStatus = async () => {
         const currentDiv = document.getElementById("current-status");
         if (current) {
             const playlistIndicator = current.playlist_count > 0 ? `<span class="ms-2 badge bg-secondary">${current.playlist_index || '0'}/${current.playlist_count}</span>` : '';
-            
-            let titleHTML;
-            if (current.playlist_title) {
-                titleHTML = `
-                    <strong class="word-break-all">${current.playlist_title}</strong>${playlistIndicator}<br>
-                    <small class="text-muted word-break-all">${current.track_title || 'Loading track...'}</small>
-                `;
-            } else {
-                titleHTML = `<strong class="word-break-all">${current.title || current.url}</strong>`;
-            }
-
-            const headerHTML = `
-                <div class="d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center mb-1">
-                    <div class="w-100">
-                        ${titleHTML}
-                    </div>
-                    <div class="btn-group ms-sm-3 mt-2 mt-sm-0 flex-shrink-0" role="group">
-                        <button class="btn btn-info btn-sm" onclick="viewLiveLog()">View Log</button>
-                        <button class="btn btn-warning btn-sm" onclick="apiRequest('/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'save' }) })" title="Stop download and save completed files.">Stop & Save</button>
-                        <button class="btn btn-danger btn-sm" onclick="apiRequest('/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'cancel' }) })" title="Cancel download and delete all temporary files.">Cancel</button>
-                    </div>
+            // ##-- MOBILE FIX: Added word-break class and flex-wrap for buttons --##
+            const titleHTML = current.playlist_title ? `<strong class="word-break">${current.playlist_title}</strong>${playlistIndicator}<br><small class="text-muted word-break">${current.track_title || 'Loading track...'}</small>` : `<strong class="word-break">${current.title || current.url}</strong>`;
+            const headerHTML = `<div class="d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center mb-1">
+                <div class="w-100" style="min-width: 0;">${titleHTML}</div>
+                <div class="btn-group ms-sm-3 mt-2 mt-sm-0 flex-shrink-0" role="group">
+                    <button class="btn btn-info btn-sm" onclick="viewLiveLog()">View Log</button>
+                    <button class="btn btn-warning btn-sm" onclick="apiRequest('/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'save' }) })" title="Stop download and save completed files.">Stop & Save</button>
+                    <button class="btn btn-danger btn-sm" onclick="apiRequest('/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'cancel' }) })" title="Cancel download and delete all temporary files.">Cancel</button>
                 </div>
-            `;
+            </div>`;
             const statsHTML = `<div class="d-flex justify-content-between mt-2 small text-muted"><small>Size: ${current.file_size || 'N/A'}</small><small>Speed: ${current.speed || 'N/A'}</small><small>ETA: ${current.eta || 'N/A'}</small></div>`;
             const progress = current.progress ? current.progress.toFixed(1) : 0;
-            currentDiv.innerHTML = `
-                ${headerHTML}
-                <div class="progress mb-2" role="progressbar" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100">
-                    <div class="progress-bar progress-bar-striped progress-bar-animated" style="width: ${progress}%;">${progress}%</div>
-                </div>
-                <p class="mb-1 small">${current.status}</p>
-                ${statsHTML}
-            `;
+            currentDiv.innerHTML = `${headerHTML}<div class="progress mb-2" role="progressbar" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar progress-bar-striped progress-bar-animated" style="width: ${progress}%;">${progress}%</div></div><p class="mb-1 small">${current.status}</p>${statsHTML}`;
         } else {
             currentDiv.innerHTML = "<p>No active download.</p>";
         }
 
         const queueList = document.getElementById("queue-list");
         document.getElementById("queue-controls").style.display = data.queue.length > 0 ? 'flex' : 'none';
-        
         const newIds = data.queue.map(job => job.id.toString());
         const existingIds = [...queueList.children].map(li => li.dataset.jobId);
-        
         if (JSON.stringify(newIds) !== JSON.stringify(existingIds)) {
-            queueList.innerHTML = data.queue.length === 0 ? "<li class='list-group-item'>Queue is empty.</li>" : data.queue.map(job => 
-                `<li class="list-group-item d-flex justify-content-between align-items-center" data-job-id="${job.id}">
-                    <div>
-                        <i class="bi bi-grip-vertical queue-handle me-2"></i>
-                        <span class="word-break-all" style="max-width: 80%;">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span>
-                    </div>
-                    <button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}"></button>
-                </li>`
-            ).join('');
+            // ##-- MOBILE FIX: Added word-break class --##
+            queueList.innerHTML = data.queue.length === 0 ? "<li class='list-group-item'>Queue is empty.</li>" : data.queue.map(job => `<li class="list-group-item d-flex justify-content-between align-items-center" data-job-id="${job.id}"><div class="d-flex align-items-center" style="min-width: 0;"><i class="bi bi-grip-vertical queue-handle me-2"></i><span class="word-break">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span></div><button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}"></button></li>`).join('');
         }
 
         const pauseResumeBtn = document.getElementById('pause-resume-btn');
@@ -505,14 +332,12 @@ const fetchStatus = async () => {
         if (data.is_paused) {
             pauseResumeBtn.dataset.action = 'resume';
             pauseResumeBtn.innerHTML = '<i class="bi bi-play-fill"></i> Resume';
-            pauseResumeBtn.classList.remove('btn-secondary');
-            pauseResumeBtn.classList.add('btn-success');
+            pauseResumeBtn.classList.replace('btn-secondary', 'btn-success');
             pausedOverlay.style.display = 'flex';
         } else {
             pauseResumeBtn.dataset.action = 'pause';
             pauseResumeBtn.innerHTML = '<i class="bi bi-pause-fill"></i> Pause';
-            pauseResumeBtn.classList.remove('btn-success');
-            pauseResumeBtn.classList.add('btn-secondary');
+            pauseResumeBtn.classList.replace('btn-success', 'btn-secondary');
             pausedOverlay.style.display = 'none';
         }
 
@@ -520,23 +345,16 @@ const fetchStatus = async () => {
             currentHistoryVersion = data.history_version;
             fetchHistory();
         }
-
     } catch (error) { console.error("Status update failed:", error); }
 };
 
 // --- EVENT HANDLERS & ACTIONS ---
 const requeueJob = async (job) => {
     try {
-        await apiRequest('/queue/continue', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(job)
-        });
+        await apiRequest('/queue/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(job) });
         showToast("Job re-queued successfully.", 'Success', 'success');
         fetchStatus();
-    } catch(error) {
-        console.error("Failed to re-queue job:", error);
-    }
+    } catch(error) { console.error("Failed to re-queue job:", error); }
 };
 
 const viewStaticLog = async (logId) => {
@@ -553,9 +371,7 @@ const viewStaticLog = async (logId) => {
 };
 
 const viewLiveLog = () => {
-    if (liveLogEventSource) {
-        liveLogEventSource.close();
-    }
+    if (liveLogEventSource) liveLogEventSource.close();
     const logContentEl = document.getElementById('logModalContent');
     logContentEl.textContent = 'Connecting to live log stream...';
     if (!logModalInstance) logModalInstance = new bootstrap.Modal(document.getElementById('logModal'));
@@ -563,7 +379,6 @@ const viewLiveLog = () => {
 
     liveLogEventSource = new EventSource('/api/log/live/stream');
     let isFirstMessage = true;
-
     liveLogEventSource.onmessage = function(event) {
         if (isFirstMessage) {
             logContentEl.textContent = '';
@@ -572,32 +387,11 @@ const viewLiveLog = () => {
         logContentEl.textContent += event.data + '\n';
         logContentEl.scrollTop = logContentEl.scrollHeight;
     };
-
     liveLogEventSource.onerror = function() {
         logContentEl.textContent += '\n--- Connection closed by server. ---';
         liveLogEventSource.close();
     };
 };
-
-const showConfirmModal = (title, body, onConfirm) => {
-    document.getElementById('confirmModalTitle').textContent = title;
-    document.getElementById('confirmModalBody').textContent = body;
-    const confirmButton = document.getElementById('confirmModalButton');
-    
-    const newConfirmButton = confirmButton.cloneNode(true);
-    confirmButton.parentNode.replaceChild(newConfirmButton, confirmButton);
-    
-    newConfirmButton.addEventListener('click', () => {
-        onConfirm();
-        if (confirmModalInstance) confirmModalInstance.hide();
-    });
-
-    if (!confirmModalInstance) {
-        confirmModalInstance = new bootstrap.Modal(document.getElementById('confirmModal'));
-    }
-    confirmModalInstance.show();
-};
-
 
 // --- INITIALIZATION ---
 document.addEventListener('DOMContentLoaded', () => {
@@ -625,88 +419,50 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('playlist-range-options').style.display = 'none';
             switchMode(localStorage.getItem('downloader_mode') || 'clip');
             fetchStatus();
-        } catch(error) { 
-            console.error("Failed to add job:", error);
-        }
+        } catch(error) { console.error("Failed to add job:", error); }
     });
 
     const urlTextarea = document.querySelector('textarea[name="urls"]');
     urlTextarea.addEventListener('input', (e) => updatePreviewFromText(e.target.value));
     urlTextarea.addEventListener('paste', handleUrlPaste);
     
-    document.getElementById('clear-queue-btn').addEventListener('click', () => {
-        showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => {
-            apiRequest('/queue/clear', { method: 'POST' }).then(() => fetchStatus());
-        });
-    });
-    document.getElementById('clear-history-btn').addEventListener('click', () => {
-        showConfirmModal('Clear History?', 'Are you sure you want to clear the entire download history?', () => {
-            apiRequest('/history/clear', { method: 'POST' }).then(() => fetchStatus());
-        });
-    });
+    document.getElementById('clear-queue-btn').addEventListener('click', () => showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => apiRequest('/queue/clear', { method: 'POST' }).then(() => fetchStatus())));
+    document.getElementById('clear-history-btn').addEventListener('click', () => showConfirmModal('Clear History?', 'Are you sure you want to clear the entire download history?', () => apiRequest('/history/clear', { method: 'POST' }).then(() => fetchStatus())));
+    document.getElementById('pause-resume-btn').addEventListener('click', (e) => apiRequest(`/queue/${e.currentTarget.dataset.action}`, { method: 'POST' }).then(() => fetchStatus()));
+    document.getElementById('logModal').addEventListener('hidden.bs.modal', () => { if (liveLogEventSource) { liveLogEventSource.close(); liveLogEventSource = null; } });
     
-    document.getElementById('pause-resume-btn').addEventListener('click', (e) => {
-        const action = e.currentTarget.dataset.action;
-        apiRequest(`/queue/${action}`, { method: 'POST' }).then(() => fetchStatus());
-    });
-    
-    document.getElementById('logModal').addEventListener('hidden.bs.modal', () => {
-        if (liveLogEventSource) {
-            liveLogEventSource.close();
-            liveLogEventSource = null;
-        }
-    });
-    
-    const queueListEl = document.getElementById('queue-list');
-    queueListEl.addEventListener('click', (e) => {
+    document.getElementById('queue-list').addEventListener('click', (e) => {
         const deleteBtn = e.target.closest('.queue-action-btn[data-action="delete"]');
-        if (deleteBtn) {
-            const jobId = deleteBtn.dataset.jobId;
-            apiRequest(`/queue/delete/by-id/${jobId}`, {method: 'POST'}).then(() => fetchStatus());
-        }
+        if (deleteBtn) apiRequest(`/queue/delete/by-id/${deleteBtn.dataset.jobId}`, {method: 'POST'}).then(() => fetchStatus());
     });
 
-    const historyListEl = document.getElementById('history-list');
-    historyListEl.addEventListener('click', (e) => {
+    document.getElementById('history-list').addEventListener('click', (e) => {
         const actionBtn = e.target.closest('.history-action-btn');
         if (!actionBtn) return;
-
         const li = actionBtn.closest('.list-group-item');
         const logId = parseInt(li.dataset.logId, 10);
         const action = actionBtn.dataset.action;
-
-        if (action === 'log') {
-            viewStaticLog(logId);
-        } else if (action === 'delete') {
-            apiRequest(`/history/delete/${logId}`, { method: 'POST' }).then(() => fetchStatus());
-        } else if (action === 'requeue') {
+        if (action === 'log') viewStaticLog(logId);
+        else if (action === 'delete') apiRequest(`/history/delete/${logId}`, { method: 'POST' }).then(() => fetchStatus());
+        else if (action === 'requeue') {
             const historyItem = globalHistoryData.find(item => item.log_id === logId);
-            if (historyItem) {
-                requeueJob(historyItem.job_data);
-            }
+            if (historyItem) requeueJob(historyItem.job_data);
         }
     });
 
-    Sortable.create(queueListEl, {
+    Sortable.create(document.getElementById('queue-list'), {
         handle: '.queue-handle',
         animation: 150,
         ghostClass: 'sortable-ghost',
         onEnd: function (evt) {
             const orderedIds = [...evt.to.children].map(li => li.dataset.jobId);
-            apiRequest('/queue/reorder', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ order: orderedIds })
-            }).catch(err => {
-                console.error("Failed to reorder queue:", err);
-                fetchStatus();
-            });
+            apiRequest('/queue/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order: orderedIds }) })
+            .catch(err => { console.error("Failed to reorder queue:", err); fetchStatus(); });
         },
     });
 
     fetchStatus();
     setInterval(fetchStatus, 2000);
-
     checkForUpdates();
     setInterval(checkForUpdates, 900000);
 });

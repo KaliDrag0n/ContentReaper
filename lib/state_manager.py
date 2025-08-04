@@ -115,6 +115,7 @@ class StateManager:
             for item in self.history:
                 if item.get("log_id") == log_id:
                     item.update(data_to_update)
+                    self.history_state_version += 1 # Increment version on update
                     break
         self.save_state()
 
@@ -157,7 +158,13 @@ class StateManager:
             item = next((h for h in self.history if h.get("log_id") == log_id), None)
             return item.copy() if item else None
 
+    # ##-- IMPROVEMENT: Implemented atomic write to prevent state file corruption --##
     def save_state(self):
+        """
+        Saves the current state to a file atomically.
+        It writes to a temporary file first, then renames it to the final
+        destination. This prevents corruption if the app crashes mid-write.
+        """
         with self._lock:
             state_to_save = {
                 "queue": list(self.queue.queue),
@@ -167,11 +174,26 @@ class StateManager:
                 "next_queue_id": self.next_queue_id,
                 "history_state_version": self.history_state_version
             }
+        
+        temp_file_path = self.state_file + ".tmp"
         try:
-            with open(self.state_file, 'w', encoding='utf-8') as f:
+            # Write to the temporary file first
+            with open(temp_file_path, 'w', encoding='utf-8') as f:
                 json.dump(state_to_save, f, indent=4)
+            
+            # Atomically rename the temp file to the final file
+            # This is much safer than writing directly to the main file
+            os.replace(temp_file_path, self.state_file)
+            
         except Exception as e:
             print(f"ERROR: Could not save state to file: {e}")
+            # If something went wrong, try to clean up the temp file
+            if os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                except Exception as e_clean:
+                    print(f"ERROR: Could not clean up temp state file: {e_clean}")
+
 
     def load_state(self):
         if not os.path.exists(self.state_file):
@@ -180,10 +202,9 @@ class StateManager:
             with open(self.state_file, 'r', encoding='utf-8') as f:
                 state = json.load(f)
             
-            # --- IMPROVED: Validate the structure of the loaded state ---
             with self._lock:
                 abandoned_job = state.get("current_job")
-                if isinstance(abandoned_job, dict): # Check if it's a valid job object
+                if isinstance(abandoned_job, dict):
                     print(f"Re-queueing abandoned job: {abandoned_job.get('id')}")
                     self.queue.put(abandoned_job)
                 
@@ -196,17 +217,21 @@ class StateManager:
                 self.next_queue_id = state.get("next_queue_id", 0)
                 self.history_state_version = state.get("history_state_version", 0)
                 
-                # Ensure queue is a list before iterating
                 queue_items = state.get("queue", [])
                 if not isinstance(queue_items, list):
                     print("WARNING: Queue in state file is not a list. Resetting.")
                     queue_items = []
 
+                # Ensure all loaded queue items have a unique ID
+                loaded_ids = {job.get('id') for job in queue_items if job.get('id') is not None}
+                max_id = self.next_queue_id
                 for job in queue_items:
-                    if 'id' not in job:
-                        job['id'] = self.next_queue_id
-                        self.next_queue_id += 1
+                    if 'id' not in job or job['id'] in loaded_ids:
+                        job['id'] = max_id
+                        loaded_ids.add(max_id)
+                        max_id += 1
                     self.queue.put(job)
+                self.next_queue_id = max_id
                 
                 print(f"Loaded {self.queue.qsize()} items from queue and {len(self.history)} history entries.")
         except json.JSONDecodeError as e:
@@ -216,7 +241,6 @@ class StateManager:
                 os.rename(self.state_file, corrupted_path)
             print(f"Backed up corrupted state file to {corrupted_path}")
         except Exception as e:
-            # Catch other potential errors like TypeErrors from malformed data
             print(f"An unexpected error occurred loading the state file. Error: {e}")
             corrupted_path = self.state_file + ".bak"
             if os.path.exists(self.state_file):

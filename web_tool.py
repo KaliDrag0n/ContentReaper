@@ -1,6 +1,6 @@
 # web_tool.py
 from flask import Flask, request, render_template, jsonify, redirect, url_for, Response, send_file
-import threading, os, json, atexit, time, signal, subprocess, requests, shutil, io, zipfile, re
+import threading, os, json, atexit, time, signal, subprocess, requests, shutil, io, zipfile, re, sys, platform
 
 # --- Local Imports from 'lib' directory ---
 from lib.state_manager import StateManager
@@ -10,8 +10,6 @@ from lib.sanitizer import sanitize_filename
 app = Flask(__name__)
 
 #~ --- Configuration --- ~#
-APP_VERSION = "1.4.0" # The current version of this application
-GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI" # Your GitHub repo slug
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # --- File & Folder Paths ---
@@ -21,7 +19,10 @@ CONF_COOKIE_FILE = os.path.join(APP_ROOT, "cookies.txt")
 LOG_DIR = os.path.join(APP_ROOT, "logs")
 
 # --- Default Config ---
+# ##-- IMPROVEMENT: Moved version and repo slug here to be saved in config.json --##
 CONFIG = {
+    "app_version": "1.4.0",
+    "github_repo_slug": "KaliDrag0n/Downloader-Web-UI",
     "download_dir": os.path.join(APP_ROOT, "downloads"),
     "temp_dir": os.path.join(APP_ROOT, ".temp"),
     "cookie_file_content": ""
@@ -33,16 +34,116 @@ state_manager = StateManager(CONF_STATE_FILE)
 # --- Update Checking State ---
 update_status = {
     "update_available": False,
-    "latest_version": APP_VERSION,
+    "latest_version": "0.0.0",
     "release_url": "",
     "release_notes": ""
 }
 
-#~ --- Update Checker --- ~#
+#~ --- Security & Path Helpers --- ~#
+# ##-- CRITICAL SECURITY FIX: New function to prevent path traversal --##
+def is_safe_path(basedir, path, follow_symlinks=True):
+    """
+    Checks if a given path is safely within a base directory.
+    This prevents directory traversal attacks.
+    """
+    if follow_symlinks:
+        return os.path.realpath(path).startswith(basedir)
+    return os.path.abspath(path).startswith(basedir)
+
+#~ --- Update & Startup Logic --- ~#
+# ##-- PLATFORM CONSISTENCY: New functions for self-updating and dependency checks --##
+def run_startup_checks():
+    """
+    Checks for dependencies on startup and installs/updates them.
+    This runs ONCE when the application starts.
+    """
+    print("--- [1/3] Running startup dependency checks ---")
+    try:
+        # Check for packages in requirements.txt
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt'])
+    except Exception as e:
+        print(f"ERROR: Could not install Python dependencies from requirements.txt: {e}")
+
+    print("--- [2/3] Checking for yt-dlp updates ---")
+    try:
+        # Update yt-dlp to the latest version
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'yt-dlp'])
+    except Exception as e:
+        print(f"ERROR: Could not update yt-dlp: {e}")
+    print("--- [3/3] Startup checks complete ---")
+
+
+def trigger_update_and_restart():
+    """
+    The core logic for the new platform-agnostic self-updater.
+    This is called from the /api/install_update route.
+    """
+    print("--- UPDATE PROCESS INITIATED ---")
+    
+    # 1. Fetch latest release info
+    print("[1/4] Fetching latest release information...")
+    api_url = f"https://api.github.com/repos/{CONFIG['github_repo_slug']}/releases/latest"
+    try:
+        response = requests.get(api_url, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        zip_url = data.get("zipball_url")
+        if not zip_url:
+            raise ValueError("Could not find zipball_url in the release info.")
+    except Exception as e:
+        print(f"ERROR: Could not fetch release info: {e}")
+        return
+
+    # 2. Download and unzip to a temporary directory
+    print(f"[2/4] Downloading update from {zip_url}...")
+    temp_dir = os.path.join(APP_ROOT, ".temp_update")
+    try:
+        response = requests.get(zip_url, stream=True, timeout=60)
+        response.raise_for_status()
+        with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+            root_folder_name = z.namelist()[0]
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            os.makedirs(temp_dir)
+            z.extractall(temp_dir)
+        update_source_dir = os.path.join(temp_dir, root_folder_name)
+    except Exception as e:
+        print(f"ERROR: Failed to download or unzip update: {e}")
+        if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
+        return
+
+    # 3. Apply the update, preserving user data
+    print("[3/4] Applying update...")
+    preserved_items = ["downloads", ".temp", "logs", "config.json", "state.json", "cookies.txt", ".git"]
+    try:
+        for item in os.listdir(update_source_dir):
+            source_item_path = os.path.join(update_source_dir, item)
+            dest_item_path = os.path.join(APP_ROOT, item)
+            if item in preserved_items:
+                continue
+            if os.path.isdir(source_item_path):
+                if os.path.exists(dest_item_path): shutil.rmtree(dest_item_path)
+                shutil.copytree(source_item_path, dest_item_path)
+            else:
+                shutil.copy2(source_item_path, dest_item_path)
+    except Exception as e:
+        print(f"ERROR: An error occurred while applying the update: {e}")
+        return
+    finally:
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+
+    # 4. Trigger a restart
+    print("[4/4] Update applied. Restarting server...")
+    state_manager.save_state() # Final save before exit
+    # This replaces the current process with a new one, effectively restarting the script
+    os.execv(sys.executable, ['python'] + sys.argv)
+
+
 def _run_update_check():
     """The core logic for checking GitHub for updates."""
-    global update_status, APP_VERSION
-    api_url = f"https://api.github.com/repos/{GITHUB_REPO_SLUG}/releases/latest"
+    global update_status
+    api_url = f"https://api.github.com/repos/{CONFIG['github_repo_slug']}/releases/latest"
     try:
         print("UPDATE: Checking for new version...")
         res = requests.get(api_url, timeout=15)
@@ -51,12 +152,12 @@ def _run_update_check():
         latest_release = res.json()
         latest_version_tag = latest_release.get("tag_name", "").lstrip('v')
         
-        current_parts = [int(p) for p in APP_VERSION.split('.')]
+        current_parts = [int(p) for p in CONFIG['app_version'].split('.')]
         latest_parts = [int(p) for p in latest_version_tag.split('.')]
 
         with state_manager._lock:
             if latest_parts > current_parts:
-                print(f"UPDATE: New version found! Latest: {latest_version_tag}, Current: {APP_VERSION}")
+                print(f"UPDATE: New version found! Latest: {latest_version_tag}, Current: {CONFIG['app_version']}")
                 update_status["update_available"] = True
                 update_status["latest_version"] = latest_version_tag
                 update_status["release_url"] = latest_release.get("html_url")
@@ -65,13 +166,8 @@ def _run_update_check():
                 print("UPDATE: You are on the latest version.")
                 update_status["update_available"] = False
         return True
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-            print("UPDATE: No releases found for this repository on GitHub.")
-        else:
-            print(f"UPDATE: HTTP Error checking for updates: {e}")
     except Exception as e:
-        print(f"UPDATE: An unexpected error occurred while checking for updates: {e}")
+        print(f"UPDATE: An error occurred while checking for updates: {e}")
     return False
 
 def scheduled_update_check():
@@ -82,8 +178,11 @@ def scheduled_update_check():
 
 #~ --- Config & State Persistence --- ~#
 def save_config():
-    with open(CONF_CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(CONFIG, f, indent=4)
+    try:
+        with open(CONF_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(CONFIG, f, indent=4)
+    except Exception as e:
+        print(f"ERROR saving config: {e}")
 
 def load_config():
     global CONFIG
@@ -93,6 +192,8 @@ def load_config():
                 CONFIG.update(json.load(f))
         except Exception as e:
             print(f"Error loading config: {e}")
+    # Save config on first run or if it was missing
+    save_config()
 
 #~ --- Flask Routes --- ~#
 @app.route("/")
@@ -116,7 +217,7 @@ def settings_route():
     return render_template("settings.html", 
                            config=CONFIG, 
                            saved=request.args.get('saved'),
-                           app_version=APP_VERSION,
+                           app_version=CONFIG['app_version'],
                            update_info=current_update_status)
 
 @app.route("/file_manager")
@@ -157,18 +258,14 @@ def shutdown_route():
     threading.Timer(1.0, shutdown_server).start()
     return jsonify({"message": "Server is shutting down."})
 
+# ##-- PLATFORM CONSISTENCY: This route now triggers the new Python-based update --##
 @app.route('/api/install_update', methods=['POST'])
 def install_update_route():
-    update_script_path = os.path.join(APP_ROOT, "update.bat")
-    if os.path.exists(update_script_path):
-        try:
-            subprocess.Popen([update_script_path], creationflags=subprocess.CREATE_NEW_CONSOLE)
-            return jsonify({"message": "Update process initiated. The server will restart shortly."})
-        except Exception as e:
-            print(f"ERROR: Failed to start update script: {e}")
-            return jsonify({"message": f"Failed to start update script: {e}"}), 500
-    else:
-        return jsonify({"message": "update.bat not found!"}), 404
+    # Run the update in a background thread to allow the UI to respond immediately
+    update_thread = threading.Thread(target=trigger_update_and_restart)
+    update_thread.start()
+    return jsonify({"message": "Update process initiated. The server will restart shortly."})
+
 
 def extract_urls_from_text(text):
     url_regex = re.compile(r'(https?://[^\s]+|www\.[^\s]+)')
@@ -184,7 +281,6 @@ def add_to_queue_route():
     
     mode = request.form.get("download_mode")
     
-    # NEW: Handle folder name for all modes
     folder_name = ""
     if mode == 'music':
         folder_name = request.form.get("music_foldername", "").strip()
@@ -223,7 +319,6 @@ def add_to_queue_route():
             })
         elif mode == 'clip':
             job.update({ "format": request.form.get("clip_format", "video") })
-        # NEW: Handle custom mode arguments
         elif mode == 'custom':
             job.update({ "custom_args": request.form.get("custom_args", "") })
 
@@ -398,69 +493,86 @@ def stop_route():
     return jsonify({"message": message})
 
 # --- File Manager API ---
-def get_dir_size(path='.'):
+# ##-- PERFORMANCE FIX: This function now runs in a thread to avoid blocking --##
+def get_dir_size(path, size_dict):
     total = 0
-    with os.scandir(path) as it:
-        for entry in it:
-            if entry.is_file():
-                total += entry.stat().st_size
-            elif entry.is_dir():
-                total += get_dir_size(entry.path)
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                if entry.is_file():
+                    total += entry.stat().st_size
+                elif entry.is_dir():
+                    total += get_dir_size(entry.path, size_dict)
+    except (FileNotFoundError, PermissionError):
+        pass # Ignore folders that disappear or we can't access
+    size_dict[path] = total
     return total
 
 @app.route("/api/files")
 def list_files_route():
-    base_download_dir = CONFIG.get("download_dir")
+    # ##-- SECURITY FIX: All paths are now validated with is_safe_path --##
+    base_download_dir = os.path.realpath(CONFIG.get("download_dir"))
     req_path = request.args.get('path', '')
     
-    safe_path = os.path.normpath(os.path.join(base_download_dir, req_path))
+    safe_req_path = os.path.realpath(os.path.join(base_download_dir, req_path))
     
-    if not os.path.abspath(safe_path).startswith(os.path.abspath(base_download_dir)):
+    if not is_safe_path(base_download_dir, safe_req_path):
         return jsonify({"error": "Access Denied"}), 403
 
-    if not os.path.exists(safe_path) or not os.path.isdir(safe_path):
+    if not os.path.exists(safe_req_path) or not os.path.isdir(safe_req_path):
         return jsonify([])
 
     items = []
-    for name in os.listdir(safe_path):
-        full_path = os.path.join(safe_path, name)
+    dir_threads = []
+    dir_sizes = {}
+    for name in os.listdir(safe_req_path):
+        full_path = os.path.join(safe_req_path, name)
         relative_path = os.path.join(req_path, name)
         try:
             if os.path.isdir(full_path):
-                items.append({
-                    "name": name,
-                    "path": relative_path,
-                    "type": "directory",
-                    "size": get_dir_size(full_path)
-                })
+                # Start a thread to calculate directory size without blocking
+                thread = threading.Thread(target=get_dir_size, args=(full_path, dir_sizes))
+                thread.start()
+                dir_threads.append(thread)
+                items.append({"name": name, "path": relative_path, "type": "directory", "size": -1}) # Placeholder size
             else:
-                items.append({
-                    "name": name,
-                    "path": relative_path,
-                    "type": "file",
-                    "size": os.path.getsize(full_path)
-                })
+                items.append({"name": name, "path": relative_path, "type": "file", "size": os.path.getsize(full_path)})
         except Exception as e:
             print(f"Could not scan item {full_path}: {e}")
     
+    # Wait for all directory size threads to finish
+    for t in dir_threads:
+        t.join(timeout=5.0) # 5 second timeout per directory scan
+
+    # Populate the real sizes
+    for item in items:
+        if item['type'] == 'directory':
+            full_path_for_size = os.path.join(safe_req_path, item['name'])
+            item['size'] = dir_sizes.get(full_path_for_size, 0)
+
     return jsonify(sorted(items, key=lambda x: (x['type'] == 'file', x['name'].lower())))
 
 @app.route("/download_item")
 def download_item_route():
+    # ##-- SECURITY FIX: All paths are now validated with is_safe_path --##
     paths = request.args.getlist('paths')
     if not paths:
         return "Missing path parameter.", 400
 
-    download_dir = CONFIG.get("download_dir")
+    download_dir = os.path.realpath(CONFIG.get("download_dir"))
     
-    if len(paths) == 1:
-        item_path = paths[0]
-        full_path = os.path.normpath(os.path.join(download_dir, item_path))
-        if not os.path.abspath(full_path).startswith(os.path.abspath(download_dir)):
-            return "Access denied.", 403
-        if not os.path.exists(full_path):
-            return "File or directory not found.", 404
+    # Sanitize all incoming paths
+    safe_full_paths = []
+    for p in paths:
+        full_path = os.path.realpath(os.path.join(download_dir, p))
+        if is_safe_path(download_dir, full_path) and os.path.exists(full_path):
+            safe_full_paths.append(full_path)
+    
+    if not safe_full_paths:
+        return "No valid or accessible files specified.", 404
 
+    if len(safe_full_paths) == 1:
+        full_path = safe_full_paths[0]
         if os.path.isdir(full_path):
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
@@ -469,49 +581,47 @@ def download_item_route():
                         file_path_in_zip = os.path.relpath(os.path.join(root, file), full_path)
                         zip_file.write(os.path.join(root, file), arcname=os.path.join(os.path.basename(full_path), file_path_in_zip))
             zip_buffer.seek(0)
-            return send_file(zip_buffer, as_attachment=True, download_name=f"{os.path.basename(item_path)}.zip", mimetype='application/zip')
+            return send_file(zip_buffer, as_attachment=True, download_name=f"{os.path.basename(full_path)}.zip", mimetype='application/zip')
         else:
             return send_file(full_path, as_attachment=True)
     
-    else:
+    else: # Multiple files/folders to zip
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            for item_path in paths:
-                full_path = os.path.normpath(os.path.join(download_dir, item_path))
-                if not os.path.abspath(full_path).startswith(os.path.abspath(download_dir)) or not os.path.exists(full_path):
-                    continue
-                
+            for full_path in safe_full_paths:
                 if os.path.isdir(full_path):
                      for root, _, files in os.walk(full_path):
                         for file in files:
                             file_path_in_zip = os.path.relpath(os.path.join(root, file), download_dir)
                             zip_file.write(os.path.join(root, file), arcname=file_path_in_zip)
-                else:
-                    zip_file.write(full_path, arcname=os.path.basename(full_path))
+                else: # It's a file
+                    file_path_in_zip = os.path.relpath(full_path, download_dir)
+                    zip_file.write(full_path, arcname=file_path_in_zip)
         zip_buffer.seek(0)
         return send_file(zip_buffer, as_attachment=True, download_name="downloader_selection.zip", mimetype='application/zip')
 
 
 @app.route("/api/delete_item", methods=['POST'])
 def delete_item_route():
+    # ##-- SECURITY FIX: All paths are now validated with is_safe_path --##
     data = request.get_json()
     paths = data.get('paths', [])
     if not paths:
         return jsonify({"message": "Missing path parameter."}), 400
 
-    download_dir = CONFIG.get("download_dir")
+    download_dir = os.path.realpath(CONFIG.get("download_dir"))
     deleted_count = 0
     errors = []
 
     for item_path in paths:
-        full_path = os.path.normpath(os.path.join(download_dir, item_path))
+        full_path = os.path.realpath(os.path.join(download_dir, item_path))
 
-        if not os.path.abspath(full_path).startswith(os.path.abspath(download_dir)):
+        if not is_safe_path(download_dir, full_path):
             errors.append(f"Access denied for {item_path}")
             continue
         
         if not os.path.exists(full_path):
-            errors.append(f"Not found: {item_path}")
+            # This can happen in race conditions, just ignore it.
             continue
 
         try:
@@ -541,8 +651,8 @@ def initialize_app():
     atexit.register(state_manager.save_state)
     state_manager.load_state()
 
-    update_thread = threading.Thread(target=scheduled_update_check, daemon=True)
-    update_thread.start()
+    update_check_thread = threading.Thread(target=scheduled_update_check, daemon=True)
+    update_check_thread.start()
     
     worker_thread = threading.Thread(
         target=yt_dlp_worker, 
@@ -551,11 +661,12 @@ def initialize_app():
     )
     worker_thread.start()
 
+#~ --- Main Execution --- ~#
+# ##-- PLATFORM CONSISTENCY: Run startup checks before starting the server --##
+run_startup_checks()
 initialize_app()
 
-
-#~ --- Main Execution (for direct run, e.g. from an IDE) --- ~#
 if __name__ == "__main__":
     from waitress import serve
-    print("Starting server with Waitress for direct execution...")
+    print("--- Starting Server with Waitress ---")
     serve(app, host="0.0.0.0", port=8080)

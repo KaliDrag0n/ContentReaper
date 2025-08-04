@@ -3,10 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings - Downloader Dashboard</title>
+
+  <script>
+    (function() {
+      const savedTheme = localStorage.getItem('downloader_theme') || 'light';
+      document.documentElement.dataset.bsTheme = savedTheme;
+    })();
+  </script>
+
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-  <title>Settings - Downloader Dashboard</title>
+  <script src="/static/js/app.js" defer></script>
   <style>
     :root { --bs-body-bg: #f8f9fa; --bs-body-color: #212529; --bs-border-color: #dee2e6; --bs-card-bg: #fff; }
     [data-bs-theme="dark"] { --bs-body-bg: #212529; --bs-body-color: #dee2e6; --bs-border-color: #495057; --bs-card-bg: #343a40; }
@@ -15,28 +24,19 @@
 </head>
 <body>
 
-  <!-- Re-using the existing confirm modal for our new buttons -->
   <div class="modal fade" id="confirmModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
       <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title" id="confirmModalTitle">Are you sure?</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-        </div>
-        <div class="modal-body" id="confirmModalBody">
-          This action cannot be undone.
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-          <button type="button" class="btn btn-danger" id="confirmModalButton">Confirm</button>
-        </div>
+        <div class="modal-header"><h5 class="modal-title" id="confirmModalTitle">Are you sure?</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+        <div class="modal-body" id="confirmModalBody">This action cannot be undone.</div>
+        <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button><button type="button" class="btn btn-danger" id="confirmModalButton">Confirm</button></div>
       </div>
     </div>
   </div>
 
   <div class="container py-4">
-    <header class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom">
-      <h2 class="m-0"><i class="bi bi-gear-fill"></i> Settings</h2>
+    <header class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4 pb-2 border-bottom">
+      <h2 class="m-0 mb-2 mb-md-0"><i class="bi bi-gear-fill"></i> Settings</h2>
       <div class="d-flex align-items-center">
         <a href="/" class="btn btn-secondary me-3"><i class="bi bi-house-fill"></i> Home</a>
         <div class="form-check form-switch">
@@ -47,9 +47,7 @@
     </header>
 
     {% if saved %}
-    <div class="alert alert-success" role="alert">
-      Settings saved successfully!
-    </div>
+    <div class="alert alert-success" role="alert">Settings saved successfully!</div>
     {% endif %}
 
     <div class="card">
@@ -60,15 +58,11 @@
             <input type="text" class="form-control" id="download_dir" name="download_dir" value="{{ config.download_dir }}">
             <div class="form-text">The absolute path on the server where completed files will be saved.</div>
           </div>
-
           <div class="mb-3">
             <label for="temp_dir" class="form-label">Temporary Directory</label>
             <input type="text" class="form-control" id="temp_dir" name="temp_dir" value="{{ config.temp_dir }}">
-            <div class="form-text">
-                The path where temporary files will be stored during download. For best performance on a Pi, this should be a local path (e.g., on the SD card), not a network share.
-            </div>
+            <div class="form-text">The path where temporary files will be stored during download.</div>
           </div>
-
           <div class="mb-3">
             <label for="cookie_content" class="form-label">Cookies</label>
             <textarea class="form-control" id="cookie_content" name="cookie_content" rows="6" placeholder="Paste your Netscape cookie file content here...">{{ config.cookie_file_content }}</textarea>
@@ -79,24 +73,17 @@
       </div>
     </div>
 
-    <!-- Version Information Card -->
     <div class="card mt-4">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            Version Information
-            <button class="btn btn-sm btn-primary" id="check-for-updates-btn">
-                <i class="bi bi-arrow-repeat"></i> Check for Updates
-            </button>
-        </div>
+        <div class="card-header d-flex justify-content-between align-items-center">Version Information<button class="btn btn-sm btn-primary" id="check-for-updates-btn"><i class="bi bi-arrow-repeat"></i> Check for Updates</button></div>
         <div class="card-body">
             <p>Current Version: <strong>{{ app_version }}</strong></p>
             {% if update_info.update_available %}
                 <div class="alert alert-warning" role="alert">
                     <h4 class="alert-heading"><i class="bi bi-gift-fill"></i> Update Available!</h4>
-                    <p>A new version, <strong>{{ update_info.latest_version }}</strong>, is ready for you.</p>
-                    <hr>
-                    <div class="d-flex justify-content-start gap-2">
+                    <p>A new version, <strong>{{ update_info.latest_version }}</strong>, is ready for you.</p><hr>
+                    <div class="d-flex justify-content-start gap-2 flex-wrap">
                         <a href="{{ update_info.release_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">View on GitHub</a>
-                        <button class="btn btn-success" id="install-update-btn"><i class="bi bi-windows"></i> Install Update & Restart (Windows)</button>
+                        <button class="btn btn-success" id="install-update-btn"><i class="bi bi-cloud-download-fill"></i> Install Update & Restart</button>
                     </div>
                 </div>
             {% else %}
@@ -105,55 +92,17 @@
         </div>
     </div>
 
-    <!-- Danger Zone Card -->
     <div class="card mt-4 border-danger">
-        <div class="card-header bg-danger text-white">
-            <i class="bi bi-exclamation-triangle-fill"></i> Danger Zone
-        </div>
+        <div class="card-header bg-danger text-white"><i class="bi bi-exclamation-triangle-fill"></i> Danger Zone</div>
         <div class="card-body">
             <p>These actions can interrupt ongoing downloads and may require manual or automatic restarting of the application.</p>
-            <button class="btn btn-danger" id="shutdown-btn">
-                <i class="bi bi-power"></i> Shutdown Server (Linux/systemd)
-            </button>
-            <div class="form-text mt-2">This will stop the server process, relying on a service manager like systemd to restart it.</div>
+            <button class="btn btn-danger" id="shutdown-btn"><i class="bi bi-power"></i> Shutdown Server</button>
+            <div class="form-text mt-2">This will stop the server process. It will only restart if you have a service manager like systemd configured.</div>
         </div>
     </div>
   </div>
 
 <script>
-let confirmModalInstance;
-
-// --- UTILITY FUNCTIONS ---
-const showConfirmModal = (title, body, onConfirm) => {
-    document.getElementById('confirmModalTitle').textContent = title;
-    document.getElementById('confirmModalBody').textContent = body;
-    const confirmButton = document.getElementById('confirmModalButton');
-    
-    // Clone and replace the button to remove old event listeners
-    const newConfirmButton = confirmButton.cloneNode(true);
-    confirmButton.parentNode.replaceChild(newConfirmButton, confirmButton);
-    
-    newConfirmButton.addEventListener('click', () => {
-        onConfirm();
-        if (confirmModalInstance) confirmModalInstance.hide();
-    });
-
-    if (!confirmModalInstance) {
-        confirmModalInstance = new bootstrap.Modal(document.getElementById('confirmModal'));
-    }
-    confirmModalInstance.show();
-};
-
-
-// --- UI THEME LOGIC ---
-const applyTheme = (theme) => {
-    document.documentElement.dataset.bsTheme = theme;
-    const toggle = document.getElementById('theme-toggle');
-    if (toggle) {
-        toggle.checked = theme === 'dark';
-    }
-};
-
 document.addEventListener('DOMContentLoaded', () => {
     const savedTheme = localStorage.getItem('downloader_theme') || 'light';
     applyTheme(savedTheme);
@@ -167,20 +116,15 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // --- UPDATE CHECKER LOGIC ---
     const updateBtn = document.getElementById('check-for-updates-btn');
     if(updateBtn) {
         updateBtn.addEventListener('click', async () => {
             const originalHtml = updateBtn.innerHTML;
             updateBtn.disabled = true;
             updateBtn.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Checking...`;
-
             try {
                 const response = await fetch('/api/force_update_check', { method: 'POST' });
-                if (!response.ok) {
-                    throw new Error('Update check failed on the server.');
-                }
-                // Success! Reload the page to show the new status.
+                if (!response.ok) throw new Error('Update check failed on the server.');
                 location.reload();
             } catch (error) {
                 console.error("Failed to trigger update check:", error);
@@ -191,65 +135,27 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // --- WINDOWS INSTALL UPDATE LOGIC ---
     const installUpdateBtn = document.getElementById('install-update-btn');
     if (installUpdateBtn) {
         installUpdateBtn.addEventListener('click', () => {
-            showConfirmModal(
-                'Install Update?',
-                'This will stop the server, download the latest version, and restart the application. All ongoing downloads will be cancelled. Are you sure?',
-                async () => {
-                    try {
-                        installUpdateBtn.disabled = true;
-                        installUpdateBtn.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Starting Update...`;
-                        
-                        await fetch('/api/install_update', { method: 'POST' });
-
-                        document.querySelector('.container').innerHTML = `
-                            <div class="alert alert-info" role="alert">
-                                The update process has been started. A new command window should appear to show progress. The server will restart automatically. You can close this page.
-                            </div>`;
-
-                    } catch (error) {
-                        console.log("Update request sent. The connection will now be lost.");
-                         document.querySelector('.container').innerHTML = `
-                            <div class="alert alert-info" role="alert">
-                                The update process has been started. A new command window should appear to show progress. The server will restart automatically. You can close this page.
-                            </div>`;
-                    }
-                }
-            )
+            showConfirmModal('Install Update?', 'This will stop the server, download the latest version, and restart the application. All ongoing downloads will be cancelled. Are you sure?', () => {
+                installUpdateBtn.disabled = true;
+                installUpdateBtn.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Starting Update...`;
+                fetch('/api/install_update', { method: 'POST' });
+                document.querySelector('.container').innerHTML = `<div class="alert alert-info mt-4" role="alert"><h4 class="alert-heading">Update in Progress</h4><p>The update process has been started. The server will restart automatically.</p><p class="mb-0">This page will become unresponsive. Please wait a minute and then refresh the page.</p></div>`;
+            });
         });
     }
 
-    // --- SHUTDOWN BUTTON LOGIC ---
     const shutdownBtn = document.getElementById('shutdown-btn');
     if (shutdownBtn) {
         shutdownBtn.addEventListener('click', () => {
-            showConfirmModal(
-                'Shutdown Server?',
-                'Are you sure you want to shut down the server? This will stop all downloads. The server will only restart if you have a service manager like systemd configured.',
-                async () => {
-                    try {
-                        shutdownBtn.disabled = true;
-                        shutdownBtn.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Shutting down...`;
-                        
-                        await fetch('/api/shutdown', { method: 'POST' });
-                        
-                        document.querySelector('.container').innerHTML = `
-                            <div class="alert alert-info" role="alert">
-                                The shutdown command has been sent. The server should restart shortly if managed by a service. You can now close this page.
-                            </div>`;
-
-                    } catch (error) {
-                        console.log("Shutdown request sent. The connection will now be lost.");
-                        document.querySelector('.container').innerHTML = `
-                            <div class="alert alert-info" role="alert">
-                                The shutdown command has been sent. The server should restart shortly if managed by a service. You can now close this page.
-                            </div>`;
-                    }
-                }
-            );
+            showConfirmModal('Shutdown Server?', 'Are you sure you want to shut down the server? This will stop all downloads. The server will only restart if you have a service manager like systemd configured.', () => {
+                shutdownBtn.disabled = true;
+                shutdownBtn.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Shutting down...`;
+                fetch('/api/shutdown', { method: 'POST' });
+                document.querySelector('.container').innerHTML = `<div class="alert alert-info mt-4" role="alert">The shutdown command has been sent. You can now close this page.</div>`;
+            });
         });
     }
 });

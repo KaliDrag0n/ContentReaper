@@ -6,17 +6,21 @@ import json
 import datetime
 import shutil
 import time
-import shlex # NEW: Import for safely parsing command strings
+import shlex 
 from .sanitizer import sanitize_filename
 
 # --- Helper Functions --- #
 
 def format_bytes(b):
     if b is None: return "N/A"
-    b = float(b)
-    if b < 1024: return f"{b} B"
-    if b < 1024**2: return f"{b/1024:.2f} KiB"
-    return f"{b/1024**2:.2f} MiB"
+    try:
+        b = float(b)
+        if b < 1024: return f"{b:.0f} B"
+        if b < 1024**2: return f"{b/1024:.2f} KiB"
+        if b < 1024**3: return f"{b/1024**2:.2f} MiB"
+        return f"{b/1024**3:.2f} GiB"
+    except (ValueError, TypeError):
+        return "N/A"
 
 def build_yt_dlp_command(job, temp_dir_path, cookie_file_path):
     cmd = ['yt-dlp']
@@ -52,23 +56,18 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path):
             cmd.extend(['-f', 'bestaudio/best', '-x', '--audio-format', 'mp3', '--audio-quality', '0'])
         else:
             cmd.extend(['-f', 'bestvideo+bestaudio/best', '--merge-output-format', 'mp4'])
-    # NEW: Handle custom mode
     elif mode == 'custom':
         custom_args_str = job.get('custom_args', '')
-        # Use shlex to safely parse the command string into a list
         custom_args = shlex.split(custom_args_str)
         cmd.extend(custom_args)
 
-    # For non-custom modes, add the output templates
     if mode != 'custom':
         output_template = os.path.join(temp_dir_path, "%(playlist_index)02d - %(title)s.%(ext)s" if is_playlist else "%(title)s.%(ext)s")
         cmd.extend(['-o', output_template])
-    # For custom mode, if the user hasn't specified an output path, default it to the temp dir
     elif '-o' not in cmd and '--output' not in cmd:
         output_template = os.path.join(temp_dir_path, "%(title)s.%(ext)s")
         cmd.extend(['-o', output_template])
     
-    # Always add progress template for UI feedback, unless user overrides it in custom
     if '--progress-template' not in cmd:
         cmd.extend(['--progress-template', '%(progress)j'])
     
@@ -157,20 +156,28 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
         temp_log_path = os.path.join(log_dir, f"job_active_{job['id']}.log")
 
         try:
+            # ##-- IMPROVEMENT: Made auto-fetching folder name more robust --##
+            # If a folder name isn't provided by the user, try to get it from yt-dlp.
             if not job.get("folder"):
                 try:
                     print(f"WORKER: No folder name for job {job['id']}, fetching title...")
                     is_playlist = "playlist?list=" in job["url"]
                     print_field = 'playlist_title' if is_playlist else 'title'
+                    # Use a short timeout to avoid waiting forever on a stuck process
                     fetch_cmd = ['yt-dlp', '--print', print_field, '--playlist-items', '1', '-s', job["url"]]
                     result = subprocess.run(fetch_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, check=True)
+                    
                     output_lines = result.stdout.strip().splitlines()
                     if output_lines:
+                        # Sanitize the fetched title to make it a valid folder name
                         job["folder"] = sanitize_filename(output_lines[0])
                         print(f"WORKER: Fetched folder name: {job['folder']}")
                     else:
-                        raise Exception("No title output from yt-dlp")
+                        # If yt-dlp gives no output, raise an exception to fall back to the default
+                        raise ValueError("No title output from yt-dlp")
                 except Exception as e:
+                    # If fetching the title fails for any reason, log it and use a default name.
+                    # This prevents the entire job from failing just because the title couldn't be fetched.
                     print(f"WORKER: Could not auto-fetch title for job {job['id']}: {e}")
                     job["folder"] = "Misc Downloads"
             
@@ -202,7 +209,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
             with open(temp_log_path, 'w', encoding='utf-8') as log_file:
                 log_file.write(f"Starting download for job {job['id']}\n")
                 log_file.write(f"Folder: {job.get('folder')}\n")
-                log_file.write(f"Command: {' '.join(shlex.quote(c) for c in cmd)}\n\n") # Log the full command
+                log_file.write(f"Command: {' '.join(shlex.quote(c) for c in cmd)}\n\n")
                 log_file.flush()
 
                 for line in iter(process.stdout.readline, ''):
@@ -221,7 +228,11 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
                             if update["status"] == 'Downloading':
                                 progress_percent = progress_data.get("_percent_str") or progress_data.get("progress", {}).get("fraction")
                                 if progress_percent:
-                                    update["progress"] = float(progress_percent) * 100 if isinstance(progress_percent, float) else float(progress_percent.replace('%',''))
+                                    # Handle both float (0-1) and string ('x%') progress formats
+                                    if isinstance(progress_percent, float):
+                                        update["progress"] = progress_percent * 100
+                                    else:
+                                        update["progress"] = float(str(progress_percent).replace('%',''))
                                 
                                 total_size = progress_data.get("total_bytes") or progress_data.get("total_bytes_estimate")
                                 update["file_size"] = format_bytes(total_size)
@@ -240,7 +251,8 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
                                 update.update({"speed": progress_data.get("_speed_str", "N/A"), "eta": progress_data.get("_eta_str", "N/A")})
                             
                             state_manager.update_current_download(update)
-                        except (json.JSONDecodeError, TypeError):
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            # Ignore lines that look like JSON but aren't valid
                             pass
                     elif '[download] Downloading item' in line:
                         match = re.search(r'Downloading item (\d+) of (\d+)', line)
@@ -261,9 +273,10 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
 
         except Exception as e:
             status = "ERROR"
+            print(f"WORKER EXCEPTION for job {job.get('id')}: {e}")
             try:
                 with open(temp_log_path, 'a', encoding='utf-8') as log_file:
-                    log_file.write(f"\nWORKER EXCEPTION: {e}\n")
+                    log_file.write(f"\n--- WORKER THREAD EXCEPTION ---\n{e}\n-------------------------------\n")
             except:
                 pass
         
