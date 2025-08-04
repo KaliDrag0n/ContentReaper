@@ -133,36 +133,21 @@ class StateManager:
         self.save_state()
         return paths_to_delete
 
-    def delete_from_history(self, log_id, download_dir):
-        paths_to_delete = []
+    def delete_from_history(self, log_id):
+        path_to_delete = None
         with self._lock:
             item_to_delete = next((h for h in self.history if h.get("log_id") == log_id), None)
             if not item_to_delete:
                 return None
             
+            # Only mark the log file for deletion
             if item_to_delete.get("log_path") and item_to_delete.get("log_path") != "LOG_SAVE_ERROR":
-                paths_to_delete.append(item_to_delete["log_path"])
-
-            job_data = item_to_delete.get("job_data", {})
-            folder_name = job_data.get("folder")
-            is_playlist = "playlist?list=" in job_data.get("url", "")
-            
-            if folder_name:
-                folder_path = os.path.join(download_dir, folder_name)
-                if is_playlist:
-                    if os.path.exists(folder_path):
-                        paths_to_delete.append(folder_path)
-                else:
-                    filename = item_to_delete.get("filename")
-                    if filename:
-                        file_path = os.path.join(folder_path, filename)
-                        if os.path.exists(file_path):
-                            paths_to_delete.append(file_path)
+                path_to_delete = item_to_delete["log_path"]
             
             self.history[:] = [h for h in self.history if h.get("log_id") != log_id]
             self.history_state_version += 1
         self.save_state()
-        return paths_to_delete
+        return path_to_delete
 
     def get_history_item_by_log_id(self, log_id):
         with self._lock:

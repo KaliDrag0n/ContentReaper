@@ -6,6 +6,7 @@ import json
 import datetime
 import shutil
 import time
+from .sanitizer import sanitize_filename
 
 # --- Helper Functions --- #
 
@@ -79,7 +80,7 @@ def _finalize_job(job, final_status, temp_log_path, config):
     
     is_playlist = "playlist?list=" in job.get("url", "")
     final_title = "Unknown"
-    final_filename = None # Will store the full filename for single files
+    final_filename = None
     
     with open(temp_log_path, 'a', encoding='utf-8') as log_file:
         def log(message):
@@ -138,10 +139,28 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, queue_paused
         temp_log_path = os.path.join(log_dir, f"job_active_{job['id']}.log")
 
         try:
+            # --- NEW: Auto-fetch folder name if not provided ---
+            if not job.get("folder"):
+                try:
+                    print(f"WORKER: No folder name for job {job['id']}, fetching title...")
+                    is_playlist = "playlist?list=" in job["url"]
+                    print_field = 'playlist_title' if is_playlist else 'title'
+                    fetch_cmd = ['yt-dlp', '--print', print_field, '--playlist-items', '1', '-s', job["url"]]
+                    result = subprocess.run(fetch_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, check=True)
+                    output_lines = result.stdout.strip().splitlines()
+                    if output_lines:
+                        job["folder"] = sanitize_filename(output_lines[0])
+                        print(f"WORKER: Fetched folder name: {job['folder']}")
+                    else:
+                        raise Exception("No title output from yt-dlp")
+                except Exception as e:
+                    print(f"WORKER: Could not auto-fetch title for job {job['id']}: {e}")
+                    job["folder"] = "Misc Downloads" # Fallback
+            
             os.makedirs(temp_dir_path, exist_ok=True)
             
             if job.get("archive"):
-                final_folder_name = job.get("folder") or "Misc Downloads"
+                final_folder_name = job.get("folder")
                 main_archive_file = os.path.join(config["download_dir"], final_folder_name, "archive.txt")
                 if os.path.exists(main_archive_file):
                     temp_archive_file = os.path.join(temp_dir_path, "archive.temp.txt")
@@ -164,6 +183,8 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, queue_paused
             local_playlist_count = 0
             
             with open(temp_log_path, 'w', encoding='utf-8') as log_file:
+                log_file.write(f"Starting download for job {job['id']}\n")
+                log_file.write(f"Folder: {job.get('folder')}\n")
                 log_file.write(f"Created temporary directory: {temp_dir_path}\n")
                 if os.path.exists(os.path.join(temp_dir_path, "archive.temp.txt")):
                     log_file.write("Copied existing archive to temp directory for processing.\n")
@@ -241,7 +262,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, queue_paused
                 "url": job["url"], 
                 "title": final_title, 
                 "folder": final_folder, 
-                "filename": final_filename, # Store the full filename
+                "filename": final_filename,
                 "job_data": job, 
                 "status": status
             }

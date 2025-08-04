@@ -12,6 +12,11 @@
     [data-bs-theme="dark"] { --bs-body-bg: #212529; --bs-body-color: #dee2e6; --bs-border-color: #495057; --bs-card-bg: #343a40; }
     body { transition: background-color 0.2s linear, color 0.2s linear; }
     .word-break-all { word-break: break-all; }
+    .folder-toggle { cursor: pointer; }
+    .folder-toggle .bi-caret-right-fill { transition: transform 0.2s ease-in-out; }
+    .folder-toggle[aria-expanded="true"] .bi-caret-right-fill { transform: rotate(90deg); }
+    .file-list-nested { padding-left: 1.5rem; }
+    #selection-actions { display: none; }
   </style>
 </head>
 <body>
@@ -48,14 +53,21 @@
     </header>
 
     <div class="card">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <span>Downloads Directory</span>
-        <button class="btn btn-primary btn-sm" id="refresh-btn">
-          <i class="bi bi-arrow-clockwise"></i> Refresh
-        </button>
+      <div class="card-header">
+        <div class="d-flex justify-content-between align-items-center">
+            <span>Downloads Directory</span>
+            <button class="btn btn-primary btn-sm" id="refresh-btn">
+              <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+        </div>
+        <div id="selection-actions" class="mt-2">
+            <button class="btn btn-success btn-sm" id="download-selected-btn"><i class="bi bi-file-earmark-zip-fill"></i> Download Selected (.zip)</button>
+            <button class="btn btn-danger btn-sm" id="delete-selected-btn"><i class="bi bi-trash-fill"></i> Delete Selected</button>
+            <span id="selection-count" class="ms-2 text-muted"></span>
+        </div>
       </div>
-      <div class="list-group list-group-flush" id="file-list">
-        <!-- File and folder list will be inserted here by JavaScript -->
+      <div class="list-group list-group-flush" id="file-list-root">
+        <!-- File and folder list will be inserted here -->
       </div>
     </div>
   </div>
@@ -66,9 +78,7 @@ let confirmModalInstance;
 const applyTheme = (theme) => {
     document.documentElement.dataset.bsTheme = theme;
     const toggle = document.getElementById('theme-toggle');
-    if (toggle) {
-        toggle.checked = theme === 'dark';
-    }
+    if (toggle) toggle.checked = theme === 'dark';
 };
 
 const showConfirmModal = (title, body, onConfirm) => {
@@ -99,93 +109,173 @@ const formatBytes = (bytes, decimals = 2) => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
-const fetchFiles = async () => {
-    const fileListEl = document.getElementById('file-list');
-    fileListEl.innerHTML = '<div class="list-group-item">Loading...</div>';
+const updateSelectionActions = () => {
+    const selectedItems = document.querySelectorAll('.file-item-checkbox:checked');
+    const actionsPanel = document.getElementById('selection-actions');
+    const countSpan = document.getElementById('selection-count');
+
+    if (selectedItems.length > 0) {
+        actionsPanel.style.display = 'block';
+        countSpan.textContent = `${selectedItems.length} item(s) selected`;
+    } else {
+        actionsPanel.style.display = 'none';
+    }
+};
+
+const fetchAndRenderFiles = async (path = '', containerEl) => {
+    containerEl.innerHTML = '<div class="list-group-item">Loading...</div>';
     try {
-        const response = await fetch('/api/files');
+        const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`);
         const files = await response.json();
         
-        fileListEl.innerHTML = ''; // Clear loading message
+        containerEl.innerHTML = '';
 
         if (files.length === 0) {
-            fileListEl.innerHTML = '<div class="list-group-item">No files or folders found.</div>';
+            containerEl.innerHTML = '<div class="list-group-item fst-italic text-muted">Folder is empty.</div>';
             return;
         }
 
         files.forEach(item => {
             const isDirectory = item.type === 'directory';
             const icon = isDirectory ? 'bi-folder-fill text-primary' : 'bi-file-earmark-music-fill';
-            const downloadUrl = `/download_item?path=${encodeURIComponent(item.path)}`;
-            const downloadButton = isDirectory 
-                ? `<a href="${downloadUrl}" class="btn btn-sm btn-success" title="Download as .zip"><i class="bi bi-file-earmark-zip-fill"></i> Download ZIP</a>`
-                : `<a href="${downloadUrl}" class="btn btn-sm btn-success" title="Download File"><i class="bi bi-download"></i> Download</a>`;
+            const uniqueId = `item-${item.path.replace(/[^a-zA-Z0-9]/g, '-')}`;
 
             const li = document.createElement('div');
-            li.className = 'list-group-item d-flex justify-content-between align-items-center';
-            li.innerHTML = `
-                <div>
+            li.className = 'list-group-item';
+            
+            let itemHTML = `
+                <div class="d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center flex-grow-1" style="min-width: 0;">
+                        <input class="form-check-input me-3 file-item-checkbox" type="checkbox" value="" data-path="${item.path}">
+            `;
+
+            if (isDirectory) {
+                // CORRECTED: Added data-path attribute directly to the toggle link
+                itemHTML += `
+                    <a class="d-flex align-items-center text-decoration-none text-body folder-toggle" data-path="${item.path}" data-bs-toggle="collapse" href="#${uniqueId}" role="button" aria-expanded="false" aria-controls="${uniqueId}">
+                        <i class="bi bi-caret-right-fill me-2"></i>
+                        <i class="bi ${icon} me-2"></i>
+                        <div class="flex-grow-1 text-truncate">
+                            <span class="word-break-all">${item.name}</span><br>
+                            <small class="text-muted">${formatBytes(item.size)}</small>
+                        </div>
+                    </a>
+                `;
+            } else {
+                itemHTML += `
                     <i class="bi ${icon} me-2"></i>
-                    <span class="word-break-all">${item.name}</span>
-                    <br>
-                    <small class="text-muted">${formatBytes(item.size)}</small>
-                </div>
-                <div class="btn-group">
-                    ${downloadButton}
-                    <button class="btn btn-sm btn-danger delete-btn" data-path="${item.path}" data-name="${item.name}" title="Delete">
-                        <i class="bi bi-trash-fill"></i> Delete
-                    </button>
+                    <div class="flex-grow-1 text-truncate">
+                        <span class="word-break-all">${item.name}</span><br>
+                        <small class="text-muted">${formatBytes(item.size)}</small>
+                    </div>
+                `;
+            }
+
+            itemHTML += `
+                    </div>
+                    <div class="btn-group ms-2">
+                        <a href="/download_item?paths=${encodeURIComponent(item.path)}" class="btn btn-sm btn-success" title="${isDirectory ? 'Download as .zip' : 'Download File'}">
+                            <i class="bi ${isDirectory ? 'bi-file-earmark-zip-fill' : 'bi-download'}"></i>
+                        </a>
+                        <button class="btn btn-sm btn-danger delete-btn" data-path="${item.path}" data-name="${item.name}" title="Delete">
+                            <i class="bi bi-trash-fill"></i>
+                        </button>
+                    </div>
                 </div>
             `;
-            fileListEl.appendChild(li);
-        });
 
-        document.querySelectorAll('.delete-btn').forEach(button => {
-            button.addEventListener('click', (e) => {
-                const path = e.currentTarget.dataset.path;
-                const name = e.currentTarget.dataset.name;
-                showConfirmModal(
-                    `Delete "${name}"?`,
-                    `Are you sure you want to permanently delete this item? This cannot be undone.`,
-                    async () => {
-                        try {
-                            await fetch('/api/delete_item', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ path: path })
-                            });
-                            fetchFiles(); // Refresh the list
-                        } catch (error) {
-                            console.error("Delete failed:", error);
-                            alert("Failed to delete item. See console for details.");
-                        }
-                    }
-                );
-            });
+            if (isDirectory) {
+                itemHTML += `<div class="collapse" id="${uniqueId}"><div class="list-group list-group-flush file-list-nested mt-2"></div></div>`;
+            }
+            
+            li.innerHTML = itemHTML;
+            containerEl.appendChild(li);
         });
 
     } catch (error) {
-        fileListEl.innerHTML = '<div class="list-group-item text-danger">Failed to load files.</div>';
+        containerEl.innerHTML = '<div class="list-group-item text-danger">Failed to load files.</div>';
         console.error("Error fetching files:", error);
     }
 };
 
+const handleDelete = (paths, names) => {
+    const title = names.length > 1 ? `Delete ${names.length} items?` : `Delete "${names[0]}"?`;
+    showConfirmModal(
+        title,
+        'Are you sure you want to permanently delete the selected item(s)? This cannot be undone.',
+        async () => {
+            try {
+                await fetch('/api/delete_item', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ paths: paths })
+                });
+                fetchAndRenderFiles('', document.getElementById('file-list-root'));
+            } catch (error) {
+                console.error("Delete failed:", error);
+                alert("Failed to delete item(s). See console for details.");
+            }
+        }
+    );
+};
+
 document.addEventListener('DOMContentLoaded', () => {
+    const rootContainer = document.getElementById('file-list-root');
     const savedTheme = localStorage.getItem('downloader_theme') || 'light';
     applyTheme(savedTheme);
 
-    const toggle = document.getElementById('theme-toggle');
-    if (toggle) {
-        toggle.addEventListener('click', () => {
-            const newTheme = document.documentElement.dataset.bsTheme === 'dark' ? 'light' : 'dark';
-            applyTheme(newTheme);
-            localStorage.setItem('downloader_theme', newTheme);
-        });
-    }
+    document.getElementById('theme-toggle').addEventListener('click', () => {
+        const newTheme = document.documentElement.dataset.bsTheme === 'dark' ? 'light' : 'dark';
+        applyTheme(newTheme);
+        localStorage.setItem('downloader_theme', newTheme);
+    });
 
-    document.getElementById('refresh-btn').addEventListener('click', fetchFiles);
+    document.getElementById('refresh-btn').addEventListener('click', () => fetchAndRenderFiles('', rootContainer));
+    
+    rootContainer.addEventListener('click', (e) => {
+        const folderToggle = e.target.closest('.folder-toggle');
+        if (folderToggle) {
+            const collapseEl = document.querySelector(folderToggle.getAttribute('href'));
+            const nestedContainer = collapseEl.querySelector('.file-list-nested');
+            // CORRECTED: Get path directly from the folderToggle element
+            const path = folderToggle.dataset.path;
+            if (nestedContainer && !nestedContainer.hasChildNodes()) {
+                fetchAndRenderFiles(path, nestedContainer);
+            }
+        }
 
-    fetchFiles();
+        if (e.target.classList.contains('file-item-checkbox')) {
+            updateSelectionActions();
+        }
+
+        const deleteBtn = e.target.closest('.delete-btn');
+        if(deleteBtn) {
+            const path = deleteBtn.dataset.path;
+            const name = deleteBtn.dataset.name;
+            handleDelete([path], [name]);
+        }
+    });
+
+    document.getElementById('delete-selected-btn').addEventListener('click', () => {
+        const selectedItems = document.querySelectorAll('.file-item-checkbox:checked');
+        const paths = Array.from(selectedItems).map(cb => cb.dataset.path);
+        const names = Array.from(selectedItems).map(cb => cb.closest('.d-flex.justify-content-between').querySelector('.word-break-all').textContent);
+        if (paths.length > 0) {
+            handleDelete(paths, names);
+        }
+    });
+
+    document.getElementById('download-selected-btn').addEventListener('click', () => {
+        const selectedItems = document.querySelectorAll('.file-item-checkbox:checked');
+        const paths = Array.from(selectedItems).map(cb => cb.dataset.path);
+        if (paths.length === 0) return;
+
+        const queryParams = new URLSearchParams();
+        paths.forEach(path => queryParams.append('paths', path));
+        window.location.href = `/download_item?${queryParams.toString()}`;
+    });
+
+    fetchAndRenderFiles('', rootContainer);
 });
 </script>
 </body>

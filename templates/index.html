@@ -18,6 +18,7 @@
     .word-break-all { word-break: break-all; }
     .queue-handle { cursor: move; color: #6c757d; }
     .sortable-ghost { opacity: 0.4; background: #c8ebfb; }
+    .optimistic-item { opacity: 0.6; pointer-events: none; }
   </style>
 </head>
 <body>
@@ -174,6 +175,7 @@ let logModalInstance, toastInstance, confirmModalInstance, updateModalInstance;
 let currentHistoryVersion = -1;
 let previewTimeout;
 let liveLogEventSource = null;
+let previewAbortController = null;
 
 // --- CORE UTILITY FUNCTIONS ---
 const showToast = (message, title = 'Notification', type = 'success') => {
@@ -193,12 +195,11 @@ async function apiRequest(endpoint, options = {}) {
             const errorData = await res.json().catch(() => ({ message: res.statusText }));
             throw new Error(errorData.message || 'Request failed');
         }
-        if (options.method === 'POST') {
-             fetchStatus();
-        }
         return res;
     } catch (error) {
-        showToast(error.message, 'Error', 'danger');
+        if (error.name !== 'AbortError') {
+            showToast(error.message, 'Error', 'danger');
+        }
         throw error;
     }
 }
@@ -243,34 +244,80 @@ const checkForUpdates = async () => {
     }
 };
 
-const handleUrlInput = () => {
-    document.querySelector('input[name="music_foldername"]').value = '';
-    document.querySelector('input[name="video_foldername"]').value = '';
+const extractUrls = (text) => {
+    const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+)/g;
+    const matches = text.match(urlRegex);
+    return matches || [];
+};
 
-    const url = document.querySelector('textarea[name="urls"]').value.trim().split('\n')[0];
-    const isPlaylist = url.includes('playlist?list=');
+const updatePreviewFromText = (text) => {
+    const urls = extractUrls(text);
+    const firstUrl = urls.length > 0 ? urls[0] : '';
+    const isPlaylist = firstUrl.includes('playlist?list=');
     document.getElementById('playlist-range-options').style.display = isPlaylist ? 'flex' : 'none';
-    fetchUrlPreview(url);
+    
+    const musicFolderInput = document.querySelector('input[name="music_foldername"]');
+    const videoFolderInput = document.querySelector('input[name="video_foldername"]');
+    if (firstUrl) {
+        musicFolderInput.placeholder = 'Leave blank to use video/playlist title';
+        videoFolderInput.placeholder = 'Leave blank to use video/playlist title';
+    } else {
+        musicFolderInput.placeholder = '';
+        videoFolderInput.placeholder = '';
+    }
+
+    fetchUrlPreview(firstUrl);
+};
+
+const handleUrlPaste = (event) => {
+    setTimeout(() => {
+        const textarea = event.target;
+        const urls = extractUrls(textarea.value);
+        if (urls.length > 0) {
+            textarea.value = urls.join('\n');
+        }
+        updatePreviewFromText(textarea.value);
+    }, 50);
 };
 
 const fetchUrlPreview = (url) => {
     const previewEl = document.getElementById('url-preview');
-    if (!url) { previewEl.style.display = 'none'; return; }
+    const titleEl = document.getElementById('preview-title');
+    const imgEl = previewEl.querySelector('img');
+
+    if (previewAbortController) {
+        previewAbortController.abort();
+    }
+
+    if (!url) {
+        previewEl.style.display = 'none';
+        return;
+    }
     
     clearTimeout(previewTimeout);
+    
+    previewEl.style.display = 'flex';
+    titleEl.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Fetching preview...';
+    imgEl.src = '';
+
     previewTimeout = setTimeout(async () => {
+        previewAbortController = new AbortController();
+        const signal = previewAbortController.signal;
         try {
-            const res = await apiRequest(`/preview?url=${encodeURIComponent(url)}`);
+            const res = await apiRequest(`/preview?url=${encodeURIComponent(url)}`, { signal });
             const data = await res.json();
             if (data.message) {
                  previewEl.style.display = 'none';
                  return;
             }
-            document.getElementById('preview-title').textContent = data.title;
-            previewEl.querySelector('img').src = data.thumbnail;
-            previewEl.style.display = 'flex';
-        } catch (error) { previewEl.style.display = 'none'; }
-    }, 500);
+            titleEl.textContent = data.title;
+            imgEl.src = data.thumbnail;
+        } catch (error) { 
+            if (error.name !== 'AbortError') {
+                titleEl.textContent = 'Preview failed to load.';
+            }
+        }
+    }, 300);
 };
 
 async function fetchHistory() {
@@ -319,7 +366,9 @@ async function fetchHistory() {
                 
                 li.querySelector('.btn-group button:first-child').onclick = () => requeueJob(item.job_data);
                 li.querySelector('.bi-file-text').onclick = () => viewStaticLog(item.log_id);
-                li.querySelector('.bi-trash-fill').onclick = () => apiRequest(`/history/delete/${item.log_id}`, { method: 'POST' });
+                li.querySelector('.bi-trash-fill').onclick = () => {
+                    apiRequest(`/history/delete/${item.log_id}`, { method: 'POST' }).then(() => fetchStatus());
+                };
                 historyList.appendChild(li);
             });
         }
@@ -384,7 +433,7 @@ const fetchStatus = async () => {
                         <i class="bi bi-grip-vertical queue-handle me-2"></i>
                         <span class="word-break-all" style="max-width: 80%;">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span>
                     </div>
-                    <button class="btn-close" onclick="apiRequest('/queue/delete/by-id/${job.id}', {method: 'POST'})"></button>
+                    <button class="btn-close" onclick="apiRequest('/queue/delete/by-id/${job.id}', {method: 'POST'}).then(() => fetchStatus())"></button>
                 </li>`
             ).join('');
         }
@@ -401,13 +450,13 @@ const fetchStatus = async () => {
 // --- EVENT HANDLERS & ACTIONS ---
 const requeueJob = async (job) => {
     try {
-        const res = await apiRequest('/queue/continue', {
+        await apiRequest('/queue/continue', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(job)
         });
-        const data = await res.json();
-        showToast(data.message, 'Success', 'success');
+        showToast("Job re-queued successfully.", 'Success', 'success');
+        fetchStatus();
     } catch(error) {
         console.error("Failed to re-queue job:", error);
     }
@@ -489,6 +538,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('add-job-form').addEventListener('submit', async function(e) {
         e.preventDefault();
+        
+        if (previewAbortController) {
+            previewAbortController.abort();
+        }
+
+        // --- OPTIMISTIC UI UPDATE ---
+        const queueList = document.getElementById("queue-list");
+        const urls = extractUrls(document.querySelector('textarea[name="urls"]').value);
+        urls.forEach(url => {
+            const li = document.createElement("li");
+            li.className = "list-group-item optimistic-item";
+            li.innerHTML = `<span class="word-break-all">${url}</span>`;
+            queueList.appendChild(li);
+        });
+        if (queueList.querySelector('.list-group-item').textContent === 'Queue is empty.') {
+            queueList.innerHTML = ''; // Clear the "empty" message
+        }
+
         try {
             const res = await apiRequest('/queue', { method: 'POST', body: new FormData(this) });
             const data = await res.json();
@@ -497,19 +564,25 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('url-preview').style.display = 'none';
             document.getElementById('playlist-range-options').style.display = 'none';
             switchMode(localStorage.getItem('downloader_mode') || 'clip');
-        } catch(error) { console.error("Failed to add job:", error); }
+            fetchStatus();
+        } catch(error) { 
+            console.error("Failed to add job:", error);
+            fetchStatus(); // Fetch status anyway to clear optimistic items
+        }
     });
 
-    document.querySelector('textarea[name="urls"]').addEventListener('input', handleUrlInput);
+    const urlTextarea = document.querySelector('textarea[name="urls"]');
+    urlTextarea.addEventListener('input', (e) => updatePreviewFromText(e.target.value));
+    urlTextarea.addEventListener('paste', handleUrlPaste);
     
     document.getElementById('clear-queue-btn').addEventListener('click', () => {
         showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => {
-            apiRequest('/queue/clear', { method: 'POST' });
+            apiRequest('/queue/clear', { method: 'POST' }).then(() => fetchStatus());
         });
     });
     document.getElementById('clear-history-btn').addEventListener('click', () => {
         showConfirmModal('Clear History?', 'Are you sure you want to clear the entire download history?', () => {
-            apiRequest('/history/clear', { method: 'POST' });
+            apiRequest('/history/clear', { method: 'POST' }).then(() => fetchStatus());
         });
     });
     

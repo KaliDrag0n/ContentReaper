@@ -1,6 +1,6 @@
 # web_tool.py
 from flask import Flask, request, render_template, jsonify, redirect, url_for, Response, send_file
-import threading, os, json, atexit, time, signal, subprocess, requests, shutil, io, zipfile
+import threading, os, json, atexit, time, signal, subprocess, requests, shutil, io, zipfile, re
 
 # --- Local Imports from 'lib' directory ---
 from lib.state_manager import StateManager
@@ -10,7 +10,7 @@ from lib.sanitizer import sanitize_filename
 app = Flask(__name__)
 
 #~ --- Configuration --- ~#
-APP_VERSION = "1.1.0" # The current version of this application
+APP_VERSION = "1.2.0" # The current version of this application
 GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI" # Your GitHub repo slug
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -167,11 +167,17 @@ def install_update_route():
     else:
         return jsonify({"message": "update.bat not found!"}), 404
 
+def extract_urls_from_text(text):
+    url_regex = re.compile(r'(https?://[^\s]+|www\.[^\s]+)')
+    return url_regex.findall(text)
+
 @app.route("/queue", methods=["POST"])
 def add_to_queue_route():
-    urls = request.form.get("urls", "").strip().splitlines()
-    if not any(urls):
-        return jsonify({"message": "At least one URL is required."}), 400
+    raw_urls_text = request.form.get("urls", "")
+    urls = extract_urls_from_text(raw_urls_text)
+
+    if not urls:
+        return jsonify({"message": "No valid URLs found in the input."}), 400
     
     mode = request.form.get("download_mode")
     
@@ -185,23 +191,6 @@ def add_to_queue_route():
         folder_name = video_folder or music_folder
     
     folder_name = sanitize_filename(folder_name)
-
-    if not folder_name:
-        try:
-            first_url = next(url for url in urls if url)
-            is_playlist = "playlist?list=" in first_url
-            print_field = 'playlist_title' if is_playlist else 'title'
-            fetch_cmd = ['yt-dlp', '--print', print_field, '--playlist-items', '1', '-s', first_url]
-            result = subprocess.run(fetch_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, check=True)
-            output_lines = result.stdout.strip().splitlines()
-            if output_lines:
-                folder_name = sanitize_filename(output_lines[0])
-        except Exception as e:
-            print(f"Could not auto-fetch title for folder name: {e}")
-
-    if not folder_name:
-        if mode == 'music': folder_name = "Misc Music"
-        else: folder_name = "Misc Videos"
 
     jobs_added = 0
     for url in urls:
@@ -276,24 +265,25 @@ def preview_route():
     if not url: return jsonify({"message": "URL is required."}), 400
     try:
         is_playlist = 'playlist?list=' in url
-        title = ""
-        thumbnail_url = ""
-
-        if is_playlist:
-            title_cmd = ['yt-dlp', '--print', 'playlist_title', '--playlist-items', '1', '-s', url]
-            proc_title = subprocess.run(title_cmd, capture_output=True, text=True, timeout=60, check=True, encoding='utf-8', errors='replace')
-            title = proc_title.stdout.strip().splitlines()[0] if proc_title.stdout.strip() else "Untitled Playlist"
-            
-            thumb_cmd = ['yt-dlp', '--print', '%(thumbnail)s', '--playlist-items', '1', '-s', url]
-            proc_thumb = subprocess.run(thumb_cmd, capture_output=True, text=True, timeout=60, check=True, encoding='utf-8', errors='replace')
-            thumbnail_url = proc_thumb.stdout.strip().splitlines()[0] if proc_thumb.stdout.strip() else ""
-        else:
-            json_cmd = ['yt-dlp', '--print-json', '--skip-download', url]
-            proc_json = subprocess.run(json_cmd, capture_output=True, text=True, timeout=60, check=True, encoding='utf-8', errors='replace')
-            data = json.loads(proc_json.stdout)
-            title = data.get('title', 'No Title Found')
-            thumbnail_url = data.get('thumbnail', '')
         
+        if is_playlist:
+            cmd = ['yt-dlp', '--get-title', '--get-thumbnail', '--playlist-items', '1', '-s', url]
+        else:
+            cmd = ['yt-dlp', '--get-title', '--get-thumbnail', '-s', url]
+
+        # --- CORRECTED LOGIC: Use a much shorter timeout ---
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5, check=True, encoding='utf-8', errors='replace')
+        output = proc.stdout.strip().splitlines()
+        
+        if len(output) >= 2:
+            title = output[0]
+            thumbnail_url = output[1]
+        elif len(output) == 1:
+            title = output[0]
+            thumbnail_url = ""
+        else:
+            raise Exception("Could not extract preview details.")
+
         return jsonify({"title": title, "thumbnail": thumbnail_url})
     except Exception as e:
         return jsonify({"message": f"Could not get preview: {e}"}), 500
@@ -361,21 +351,17 @@ def clear_history_route():
 
 @app.route('/history/delete/<int:log_id>', methods=['POST'])
 def delete_from_history_route(log_id):
-    paths_to_delete = state_manager.delete_from_history(log_id, CONFIG.get("download_dir"))
-    if paths_to_delete is None:
+    log_path_to_delete = state_manager.delete_from_history(log_id)
+    if log_path_to_delete is None:
         return jsonify({"message": "Item not found."}), 404
         
-    for path in paths_to_delete:
-        try:
-            if os.path.exists(path):
-                if os.path.isdir(path):
-                    shutil.rmtree(path)
-                else:
-                    os.remove(path)
-        except Exception as e:
-            print(f"ERROR: Could not delete path {path}: {e}")
+    try:
+        if os.path.exists(log_path_to_delete):
+            os.remove(log_path_to_delete)
+    except Exception as e:
+        print(f"ERROR: Could not delete log file {log_path_to_delete}: {e}")
             
-    return jsonify({"message": "History item and associated files deleted."})
+    return jsonify({"message": "History log deleted."})
 
 @app.route("/stop", methods=['POST'])
 def stop_route():
@@ -405,91 +391,125 @@ def get_dir_size(path='.'):
 
 @app.route("/api/files")
 def list_files_route():
-    download_dir = CONFIG.get("download_dir")
-    if not os.path.exists(download_dir):
+    base_download_dir = CONFIG.get("download_dir")
+    req_path = request.args.get('path', '')
+    
+    safe_path = os.path.normpath(os.path.join(base_download_dir, req_path))
+    
+    if not os.path.abspath(safe_path).startswith(os.path.abspath(base_download_dir)):
+        return jsonify({"error": "Access Denied"}), 403
+
+    if not os.path.exists(safe_path) or not os.path.isdir(safe_path):
         return jsonify([])
 
     items = []
-    for name in os.listdir(download_dir):
-        path = os.path.join(download_dir, name)
+    for name in os.listdir(safe_path):
+        full_path = os.path.join(safe_path, name)
+        relative_path = os.path.join(req_path, name)
         try:
-            if os.path.isdir(path):
+            if os.path.isdir(full_path):
                 items.append({
                     "name": name,
-                    "path": name,
+                    "path": relative_path,
                     "type": "directory",
-                    "size": get_dir_size(path)
+                    "size": get_dir_size(full_path)
                 })
             else:
                 items.append({
                     "name": name,
-                    "path": name,
+                    "path": relative_path,
                     "type": "file",
-                    "size": os.path.getsize(path)
+                    "size": os.path.getsize(full_path)
                 })
         except Exception as e:
-            print(f"Could not scan item {path}: {e}")
+            print(f"Could not scan item {full_path}: {e}")
     
     return jsonify(sorted(items, key=lambda x: (x['type'] == 'file', x['name'].lower())))
 
 @app.route("/download_item")
 def download_item_route():
-    item_path = request.args.get('path')
-    if not item_path:
+    paths = request.args.getlist('paths')
+    if not paths:
         return "Missing path parameter.", 400
 
     download_dir = CONFIG.get("download_dir")
-    full_path = os.path.join(download_dir, item_path)
+    
+    if len(paths) == 1:
+        item_path = paths[0]
+        full_path = os.path.normpath(os.path.join(download_dir, item_path))
+        if not os.path.abspath(full_path).startswith(os.path.abspath(download_dir)):
+            return "Access denied.", 403
+        if not os.path.exists(full_path):
+            return "File or directory not found.", 404
 
-    if not os.path.abspath(full_path).startswith(os.path.abspath(download_dir)):
-        return "Access denied.", 403
-
-    if not os.path.exists(full_path):
-        return "File or directory not found.", 404
-
-    try:
         if os.path.isdir(full_path):
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                 for root, _, files in os.walk(full_path):
                     for file in files:
                         file_path_in_zip = os.path.relpath(os.path.join(root, file), full_path)
-                        zip_file.write(os.path.join(root, file), arcname=file_path_in_zip)
+                        zip_file.write(os.path.join(root, file), arcname=os.path.join(os.path.basename(full_path), file_path_in_zip))
             zip_buffer.seek(0)
-            
-            zip_filename = f"{os.path.basename(item_path)}.zip"
-            return send_file(zip_buffer, as_attachment=True, download_name=zip_filename, mimetype='application/zip')
+            return send_file(zip_buffer, as_attachment=True, download_name=f"{os.path.basename(item_path)}.zip", mimetype='application/zip')
         else:
             return send_file(full_path, as_attachment=True)
-    except Exception as e:
-        print(f"ERROR sending item {full_path}: {e}")
-        return "Error sending item.", 500
+    
+    else:
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for item_path in paths:
+                full_path = os.path.normpath(os.path.join(download_dir, item_path))
+                if not os.path.abspath(full_path).startswith(os.path.abspath(download_dir)) or not os.path.exists(full_path):
+                    continue
+                
+                if os.path.isdir(full_path):
+                     for root, _, files in os.walk(full_path):
+                        for file in files:
+                            file_path_in_zip = os.path.relpath(os.path.join(root, file), download_dir)
+                            zip_file.write(os.path.join(root, file), arcname=file_path_in_zip)
+                else:
+                    zip_file.write(full_path, arcname=os.path.basename(full_path))
+        zip_buffer.seek(0)
+        return send_file(zip_buffer, as_attachment=True, download_name="downloader_selection.zip", mimetype='application/zip')
+
 
 @app.route("/api/delete_item", methods=['POST'])
 def delete_item_route():
     data = request.get_json()
-    item_path = data.get('path')
-    if not item_path:
+    paths = data.get('paths', [])
+    if not paths:
         return jsonify({"message": "Missing path parameter."}), 400
 
     download_dir = CONFIG.get("download_dir")
-    full_path = os.path.join(download_dir, item_path)
+    deleted_count = 0
+    errors = []
 
-    if not os.path.abspath(full_path).startswith(os.path.abspath(download_dir)):
-        return jsonify({"message": "Access denied."}), 403
+    for item_path in paths:
+        full_path = os.path.normpath(os.path.join(download_dir, item_path))
+
+        if not os.path.abspath(full_path).startswith(os.path.abspath(download_dir)):
+            errors.append(f"Access denied for {item_path}")
+            continue
+        
+        if not os.path.exists(full_path):
+            errors.append(f"Not found: {item_path}")
+            continue
+
+        try:
+            if os.path.isdir(full_path):
+                shutil.rmtree(full_path)
+            else:
+                os.remove(full_path)
+            deleted_count += 1
+        except Exception as e:
+            error_msg = f"Error deleting {item_path}: {e}"
+            print(f"ERROR: {error_msg}")
+            errors.append(error_msg)
     
-    if not os.path.exists(full_path):
-        return jsonify({"message": "File or directory not found."}), 404
-
-    try:
-        if os.path.isdir(full_path):
-            shutil.rmtree(full_path)
-        else:
-            os.remove(full_path)
-        return jsonify({"message": f"Successfully deleted {item_path}."})
-    except Exception as e:
-        print(f"ERROR deleting item {full_path}: {e}")
-        return jsonify({"message": f"Error deleting item: {e}"}), 500
+    if errors:
+        return jsonify({"message": f"Completed with errors. Deleted {deleted_count} item(s).", "errors": errors}), 500
+    else:
+        return jsonify({"message": f"Successfully deleted {deleted_count} item(s)."})
 
 
 #~ --- App Initialization --- ~#
