@@ -10,6 +10,9 @@ from lib.sanitizer import sanitize_filename
 app = Flask(__name__)
 
 #~ --- Configuration --- ~#
+# ##-- FIX: APP_VERSION and GITHUB_REPO_SLUG are constants, not part of the user config --##
+APP_VERSION = "1.3.0" 
+GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # --- File & Folder Paths ---
@@ -19,10 +22,7 @@ CONF_COOKIE_FILE = os.path.join(APP_ROOT, "cookies.txt")
 LOG_DIR = os.path.join(APP_ROOT, "logs")
 
 # --- Default Config ---
-# ##-- IMPROVEMENT: Moved version and repo slug here to be saved in config.json --##
 CONFIG = {
-    "app_version": "1.4.0",
-    "github_repo_slug": "KaliDrag0n/Downloader-Web-UI",
     "download_dir": os.path.join(APP_ROOT, "downloads"),
     "temp_dir": os.path.join(APP_ROOT, ".temp"),
     "cookie_file_content": ""
@@ -40,7 +40,6 @@ update_status = {
 }
 
 #~ --- Security & Path Helpers --- ~#
-# ##-- CRITICAL SECURITY FIX: New function to prevent path traversal --##
 def is_safe_path(basedir, path, follow_symlinks=True):
     """
     Checks if a given path is safely within a base directory.
@@ -51,7 +50,6 @@ def is_safe_path(basedir, path, follow_symlinks=True):
     return os.path.abspath(path).startswith(basedir)
 
 #~ --- Update & Startup Logic --- ~#
-# ##-- PLATFORM CONSISTENCY: New functions for self-updating and dependency checks --##
 def run_startup_checks():
     """
     Checks for dependencies on startup and installs/updates them.
@@ -59,14 +57,12 @@ def run_startup_checks():
     """
     print("--- [1/3] Running startup dependency checks ---")
     try:
-        # Check for packages in requirements.txt
         subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt'])
     except Exception as e:
         print(f"ERROR: Could not install Python dependencies from requirements.txt: {e}")
 
     print("--- [2/3] Checking for yt-dlp updates ---")
     try:
-        # Update yt-dlp to the latest version
         subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'yt-dlp'])
     except Exception as e:
         print(f"ERROR: Could not update yt-dlp: {e}")
@@ -80,9 +76,9 @@ def trigger_update_and_restart():
     """
     print("--- UPDATE PROCESS INITIATED ---")
     
-    # 1. Fetch latest release info
     print("[1/4] Fetching latest release information...")
-    api_url = f"https://api.github.com/repos/{CONFIG['github_repo_slug']}/releases/latest"
+    # ##-- FIX: Use the GITHUB_REPO_SLUG constant --##
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO_SLUG}/releases/latest"
     try:
         response = requests.get(api_url, timeout=15)
         response.raise_for_status()
@@ -94,7 +90,6 @@ def trigger_update_and_restart():
         print(f"ERROR: Could not fetch release info: {e}")
         return
 
-    # 2. Download and unzip to a temporary directory
     print(f"[2/4] Downloading update from {zip_url}...")
     temp_dir = os.path.join(APP_ROOT, ".temp_update")
     try:
@@ -112,7 +107,6 @@ def trigger_update_and_restart():
         if os.path.exists(temp_dir): shutil.rmtree(temp_dir)
         return
 
-    # 3. Apply the update, preserving user data
     print("[3/4] Applying update...")
     preserved_items = ["downloads", ".temp", "logs", "config.json", "state.json", "cookies.txt", ".git"]
     try:
@@ -133,17 +127,16 @@ def trigger_update_and_restart():
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
 
-    # 4. Trigger a restart
     print("[4/4] Update applied. Restarting server...")
-    state_manager.save_state() # Final save before exit
-    # This replaces the current process with a new one, effectively restarting the script
+    state_manager.save_state()
     os.execv(sys.executable, ['python'] + sys.argv)
 
 
 def _run_update_check():
     """The core logic for checking GitHub for updates."""
     global update_status
-    api_url = f"https://api.github.com/repos/{CONFIG['github_repo_slug']}/releases/latest"
+    # ##-- FIX: Use the GITHUB_REPO_SLUG constant --##
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO_SLUG}/releases/latest"
     try:
         print("UPDATE: Checking for new version...")
         res = requests.get(api_url, timeout=15)
@@ -152,12 +145,12 @@ def _run_update_check():
         latest_release = res.json()
         latest_version_tag = latest_release.get("tag_name", "").lstrip('v')
         
-        current_parts = [int(p) for p in CONFIG['app_version'].split('.')]
+        current_parts = [int(p) for p in APP_VERSION.split('.')]
         latest_parts = [int(p) for p in latest_version_tag.split('.')]
 
         with state_manager._lock:
             if latest_parts > current_parts:
-                print(f"UPDATE: New version found! Latest: {latest_version_tag}, Current: {CONFIG['app_version']}")
+                print(f"UPDATE: New version found! Latest: {latest_version_tag}, Current: {APP_VERSION}")
                 update_status["update_available"] = True
                 update_status["latest_version"] = latest_version_tag
                 update_status["release_url"] = latest_release.get("html_url")
@@ -189,10 +182,13 @@ def load_config():
     if os.path.exists(CONF_CONFIG_FILE):
         try:
             with open(CONF_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                CONFIG.update(json.load(f))
+                loaded_config = json.load(f)
+                # Ensure core identity keys aren't loaded from user config
+                loaded_config.pop("app_version", None)
+                loaded_config.pop("github_repo_slug", None)
+                CONFIG.update(loaded_config)
         except Exception as e:
             print(f"Error loading config: {e}")
-    # Save config on first run or if it was missing
     save_config()
 
 #~ --- Flask Routes --- ~#
@@ -213,11 +209,11 @@ def settings_route():
     
     with state_manager._lock:
         current_update_status = update_status.copy()
-
+    
     return render_template("settings.html", 
                            config=CONFIG, 
                            saved=request.args.get('saved'),
-                           app_version=CONFIG['app_version'],
+                           app_version=APP_VERSION,
                            update_info=current_update_status)
 
 @app.route("/file_manager")
@@ -258,10 +254,8 @@ def shutdown_route():
     threading.Timer(1.0, shutdown_server).start()
     return jsonify({"message": "Server is shutting down."})
 
-# ##-- PLATFORM CONSISTENCY: This route now triggers the new Python-based update --##
 @app.route('/api/install_update', methods=['POST'])
 def install_update_route():
-    # Run the update in a background thread to allow the UI to respond immediately
     update_thread = threading.Thread(target=trigger_update_and_restart)
     update_thread.start()
     return jsonify({"message": "Update process initiated. The server will restart shortly."})
@@ -493,7 +487,6 @@ def stop_route():
     return jsonify({"message": message})
 
 # --- File Manager API ---
-# ##-- PERFORMANCE FIX: This function now runs in a thread to avoid blocking --##
 def get_dir_size(path, size_dict):
     total = 0
     try:
@@ -504,13 +497,12 @@ def get_dir_size(path, size_dict):
                 elif entry.is_dir():
                     total += get_dir_size(entry.path, size_dict)
     except (FileNotFoundError, PermissionError):
-        pass # Ignore folders that disappear or we can't access
+        pass
     size_dict[path] = total
     return total
 
 @app.route("/api/files")
 def list_files_route():
-    # ##-- SECURITY FIX: All paths are now validated with is_safe_path --##
     base_download_dir = os.path.realpath(CONFIG.get("download_dir"))
     req_path = request.args.get('path', '')
     
@@ -530,21 +522,18 @@ def list_files_route():
         relative_path = os.path.join(req_path, name)
         try:
             if os.path.isdir(full_path):
-                # Start a thread to calculate directory size without blocking
                 thread = threading.Thread(target=get_dir_size, args=(full_path, dir_sizes))
                 thread.start()
                 dir_threads.append(thread)
-                items.append({"name": name, "path": relative_path, "type": "directory", "size": -1}) # Placeholder size
+                items.append({"name": name, "path": relative_path, "type": "directory", "size": -1})
             else:
                 items.append({"name": name, "path": relative_path, "type": "file", "size": os.path.getsize(full_path)})
         except Exception as e:
             print(f"Could not scan item {full_path}: {e}")
     
-    # Wait for all directory size threads to finish
     for t in dir_threads:
-        t.join(timeout=5.0) # 5 second timeout per directory scan
+        t.join(timeout=5.0)
 
-    # Populate the real sizes
     for item in items:
         if item['type'] == 'directory':
             full_path_for_size = os.path.join(safe_req_path, item['name'])
@@ -554,14 +543,12 @@ def list_files_route():
 
 @app.route("/download_item")
 def download_item_route():
-    # ##-- SECURITY FIX: All paths are now validated with is_safe_path --##
     paths = request.args.getlist('paths')
     if not paths:
         return "Missing path parameter.", 400
 
     download_dir = os.path.realpath(CONFIG.get("download_dir"))
     
-    # Sanitize all incoming paths
     safe_full_paths = []
     for p in paths:
         full_path = os.path.realpath(os.path.join(download_dir, p))
@@ -585,7 +572,7 @@ def download_item_route():
         else:
             return send_file(full_path, as_attachment=True)
     
-    else: # Multiple files/folders to zip
+    else:
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
             for full_path in safe_full_paths:
@@ -594,7 +581,7 @@ def download_item_route():
                         for file in files:
                             file_path_in_zip = os.path.relpath(os.path.join(root, file), download_dir)
                             zip_file.write(os.path.join(root, file), arcname=file_path_in_zip)
-                else: # It's a file
+                else:
                     file_path_in_zip = os.path.relpath(full_path, download_dir)
                     zip_file.write(full_path, arcname=file_path_in_zip)
         zip_buffer.seek(0)
@@ -603,7 +590,6 @@ def download_item_route():
 
 @app.route("/api/delete_item", methods=['POST'])
 def delete_item_route():
-    # ##-- SECURITY FIX: All paths are now validated with is_safe_path --##
     data = request.get_json()
     paths = data.get('paths', [])
     if not paths:
@@ -621,7 +607,6 @@ def delete_item_route():
             continue
         
         if not os.path.exists(full_path):
-            # This can happen in race conditions, just ignore it.
             continue
 
         try:
@@ -662,7 +647,6 @@ def initialize_app():
     worker_thread.start()
 
 #~ --- Main Execution --- ~#
-# ##-- PLATFORM CONSISTENCY: Run startup checks before starting the server --##
 run_startup_checks()
 initialize_app()
 
