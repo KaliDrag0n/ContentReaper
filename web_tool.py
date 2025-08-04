@@ -6,7 +6,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 app = Flask(__name__)
 
 #~ --- Configuration --- ~#
-APP_VERSION = "1.0.1" # The current version of this application
+APP_VERSION = "1.0.0" # The current version of this application
 GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI" # Your GitHub repo slug
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIG = {
@@ -268,6 +268,18 @@ def _finalize_job(job, final_status, log_output):
             shutil.rmtree(temp_dir_path)
         except OSError as e:
             log_output.append(f"Error removing temp folder {temp_dir_path}: {e}")
+
+    # --- GARBAGE COLLECTION FOR CANCELLED JOBS ---
+    # If the job was cancelled and the final destination folder is empty, remove it.
+    if final_status == "CANCELLED" and os.path.exists(final_dest_dir):
+        try:
+            if not os.listdir(final_dest_dir):
+                log_output.append(f"Destination folder '{final_dest_dir}' is empty after cancellation. Removing it.")
+                os.rmdir(final_dest_dir)
+            else:
+                log_output.append(f"Destination folder '{final_dest_dir}' contains files and will not be removed.")
+        except Exception as e:
+            log_output.append(f"Error during empty folder cleanup: {e}")
 
     return final_status, final_folder_name, final_title
 
@@ -715,21 +727,23 @@ def stop_route():
     return jsonify({"message": message})
 
 
-#~ --- Main Execution --- ~#
+#~ --- App Initialization (runs when imported by Waitress) --- ~#
+load_config()
+os.makedirs(CONFIG["download_dir"], exist_ok=True)
+os.makedirs(CONFIG["temp_dir"], exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
+atexit.register(save_state)
+load_state()
+
+# Start the background threads
+update_thread = threading.Thread(target=scheduled_update_check, daemon=True)
+update_thread.start()
+queue_paused_event.set()
+threading.Thread(target=yt_dlp_worker, daemon=True).start()
+
+
+#~ --- Main Execution (for direct run, e.g. from an IDE) --- ~#
 if __name__ == "__main__":
     from waitress import serve
-    load_config()
-    os.makedirs(CONFIG["download_dir"], exist_ok=True)
-    os.makedirs(CONFIG["temp_dir"], exist_ok=True)
-    os.makedirs(LOG_DIR, exist_ok=True)
-    atexit.register(save_state)
-    load_state()
-    
-    # Start the update checker in a background thread
-    update_thread = threading.Thread(target=scheduled_update_check, daemon=True)
-    update_thread.start()
-
-    queue_paused_event.set()
-    threading.Thread(target=yt_dlp_worker, daemon=True).start()
-    print("Starting server with Waitress...")
+    print("Starting server with Waitress for direct execution...")
     serve(app, host="0.0.0.0", port=8080)
