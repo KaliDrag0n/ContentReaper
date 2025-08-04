@@ -20,6 +20,9 @@ class StateManager:
         self.history_state_version = 0
         self.cancel_event = threading.Event()
         self.stop_mode = "CANCEL"
+        # NEW: Event to control the worker thread's execution
+        self.queue_paused_event = threading.Event()
+        self.queue_paused_event.set() # Start in a running state
 
     def _get_default_current_download(self):
         return {
@@ -177,26 +180,44 @@ class StateManager:
             with open(self.state_file, 'r', encoding='utf-8') as f:
                 state = json.load(f)
             
+            # --- IMPROVED: Validate the structure of the loaded state ---
             with self._lock:
                 abandoned_job = state.get("current_job")
-                if abandoned_job:
+                if isinstance(abandoned_job, dict): # Check if it's a valid job object
                     print(f"Re-queueing abandoned job: {abandoned_job.get('id')}")
                     self.queue.put(abandoned_job)
                 
                 self.history = state.get("history", [])
+                if not isinstance(self.history, list):
+                    print("WARNING: History in state file is not a list. Resetting.")
+                    self.history = []
+
                 self.next_log_id = state.get("next_log_id", len(self.history))
                 self.next_queue_id = state.get("next_queue_id", 0)
                 self.history_state_version = state.get("history_state_version", 0)
                 
-                for job in state.get("queue", []):
+                # Ensure queue is a list before iterating
+                queue_items = state.get("queue", [])
+                if not isinstance(queue_items, list):
+                    print("WARNING: Queue in state file is not a list. Resetting.")
+                    queue_items = []
+
+                for job in queue_items:
                     if 'id' not in job:
                         job['id'] = self.next_queue_id
                         self.next_queue_id += 1
                     self.queue.put(job)
                 
                 print(f"Loaded {self.queue.qsize()} items from queue and {len(self.history)} history entries.")
+        except json.JSONDecodeError as e:
+            print(f"Could not load state file (invalid JSON). Error: {e}")
+            corrupted_path = self.state_file + ".bak"
+            if os.path.exists(self.state_file):
+                os.rename(self.state_file, corrupted_path)
+            print(f"Backed up corrupted state file to {corrupted_path}")
         except Exception as e:
-            print(f"Could not load state file. Error: {e}")
+            # Catch other potential errors like TypeErrors from malformed data
+            print(f"An unexpected error occurred loading the state file. Error: {e}")
             corrupted_path = self.state_file + ".bak"
             if os.path.exists(self.state_file):
                 os.rename(self.state_file, corrupted_path)

@@ -10,7 +10,7 @@ from lib.sanitizer import sanitize_filename
 app = Flask(__name__)
 
 #~ --- Configuration --- ~#
-APP_VERSION = "1.2.0" # The current version of this application
+APP_VERSION = "1.4.0" # The current version of this application
 GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI" # Your GitHub repo slug
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -29,7 +29,6 @@ CONFIG = {
 
 #~ --- Global State & Threading --- ~#
 state_manager = StateManager(CONF_STATE_FILE)
-queue_paused_event = threading.Event()
 
 # --- Update Checking State ---
 update_status = {
@@ -42,7 +41,7 @@ update_status = {
 #~ --- Update Checker --- ~#
 def _run_update_check():
     """The core logic for checking GitHub for updates."""
-    global update_status
+    global update_status, APP_VERSION
     api_url = f"https://api.github.com/repos/{GITHUB_REPO_SLUG}/releases/latest"
     try:
         print("UPDATE: Checking for new version...")
@@ -52,8 +51,11 @@ def _run_update_check():
         latest_release = res.json()
         latest_version_tag = latest_release.get("tag_name", "").lstrip('v')
         
+        current_parts = [int(p) for p in APP_VERSION.split('.')]
+        latest_parts = [int(p) for p in latest_version_tag.split('.')]
+
         with state_manager._lock:
-            if latest_version_tag and latest_version_tag != APP_VERSION:
+            if latest_parts > current_parts:
                 print(f"UPDATE: New version found! Latest: {latest_version_tag}, Current: {APP_VERSION}")
                 update_status["update_available"] = True
                 update_status["latest_version"] = latest_version_tag
@@ -128,7 +130,8 @@ def status_route():
         response = {
             "queue": state_manager.get_queue_list(),
             "current": current_dl if current_dl.get("url") else None,
-            "history_version": state_manager.history_state_version
+            "history_version": state_manager.history_state_version,
+            "is_paused": not state_manager.queue_paused_event.is_set()
         }
     return jsonify(response)
 
@@ -181,14 +184,14 @@ def add_to_queue_route():
     
     mode = request.form.get("download_mode")
     
-    music_folder = request.form.get("music_foldername", "").strip()
-    video_folder = request.form.get("video_foldername", "").strip()
-    
+    # NEW: Handle folder name for all modes
     folder_name = ""
     if mode == 'music':
-        folder_name = music_folder or video_folder
+        folder_name = request.form.get("music_foldername", "").strip()
     elif mode == 'video':
-        folder_name = video_folder or music_folder
+        folder_name = request.form.get("video_foldername", "").strip()
+    elif mode == 'custom':
+        folder_name = request.form.get("custom_foldername", "").strip()
     
     folder_name = sanitize_filename(folder_name)
 
@@ -220,6 +223,10 @@ def add_to_queue_route():
             })
         elif mode == 'clip':
             job.update({ "format": request.form.get("clip_format", "video") })
+        # NEW: Handle custom mode arguments
+        elif mode == 'custom':
+            job.update({ "custom_args": request.form.get("custom_args", "") })
+
 
         state_manager.add_to_queue(job)
         jobs_added += 1
@@ -251,6 +258,17 @@ def reorder_queue_route():
     state_manager.reorder_queue(ordered_ids)
     return jsonify({"message": "Queue reordered."})
 
+@app.route('/queue/pause', methods=['POST'])
+def pause_queue_route():
+    state_manager.queue_paused_event.clear()
+    return jsonify({"message": "Queue paused."})
+
+@app.route('/queue/resume', methods=['POST'])
+def resume_queue_route():
+    state_manager.queue_paused_event.set()
+    return jsonify({"message": "Queue resumed."})
+
+
 @app.route("/queue/continue", methods=['POST'])
 def continue_job_route():
     job = request.get_json()
@@ -271,8 +289,7 @@ def preview_route():
         else:
             cmd = ['yt-dlp', '--get-title', '--get-thumbnail', '-s', url]
 
-        # --- CORRECTED LOGIC: Use a much shorter timeout ---
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5, check=True, encoding='utf-8', errors='replace')
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=True, encoding='utf-8', errors='replace')
         output = proc.stdout.strip().splitlines()
         
         if len(output) >= 2:
@@ -285,6 +302,8 @@ def preview_route():
             raise Exception("Could not extract preview details.")
 
         return jsonify({"title": title, "thumbnail": thumbnail_url})
+    except subprocess.TimeoutExpired:
+        return jsonify({"message": "Preview request timed out."}), 504
     except Exception as e:
         return jsonify({"message": f"Could not get preview: {e}"}), 500
 
@@ -527,12 +546,10 @@ def initialize_app():
     
     worker_thread = threading.Thread(
         target=yt_dlp_worker, 
-        args=(state_manager, CONFIG, LOG_DIR, CONF_COOKIE_FILE, queue_paused_event), 
+        args=(state_manager, CONFIG, LOG_DIR, CONF_COOKIE_FILE), 
         daemon=True
     )
     worker_thread.start()
-
-    queue_paused_event.set()
 
 initialize_app()
 

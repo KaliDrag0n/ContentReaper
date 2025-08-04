@@ -6,6 +6,7 @@ import json
 import datetime
 import shutil
 import time
+import shlex # NEW: Import for safely parsing command strings
 from .sanitizer import sanitize_filename
 
 # --- Helper Functions --- #
@@ -51,9 +52,25 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path):
             cmd.extend(['-f', 'bestaudio/best', '-x', '--audio-format', 'mp3', '--audio-quality', '0'])
         else:
             cmd.extend(['-f', 'bestvideo+bestaudio/best', '--merge-output-format', 'mp4'])
+    # NEW: Handle custom mode
+    elif mode == 'custom':
+        custom_args_str = job.get('custom_args', '')
+        # Use shlex to safely parse the command string into a list
+        custom_args = shlex.split(custom_args_str)
+        cmd.extend(custom_args)
 
-    output_template = os.path.join(temp_dir_path, "%(playlist_index)02d - %(title)s.%(ext)s" if is_playlist else "%(title)s.%(ext)s")
-    cmd.extend(['--progress-template', '%(progress)j', '-o', output_template])
+    # For non-custom modes, add the output templates
+    if mode != 'custom':
+        output_template = os.path.join(temp_dir_path, "%(playlist_index)02d - %(title)s.%(ext)s" if is_playlist else "%(title)s.%(ext)s")
+        cmd.extend(['-o', output_template])
+    # For custom mode, if the user hasn't specified an output path, default it to the temp dir
+    elif '-o' not in cmd and '--output' not in cmd:
+        output_template = os.path.join(temp_dir_path, "%(title)s.%(ext)s")
+        cmd.extend(['-o', output_template])
+    
+    # Always add progress template for UI feedback, unless user overrides it in custom
+    if '--progress-template' not in cmd:
+        cmd.extend(['--progress-template', '%(progress)j'])
     
     start = job.get("playlist_start")
     end = job.get("playlist_end")
@@ -127,9 +144,10 @@ def _finalize_job(job, final_status, temp_log_path, config):
 
 # --- Main Worker Thread --- #
 
-def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, queue_paused_event):
+def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
     while True:
-        queue_paused_event.wait()
+        state_manager.queue_paused_event.wait()
+
         job = state_manager.queue.get()
         state_manager.cancel_event.clear()
         state_manager.stop_mode = "CANCEL"
@@ -139,7 +157,6 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, queue_paused
         temp_log_path = os.path.join(log_dir, f"job_active_{job['id']}.log")
 
         try:
-            # --- NEW: Auto-fetch folder name if not provided ---
             if not job.get("folder"):
                 try:
                     print(f"WORKER: No folder name for job {job['id']}, fetching title...")
@@ -155,7 +172,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, queue_paused
                         raise Exception("No title output from yt-dlp")
                 except Exception as e:
                     print(f"WORKER: Could not auto-fetch title for job {job['id']}: {e}")
-                    job["folder"] = "Misc Downloads" # Fallback
+                    job["folder"] = "Misc Downloads"
             
             os.makedirs(temp_dir_path, exist_ok=True)
             
@@ -185,9 +202,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, queue_paused
             with open(temp_log_path, 'w', encoding='utf-8') as log_file:
                 log_file.write(f"Starting download for job {job['id']}\n")
                 log_file.write(f"Folder: {job.get('folder')}\n")
-                log_file.write(f"Created temporary directory: {temp_dir_path}\n")
-                if os.path.exists(os.path.join(temp_dir_path, "archive.temp.txt")):
-                    log_file.write("Copied existing archive to temp directory for processing.\n")
+                log_file.write(f"Command: {' '.join(shlex.quote(c) for c in cmd)}\n\n") # Log the full command
                 log_file.flush()
 
                 for line in iter(process.stdout.readline, ''):
@@ -235,7 +250,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, queue_paused
                     elif any(s in line for s in ("[ExtractAudio]", "[Merger]")):
                         state_manager.update_current_download({"status": 'Processing...'})
 
-            process.wait(timeout=7200)
+            process.wait() 
             
             if state_manager.cancel_event.is_set():
                 status = "STOPPED" if state_manager.stop_mode == "SAVE" else "CANCELLED"

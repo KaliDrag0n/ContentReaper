@@ -19,6 +19,28 @@
     .queue-handle { cursor: move; color: #6c757d; }
     .sortable-ghost { opacity: 0.4; background: #c8ebfb; }
     .optimistic-item { opacity: 0.6; pointer-events: none; }
+    /* Style for the paused overlay */
+    .paused-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: rgba(0, 0, 0, 0.5);
+        color: white;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-size: 1.5rem;
+        font-weight: bold;
+        z-index: 10;
+        border-radius: var(--bs-card-border-radius);
+    }
+    /* FIX: Lift the queue header above the overlay */
+    #queue-header {
+        position: relative;
+        z-index: 11;
+    }
   </style>
 </head>
 <body>
@@ -85,10 +107,12 @@
     </header>
 
     <div class="card mb-4"><div class="card-body">
+        <!-- NEW: Added Custom button -->
         <div class="row text-center mode-selector mb-4 g-2">
           <div class="col"><button class="btn btn-outline-primary" data-mode="music"><i class="bi bi-music-note-beamed"></i> Music</button></div>
           <div class="col"><button class="btn btn-outline-primary" data-mode="video"><i class="bi bi-film"></i> Video</button></div>
           <div class="col"><button class="btn btn-outline-primary" data-mode="clip"><i class="bi bi-scissors"></i> Clip</button></div>
+          <div class="col"><button class="btn btn-outline-primary" data-mode="custom"><i class="bi bi-terminal"></i> Custom</button></div>
         </div>
         <form id="add-job-form">
           <input type="hidden" name="download_mode" id="download_mode_input">
@@ -129,6 +153,23 @@
           <div id="video-options" class="mode-options"><div class="row"><div class="col-md-6 mb-3"><label class="form-label">Folder Name <small>(optional)</small></label><input type="text" name="video_foldername" class="form-control"></div><div class="col-md-4 mb-3"><label class="form-label">Video Quality</label><select name="video_quality" class="form-select"><option value="best">Best Available</option><option value="1080p">1080p (Full HD)</option><option value="720p">720p (HD)</option></select></div><div class="col-md-2 mb-3"><label class="form-label">Format</label><select name="video_format" class="form-select"><option value="mp4" selected>MP4</option><option value="mkv">MKV</option></select></div></div><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="video_embed_subs"><label class="form-check-label">Embed Subtitles</label></div></div>
           <div id="clip-options" class="mode-options"><div class="mb-3"><label class="form-label">Format</label><select name="clip_format" class="form-select"><option value="video">Quick Video (Best)</option><option value="audio">Quick Audio (MP3)</option></select></div></div>
 
+          <!-- NEW: Custom mode options -->
+          <div id="custom-options" class="mode-options">
+            <div class="mb-3">
+              <label class="form-label">Folder Name <small>(optional)</small></label>
+              <input type="text" name="custom_foldername" class="form-control" placeholder="Leave blank to use video/playlist title">
+            </div>
+            <div class="mb-3">
+                <label for="custom_args" class="form-label">Custom yt-dlp Flags</label>
+                <textarea class="form-control" id="custom_args" name="custom_args" rows="3" placeholder="-f best -x --audio-format mp3"></textarea>
+                <div class="form-text">
+                    Enter the command line arguments for yt-dlp. The URL and output path will be added automatically.
+                    <strong class="text-warning">Note:</strong> Progress may not display in the UI if you override the progress template.
+                </div>
+            </div>
+          </div>
+
+
           <div id="playlist-range-options" class="row mb-3">
             <div class="col-md-6"><label class="form-label">Start Index <small>(optional)</small></label><input type="number" name="playlist_start" class="form-control" min="1" placeholder="e.g., 5"></div>
             <div class="col-md-6"><label class="form-label">End Index <small>(optional)</small></label><input type="number" name="playlist_end" class="form-control" min="1" placeholder="e.g., 20"></div>
@@ -165,7 +206,23 @@
     </div></div>
 
     <div class="card mb-4"><div class="card-header bg-info-subtle text-emphasis-info">Now Downloading</div><div class="card-body" id="current-status"><p>No active download.</p></div></div>
-    <div class="card mb-4"><div class="card-header bg-warning-subtle text-emphasis-warning d-flex justify-content-between align-items-center"><span>Download Queue</span><div id="queue-controls"><button class="btn btn-sm btn-danger" id="clear-queue-btn">Clear All</button></div></div><ul class="list-group list-group-flush" id="queue-list"></ul></div>
+    
+    <div class="card mb-4 position-relative">
+        <div id="paused-overlay" class="paused-overlay" style="display: none;">
+            <i class="bi bi-pause-circle-fill me-2"></i> PAUSED
+        </div>
+        <div class="card-header bg-warning-subtle text-emphasis-warning d-flex justify-content-between align-items-center" id="queue-header">
+            <span>Download Queue</span>
+            <div id="queue-controls">
+                <button class="btn btn-sm btn-secondary" id="pause-resume-btn" data-action="pause">
+                    <i class="bi bi-pause-fill"></i> Pause
+                </button>
+                <button class="btn btn-sm btn-danger" id="clear-queue-btn">Clear All</button>
+            </div>
+        </div>
+        <ul class="list-group list-group-flush" id="queue-list"></ul>
+    </div>
+
     <div class="card mb-4"><div class="card-header bg-success-subtle text-emphasis-success d-flex justify-content-between align-items-center"><span>Download History</span><button class="btn btn-danger btn-sm" id="clear-history-btn">Clear History</button></div><ul class="list-group list-group-flush" id="history-list"></ul></div>
   </div>
 
@@ -176,6 +233,7 @@ let currentHistoryVersion = -1;
 let previewTimeout;
 let liveLogEventSource = null;
 let previewAbortController = null;
+let globalHistoryData = [];
 
 // --- CORE UTILITY FUNCTIONS ---
 const showToast = (message, title = 'Notification', type = 'success') => {
@@ -258,12 +316,16 @@ const updatePreviewFromText = (text) => {
     
     const musicFolderInput = document.querySelector('input[name="music_foldername"]');
     const videoFolderInput = document.querySelector('input[name="video_foldername"]');
+    const customFolderInput = document.querySelector('input[name="custom_foldername"]');
     if (firstUrl) {
-        musicFolderInput.placeholder = 'Leave blank to use video/playlist title';
-        videoFolderInput.placeholder = 'Leave blank to use video/playlist title';
+        const placeholderText = 'Leave blank to use video/playlist title';
+        musicFolderInput.placeholder = placeholderText;
+        videoFolderInput.placeholder = placeholderText;
+        customFolderInput.placeholder = placeholderText;
     } else {
         musicFolderInput.placeholder = '';
         videoFolderInput.placeholder = '';
+        customFolderInput.placeholder = '';
     }
 
     fetchUrlPreview(firstUrl);
@@ -307,7 +369,8 @@ const fetchUrlPreview = (url) => {
             const res = await apiRequest(`/preview?url=${encodeURIComponent(url)}`, { signal });
             const data = await res.json();
             if (data.message) {
-                 previewEl.style.display = 'none';
+                 titleEl.textContent = data.message;
+                 imgEl.src = '';
                  return;
             }
             titleEl.textContent = data.title;
@@ -324,22 +387,24 @@ async function fetchHistory() {
     try {
         const res = await apiRequest('/history');
         const data = await res.json();
-        const history = data.history;
+        globalHistoryData = data.history; 
+        const historyForDisplay = [...globalHistoryData].reverse();
+
         const historyList = document.getElementById("history-list");
-        document.getElementById("clear-history-btn").style.display = history.length > 0 ? 'block' : 'none';
+        document.getElementById("clear-history-btn").style.display = historyForDisplay.length > 0 ? 'block' : 'none';
         historyList.innerHTML = "";
-        if (history.length === 0) {
+        if (historyForDisplay.length === 0) {
             historyList.innerHTML = "<li class='list-group-item'>Nothing in history.</li>";
         } else {
-            history.slice().reverse().forEach(item => {
+            historyForDisplay.forEach(item => {
                 let badgeClass = 'bg-secondary';
-                let actionButton = `<button class="btn btn-sm btn-outline-secondary" title="Download Again"><i class="bi bi-arrow-clockwise"></i></button>`;
+                let actionButton = `<button class="btn btn-sm btn-outline-secondary history-action-btn" data-action="requeue" title="Download Again"><i class="bi bi-arrow-clockwise"></i></button>`;
                 switch(item.status) {
                     case 'COMPLETED': badgeClass = 'bg-success'; break;
                     case 'PARTIAL': badgeClass = 'bg-info text-dark'; break;
                     case 'STOPPED': 
                         badgeClass = 'bg-warning text-dark'; 
-                        actionButton = `<button class="btn btn-sm btn-outline-success" title="Retry Download"><i class="bi bi-play-fill"></i></button>`;
+                        actionButton = `<button class="btn btn-sm btn-outline-success history-action-btn" data-action="requeue" title="Retry Download"><i class="bi bi-play-fill"></i></button>`;
                         break;
                     case 'CANCELLED': badgeClass = 'bg-secondary'; break;
                     case 'FAILED':
@@ -349,6 +414,7 @@ async function fetchHistory() {
 
                 const li = document.createElement("li");
                 li.className = "list-group-item";
+                li.dataset.logId = item.log_id;
                 li.innerHTML = `
                     <div class="d-flex justify-content-between align-items-center">
                         <div>
@@ -359,16 +425,11 @@ async function fetchHistory() {
                         </div>
                         <div class="btn-group">
                             ${actionButton}
-                            <button class="btn btn-sm btn-outline-info" title="View Log"><i class="bi bi-file-text"></i></button>
-                            <button class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash-fill"></i></button>
+                            <button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log"><i class="bi bi-file-text"></i></button>
+                            <button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete"><i class="bi bi-trash-fill"></i></button>
                         </div>
                     </div>`;
                 
-                li.querySelector('.btn-group button:first-child').onclick = () => requeueJob(item.job_data);
-                li.querySelector('.bi-file-text').onclick = () => viewStaticLog(item.log_id);
-                li.querySelector('.bi-trash-fill').onclick = () => {
-                    apiRequest(`/history/delete/${item.log_id}`, { method: 'POST' }).then(() => fetchStatus());
-                };
                 historyList.appendChild(li);
             });
         }
@@ -424,20 +485,36 @@ const fetchStatus = async () => {
         const queueList = document.getElementById("queue-list");
         document.getElementById("queue-controls").style.display = data.queue.length > 0 ? 'flex' : 'none';
         
-        const existingIds = [...queueList.children].map(li => li.dataset.jobId);
         const newIds = data.queue.map(job => job.id.toString());
-        if (JSON.stringify(existingIds) !== JSON.stringify(newIds)) {
+        const existingIds = [...queueList.children].map(li => li.dataset.jobId);
+        
+        if (JSON.stringify(newIds) !== JSON.stringify(existingIds)) {
             queueList.innerHTML = data.queue.length === 0 ? "<li class='list-group-item'>Queue is empty.</li>" : data.queue.map(job => 
                 `<li class="list-group-item d-flex justify-content-between align-items-center" data-job-id="${job.id}">
                     <div>
                         <i class="bi bi-grip-vertical queue-handle me-2"></i>
                         <span class="word-break-all" style="max-width: 80%;">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span>
                     </div>
-                    <button class="btn-close" onclick="apiRequest('/queue/delete/by-id/${job.id}', {method: 'POST'}).then(() => fetchStatus())"></button>
+                    <button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}"></button>
                 </li>`
             ).join('');
         }
 
+        const pauseResumeBtn = document.getElementById('pause-resume-btn');
+        const pausedOverlay = document.getElementById('paused-overlay');
+        if (data.is_paused) {
+            pauseResumeBtn.dataset.action = 'resume';
+            pauseResumeBtn.innerHTML = '<i class="bi bi-play-fill"></i> Resume';
+            pauseResumeBtn.classList.remove('btn-secondary');
+            pauseResumeBtn.classList.add('btn-success');
+            pausedOverlay.style.display = 'flex';
+        } else {
+            pauseResumeBtn.dataset.action = 'pause';
+            pauseResumeBtn.innerHTML = '<i class="bi bi-pause-fill"></i> Pause';
+            pauseResumeBtn.classList.remove('btn-success');
+            pauseResumeBtn.classList.add('btn-secondary');
+            pausedOverlay.style.display = 'none';
+        }
 
         if (data.history_version !== currentHistoryVersion) {
             currentHistoryVersion = data.history_version;
@@ -512,7 +589,7 @@ const showConfirmModal = (title, body, onConfirm) => {
     
     newConfirmButton.addEventListener('click', () => {
         onConfirm();
-        confirmModalInstance.hide();
+        if (confirmModalInstance) confirmModalInstance.hide();
     });
 
     if (!confirmModalInstance) {
@@ -538,24 +615,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('add-job-form').addEventListener('submit', async function(e) {
         e.preventDefault();
-        
-        if (previewAbortController) {
-            previewAbortController.abort();
-        }
-
-        // --- OPTIMISTIC UI UPDATE ---
-        const queueList = document.getElementById("queue-list");
-        const urls = extractUrls(document.querySelector('textarea[name="urls"]').value);
-        urls.forEach(url => {
-            const li = document.createElement("li");
-            li.className = "list-group-item optimistic-item";
-            li.innerHTML = `<span class="word-break-all">${url}</span>`;
-            queueList.appendChild(li);
-        });
-        if (queueList.querySelector('.list-group-item').textContent === 'Queue is empty.') {
-            queueList.innerHTML = ''; // Clear the "empty" message
-        }
-
+        if (previewAbortController) previewAbortController.abort();
         try {
             const res = await apiRequest('/queue', { method: 'POST', body: new FormData(this) });
             const data = await res.json();
@@ -567,7 +627,6 @@ document.addEventListener('DOMContentLoaded', () => {
             fetchStatus();
         } catch(error) { 
             console.error("Failed to add job:", error);
-            fetchStatus(); // Fetch status anyway to clear optimistic items
         }
     });
 
@@ -586,14 +645,48 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
     
+    document.getElementById('pause-resume-btn').addEventListener('click', (e) => {
+        const action = e.currentTarget.dataset.action;
+        apiRequest(`/queue/${action}`, { method: 'POST' }).then(() => fetchStatus());
+    });
+    
     document.getElementById('logModal').addEventListener('hidden.bs.modal', () => {
         if (liveLogEventSource) {
             liveLogEventSource.close();
             liveLogEventSource = null;
         }
     });
-
+    
     const queueListEl = document.getElementById('queue-list');
+    queueListEl.addEventListener('click', (e) => {
+        const deleteBtn = e.target.closest('.queue-action-btn[data-action="delete"]');
+        if (deleteBtn) {
+            const jobId = deleteBtn.dataset.jobId;
+            apiRequest(`/queue/delete/by-id/${jobId}`, {method: 'POST'}).then(() => fetchStatus());
+        }
+    });
+
+    const historyListEl = document.getElementById('history-list');
+    historyListEl.addEventListener('click', (e) => {
+        const actionBtn = e.target.closest('.history-action-btn');
+        if (!actionBtn) return;
+
+        const li = actionBtn.closest('.list-group-item');
+        const logId = parseInt(li.dataset.logId, 10);
+        const action = actionBtn.dataset.action;
+
+        if (action === 'log') {
+            viewStaticLog(logId);
+        } else if (action === 'delete') {
+            apiRequest(`/history/delete/${logId}`, { method: 'POST' }).then(() => fetchStatus());
+        } else if (action === 'requeue') {
+            const historyItem = globalHistoryData.find(item => item.log_id === logId);
+            if (historyItem) {
+                requeueJob(historyItem.job_data);
+            }
+        }
+    });
+
     Sortable.create(queueListEl, {
         handle: '.queue-handle',
         animation: 150,
@@ -604,7 +697,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ order: orderedIds })
-            }).catch(err => console.error("Failed to reorder queue:", err));
+            }).catch(err => {
+                console.error("Failed to reorder queue:", err);
+                fetchStatus();
+            });
         },
     });
 
