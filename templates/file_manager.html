@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <title>File Manager - Downloader Dashboard</title>
+  <style>
+    :root { --bs-body-bg: #f8f9fa; --bs-body-color: #212529; --bs-border-color: #dee2e6; --bs-card-bg: #fff; }
+    [data-bs-theme="dark"] { --bs-body-bg: #212529; --bs-body-color: #dee2e6; --bs-border-color: #495057; --bs-card-bg: #343a40; }
+    body { transition: background-color 0.2s linear, color 0.2s linear; }
+    .word-break-all { word-break: break-all; }
+  </style>
+</head>
+<body>
+
+  <div class="modal fade" id="confirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="confirmModalTitle">Are you sure?</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body" id="confirmModalBody">
+          This action cannot be undone.
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-danger" id="confirmModalButton">Confirm</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="container py-4">
+    <header class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom">
+      <h2 class="m-0"><i class="bi bi-folder-fill"></i> File Manager</h2>
+      <div class="d-flex align-items-center">
+        <a href="/" class="btn btn-secondary me-3"><i class="bi bi-house-fill"></i> Home</a>
+        <a href="/settings" class="btn btn-secondary me-3"><i class="bi bi-gear-fill"></i> Settings</a>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" role="switch" id="theme-toggle">
+          <label class="form-check-label" for="theme-toggle"><i class="bi bi-moon-stars-fill"></i></label>
+        </div>
+      </div>
+    </header>
+
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Downloads Directory</span>
+        <button class="btn btn-primary btn-sm" id="refresh-btn">
+          <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+      </div>
+      <div class="list-group list-group-flush" id="file-list">
+        <!-- File and folder list will be inserted here by JavaScript -->
+      </div>
+    </div>
+  </div>
+
+<script>
+let confirmModalInstance;
+
+const applyTheme = (theme) => {
+    document.documentElement.dataset.bsTheme = theme;
+    const toggle = document.getElementById('theme-toggle');
+    if (toggle) {
+        toggle.checked = theme === 'dark';
+    }
+};
+
+const showConfirmModal = (title, body, onConfirm) => {
+    document.getElementById('confirmModalTitle').textContent = title;
+    document.getElementById('confirmModalBody').textContent = body;
+    const confirmButton = document.getElementById('confirmModalButton');
+    
+    const newConfirmButton = confirmButton.cloneNode(true);
+    confirmButton.parentNode.replaceChild(newConfirmButton, confirmButton);
+    
+    newConfirmButton.addEventListener('click', () => {
+        onConfirm();
+        if (confirmModalInstance) confirmModalInstance.hide();
+    });
+
+    if (!confirmModalInstance) {
+        confirmModalInstance = new bootstrap.Modal(document.getElementById('confirmModal'));
+    }
+    confirmModalInstance.show();
+};
+
+const formatBytes = (bytes, decimals = 2) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+const fetchFiles = async () => {
+    const fileListEl = document.getElementById('file-list');
+    fileListEl.innerHTML = '<div class="list-group-item">Loading...</div>';
+    try {
+        const response = await fetch('/api/files');
+        const files = await response.json();
+        
+        fileListEl.innerHTML = ''; // Clear loading message
+
+        if (files.length === 0) {
+            fileListEl.innerHTML = '<div class="list-group-item">No files or folders found.</div>';
+            return;
+        }
+
+        files.forEach(item => {
+            const isDirectory = item.type === 'directory';
+            const icon = isDirectory ? 'bi-folder-fill text-primary' : 'bi-file-earmark-music-fill';
+            const downloadUrl = `/download_item?path=${encodeURIComponent(item.path)}`;
+            const downloadButton = isDirectory 
+                ? `<a href="${downloadUrl}" class="btn btn-sm btn-success" title="Download as .zip"><i class="bi bi-file-earmark-zip-fill"></i> Download ZIP</a>`
+                : `<a href="${downloadUrl}" class="btn btn-sm btn-success" title="Download File"><i class="bi bi-download"></i> Download</a>`;
+
+            const li = document.createElement('div');
+            li.className = 'list-group-item d-flex justify-content-between align-items-center';
+            li.innerHTML = `
+                <div>
+                    <i class="bi ${icon} me-2"></i>
+                    <span class="word-break-all">${item.name}</span>
+                    <br>
+                    <small class="text-muted">${formatBytes(item.size)}</small>
+                </div>
+                <div class="btn-group">
+                    ${downloadButton}
+                    <button class="btn btn-sm btn-danger delete-btn" data-path="${item.path}" data-name="${item.name}" title="Delete">
+                        <i class="bi bi-trash-fill"></i> Delete
+                    </button>
+                </div>
+            `;
+            fileListEl.appendChild(li);
+        });
+
+        document.querySelectorAll('.delete-btn').forEach(button => {
+            button.addEventListener('click', (e) => {
+                const path = e.currentTarget.dataset.path;
+                const name = e.currentTarget.dataset.name;
+                showConfirmModal(
+                    `Delete "${name}"?`,
+                    `Are you sure you want to permanently delete this item? This cannot be undone.`,
+                    async () => {
+                        try {
+                            await fetch('/api/delete_item', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ path: path })
+                            });
+                            fetchFiles(); // Refresh the list
+                        } catch (error) {
+                            console.error("Delete failed:", error);
+                            alert("Failed to delete item. See console for details.");
+                        }
+                    }
+                );
+            });
+        });
+
+    } catch (error) {
+        fileListEl.innerHTML = '<div class="list-group-item text-danger">Failed to load files.</div>';
+        console.error("Error fetching files:", error);
+    }
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+    const savedTheme = localStorage.getItem('downloader_theme') || 'light';
+    applyTheme(savedTheme);
+
+    const toggle = document.getElementById('theme-toggle');
+    if (toggle) {
+        toggle.addEventListener('click', () => {
+            const newTheme = document.documentElement.dataset.bsTheme === 'dark' ? 'light' : 'dark';
+            applyTheme(newTheme);
+            localStorage.setItem('downloader_theme', newTheme);
+        });
+    }
+
+    document.getElementById('refresh-btn').addEventListener('click', fetchFiles);
+
+    fetchFiles();
+});
+</script>
+</body>
+</html>
