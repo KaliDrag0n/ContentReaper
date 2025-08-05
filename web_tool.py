@@ -4,20 +4,39 @@ import os, sys, subprocess
 #~ --- Update & Startup Logic --- ~#
 def run_startup_checks():
     """
-    Checks for dependencies on startup and installs/updates them.
-    This runs ONCE when the application starts.
+    Checks for dependencies on startup. If they are missing, it attempts
+    to install them to the user's local site-packages.
     """
     print("--- [1/3] Running startup dependency checks ---")
     try:
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt'])
-    except Exception as e:
-        print(f"ERROR: Could not install Python dependencies from requirements.txt: {e}")
+        import flask
+        import waitress
+        print("Dependencies are satisfied.")
+    except ImportError:
+        print("Required Python packages not found. Attempting to install...")
+        APP_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+        requirements_path = os.path.join(APP_ROOT_DIR, "requirements.txt")
+        if not os.path.exists(requirements_path):
+            print(f"FATAL: requirements.txt not found at {requirements_path}. Cannot proceed.")
+            sys.exit(1)
+        
+        try:
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--user', '-r', requirements_path])
+            print("\nDependencies installed successfully.")
+            print("Please restart the application for the changes to take effect.")
+            sys.exit(0)
+        except subprocess.CalledProcessError as e:
+            print(f"\nERROR: Failed to install dependencies using pip. Error: {e}")
+            print("Please install the required packages manually.")
+            print(f"You can try running: pip install --user -r {requirements_path}")
+            sys.exit(1)
 
     print("--- [2/3] Checking for yt-dlp updates ---")
     try:
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'yt-dlp'])
+        # Always use --user to avoid permission errors on protected systems
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--user', '--upgrade', 'yt-dlp'])
     except Exception as e:
-        print(f"ERROR: Could not update yt-dlp: {e}")
+        print(f"WARNING: Could not update yt-dlp: {e}")
     print("--- [3/3] Startup checks complete ---")
 
 run_startup_checks()
@@ -229,7 +248,6 @@ def status_stream_route():
         try:
             while True:
                 response = None
-                # ##-- FIX: Lock, copy data, then immediately unlock --##
                 with state_manager._lock:
                     history_changed = state_manager.history_state_version != last_history_ver
                     queue_changed = state_manager.queue_state_version != last_queue_ver
@@ -248,7 +266,6 @@ def status_stream_route():
                         last_queue_ver = state_manager.queue_state_version
                         last_current_dl_ver = state_manager.current_download_version
                 
-                # Send data outside of the lock
                 if response:
                     yield f"data: {json.dumps(response)}\n\n"
                 
@@ -377,7 +394,6 @@ def reorder_queue_route():
     state_manager.reorder_queue(ordered_ids)
     return jsonify({"message": "Queue reordered."})
 
-# ##-- FIX: Use the new thread-safe methods from StateManager --##
 @app.route('/queue/pause', methods=['POST'])
 def pause_queue_route():
     state_manager.pause_queue()

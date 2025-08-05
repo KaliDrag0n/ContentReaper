@@ -74,6 +74,28 @@
         document.getElementById('playlist-range-options').style.display = isPlaylist ? 'flex' : 'none';
     };
     
+    // ##-- NEW: Function for optimistic UI on stop/cancel --##
+    const handleStopRequest = (mode) => {
+        const statusPara = document.querySelector('#current-status p.small');
+        const stopSaveBtn = document.getElementById('stop-save-btn');
+        const cancelBtn = document.getElementById('cancel-btn');
+        const viewLogBtn = document.getElementById('view-log-btn');
+
+        if (stopSaveBtn) stopSaveBtn.disabled = true;
+        if (cancelBtn) cancelBtn.disabled = true;
+        if (viewLogBtn) viewLogBtn.disabled = true;
+
+        if (statusPara) {
+            statusPara.textContent = mode === 'save' ? 'Stopping...' : 'Cancelling...';
+        }
+
+        apiRequest('/stop', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: mode })
+        });
+    };
+
     // --- RENDERING LOGIC ---
     function renderStatus(data) {
         const current = data.current;
@@ -117,8 +139,8 @@
             `;
             
             document.getElementById('view-log-btn').addEventListener('click', viewLiveLog);
-            document.getElementById('stop-save-btn').addEventListener('click', () => apiRequest('/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'save' }) }));
-            document.getElementById('cancel-btn').addEventListener('click', () => apiRequest('/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'cancel' }) }));
+            document.getElementById('stop-save-btn').addEventListener('click', () => handleStopRequest('save'));
+            document.getElementById('cancel-btn').addEventListener('click', () => handleStopRequest('cancel'));
 
         } else {
             currentDiv.innerHTML = "<p>No active download.</p>";
