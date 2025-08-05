@@ -1,7 +1,15 @@
 #!/bin/bash
 
-# This script can run the server directly, install it as a systemd service,
-# or be called by the systemd service itself.
+# This script simplifies the setup and execution process.
+# It checks if the systemd service is installed, installs it if not,
+# and then starts/restarts it.
+
+# --- Configuration ---
+SERVICE_NAME="downloader-web-ui.service"
+# Get the directory of the script to ensure it runs from the correct location
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+SERVICE_FILE_PATH="/etc/systemd/system/$SERVICE_NAME"
+
 
 # --- Helper Functions ---
 check_prerequisites() {
@@ -30,39 +38,34 @@ update_from_git() {
     fi
 }
 
-# --- Service Installation Function ---
+# --- Service Installation Function (now called automatically) ---
 install_systemd_service() {
-    echo "--- Systemd Service Installer ---"
+    echo "--- Installing Systemd Service ---"
 
-    if ! command -v systemctl &> /dev/null; then
-        echo "ERROR: systemd is not available on this system. Cannot install service."
+    # Determine the user who ran sudo, which is the intended service user.
+    if [ -z "$SUDO_USER" ]; then
+        echo "ERROR: This script must be run with sudo."
         exit 1
     fi
-
-    if [ "$EUID" -ne 0 ]; then
-      echo "ERROR: Service installation requires root privileges."
-      echo "Please run this command again with sudo: sudo ./run.sh install-service"
-      exit 1
-    fi
-
-    APP_PATH=$(pwd)
-    SERVICE_USER=$(logname)
+    
+    SERVICE_USER=$SUDO_USER
     SERVICE_GROUP=$(id -gn "$SERVICE_USER")
-    SERVICE_FILE_OUTPUT="/etc/systemd/system/downloader-web-ui.service"
-
+    
     echo "Service will be installed for user: $SERVICE_USER"
-    echo "Application path: $APP_PATH"
+    echo "Application path: $DIR"
 
+    # Create the virtual environment as the correct user if it doesn't exist
     if [ ! -d "venv" ]; then
       echo "--> Creating Python virtual environment..."
       sudo -u "$SERVICE_USER" python3 -m venv venv
     fi
 
     echo "--> Creating service file..."
-    # The ExecStart line is now changed to call this script with the 'start-service' argument.
+    # This creates the service file that systemd will use
+    # It still uses 'start-service' for its own internal execution command
     cat << EOF | sed -e "s|__USER__|$SERVICE_USER|g" \
                      -e "s|__GROUP__|$SERVICE_GROUP|g" \
-                     -e "s|__PATH__|$APP_PATH|g" > "$SERVICE_FILE_OUTPUT"
+                     -e "s|__PATH__|$DIR|g" > "$SERVICE_FILE_PATH"
 [Unit]
 Description=Downloader Web UI Service
 After=network.target
@@ -82,55 +85,64 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-    echo "--> Reloading systemd, enabling and starting the service..."
+    echo "--> Reloading systemd and enabling the service..."
     systemctl daemon-reload
-    systemctl enable downloader-web-ui.service
-    systemctl restart downloader-web-ui.service
-
-    echo ""
-    echo "--- Installation Complete! ---"
-    echo "The Downloader Web UI is now running as a background service."
-    echo "You can check its status with: sudo systemctl status downloader-web-ui"
-    echo "You can view its logs with:   sudo journalctl -u downloader-web-ui -f"
+    systemctl enable $SERVICE_NAME
 }
 
-# --- Main Script Logic ---
-
-# Get the directory of the script to ensure it runs from the correct location
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-
-# Entry point for the systemd service (non-interactive)
+# --- Internal entry point for the systemd service (DO NOT REMOVE) ---
+# When systemd runs `ExecStart`, it calls this script with 'start-service'.
+# This part of the script handles that specific internal call.
 if [ "$1" == "start-service" ]; then
+    # Change to the script's directory before doing anything
+    cd "$DIR"
     update_from_git
-    # Activate venv and start python
+    # Activate venv and start the python application
     source "$DIR/venv/bin/activate"
     python3 "$DIR/web_tool.py"
     exit 0
 fi
 
-# Entry point for the installer
-if [ "$1" == "install-service" ]; then
-    install_systemd_service
-    exit 0
+# --- Main Script Logic ---
+# This is the new default behavior when you run `./run.sh`
+
+# 1. Ensure the script is run with root privileges, as it's needed for service management.
+if [ "$EUID" -ne 0 ]; then
+  echo "This script needs root privileges to manage the systemd service."
+  echo "Re-running with sudo..."
+  # Re-execute this same script with sudo
+  sudo bash "$0" "$@"
+  exit $?
 fi
 
-# Default entry point for interactive use
+# From here on, the script is running as root.
+
+# 2. Go to the script's directory, check prerequisites, and update from git
+cd "$DIR"
 check_prerequisites
 update_from_git
 
-echo "================================="
-echo " Starting Downloader Web UI Server"
-echo "================================="
-echo "(To install as a background service, run: sudo ./run.sh install-service)"
-echo ""
-
-if [ -d "venv" ]; then
-  echo "Activating Python virtual environment..."
-  source "$DIR/venv/bin/activate"
+# 3. Check if the service is already installed. If not, install it.
+echo "--> Checking for existing service..."
+if [ ! -f "$SERVICE_FILE_PATH" ]; then
+    echo "--> Service not found."
+    install_systemd_service
+    echo "--> Service installed successfully."
 else
-  echo "WARNING: Python virtual environment not found. Running with system Python."
-  echo "It is highly recommended to create one first with: python3 -m venv venv"
+    echo "--> Service is already installed."
 fi
 
-echo "Starting application... (Press Ctrl+C to stop)"
-python3 "$DIR/web_tool.py"
+# 4. Start (or restart) the service to apply any updates.
+echo "--> Starting/restarting the service..."
+systemctl restart $SERVICE_NAME
+
+# 5. Final confirmation message for the user.
+echo ""
+echo "--- Setup Complete! ---"
+echo "The Downloader Web UI is now running as a background service."
+echo "The application should be available at: http://127.0.0.1:8080"
+echo ""
+echo "You can check its status with: sudo systemctl status $SERVICE_NAME"
+echo "You can view its logs with:   sudo journalctl -u $SERVICE_NAME -f"
+
+exit 0
