@@ -228,6 +228,8 @@ def status_stream_route():
 
         try:
             while True:
+                response = None
+                # ##-- FIX: Lock, copy data, then immediately unlock --##
                 with state_manager._lock:
                     history_changed = state_manager.history_state_version != last_history_ver
                     queue_changed = state_manager.queue_state_version != last_queue_ver
@@ -242,11 +244,13 @@ def status_stream_route():
                             "is_paused": not state_manager.queue_paused_event.is_set()
                         }
                         
-                        yield f"data: {json.dumps(response)}\n\n"
-                        
                         last_history_ver = state_manager.history_state_version
                         last_queue_ver = state_manager.queue_state_version
                         last_current_dl_ver = state_manager.current_download_version
+                
+                # Send data outside of the lock
+                if response:
+                    yield f"data: {json.dumps(response)}\n\n"
                 
                 time.sleep(0.5)
         except GeneratorExit:
@@ -285,7 +289,9 @@ def install_update_route():
 
 
 def extract_urls_from_text(text):
-    url_regex = re.compile(r'(https?://[^\s]+|www\.[^\s]+)')
+    url_regex = re.compile(
+        r'(?:(?:https?|ftp):\/\/)?[\w/\-?=%.]+\.[\w/\-?=%.]+'
+    )
     return url_regex.findall(text)
 
 @app.route("/queue", methods=["POST"])
@@ -371,16 +377,15 @@ def reorder_queue_route():
     state_manager.reorder_queue(ordered_ids)
     return jsonify({"message": "Queue reordered."})
 
+# ##-- FIX: Use the new thread-safe methods from StateManager --##
 @app.route('/queue/pause', methods=['POST'])
 def pause_queue_route():
-    state_manager.queue_paused_event.clear()
-    state_manager.current_download_version += 1
+    state_manager.pause_queue()
     return jsonify({"message": "Queue paused."})
 
 @app.route('/queue/resume', methods=['POST'])
 def resume_queue_route():
-    state_manager.queue_paused_event.set()
-    state_manager.current_download_version += 1
+    state_manager.resume_queue()
     return jsonify({"message": "Queue resumed."})
 
 
@@ -391,36 +396,6 @@ def continue_job_route():
         return jsonify({"message": "Invalid job data."}), 400
     state_manager.add_to_queue(job)
     return jsonify({"message": f"Re-queued job: {job.get('title', job['url'])}"})
-
-@app.route('/preview')
-def preview_route():
-    url = request.args.get('url')
-    if not url: return jsonify({"message": "URL is required."}), 400
-    try:
-        is_playlist = 'playlist?list=' in url
-        
-        if is_playlist:
-            cmd = ['yt-dlp', '--get-title', '--get-thumbnail', '--playlist-items', '1', '-s', url]
-        else:
-            cmd = ['yt-dlp', '--get-title', '--get-thumbnail', '-s', url]
-
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=10, check=True, encoding='utf-8', errors='replace')
-        output = proc.stdout.strip().splitlines()
-        
-        if len(output) >= 2:
-            title = output[0]
-            thumbnail_url = output[1]
-        elif len(output) == 1:
-            title = output[0]
-            thumbnail_url = ""
-        else:
-            raise Exception("Could not extract preview details.")
-
-        return jsonify({"title": title, "thumbnail": thumbnail_url})
-    except subprocess.TimeoutExpired:
-        return jsonify({"message": "Preview request timed out."}), 504
-    except Exception as e:
-        return jsonify({"message": f"Could not get preview: {e}"}), 500
 
 @app.route('/history/log/<int:log_id>')
 def history_log_route(log_id):
@@ -533,10 +508,9 @@ def list_files_route():
             if os.path.isdir(full_path):
                 item_data["type"] = "directory"
                 try:
-                    # ##-- FEATURE: Count items in directory instead of calculating size --##
                     item_data["item_count"] = len(os.listdir(full_path))
                 except OSError:
-                    item_data["item_count"] = 0 # Handle cases where directory is not accessible
+                    item_data["item_count"] = 0
             else:
                 item_data["type"] = "file"
                 item_data["size"] = os.path.getsize(full_path)

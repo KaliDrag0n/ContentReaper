@@ -18,7 +18,6 @@ class StateManager:
         self.next_log_id = 0
         self.next_queue_id = 0
         
-        # ##-- SSE FEATURE: Version counters to track state changes for streaming --##
         self.history_state_version = 0
         self.queue_state_version = 0
         self.current_download_version = 0
@@ -31,6 +30,7 @@ class StateManager:
     def _get_default_current_download(self):
         return {
             "url": None, "job_data": None, "progress": 0, "status": "", "title": None,
+            "thumbnail": None,
             "playlist_title": None, "track_title": None,
             "playlist_count": 0, "playlist_index": 0,
             "speed": None, "eta": None, "file_size": None,
@@ -45,6 +45,17 @@ class StateManager:
     def update_current_download(self, data):
         with self._lock:
             self.current_download.update(data)
+            self.current_download_version += 1
+
+    # ##-- FIX: New thread-safe methods for pausing/resuming --##
+    def pause_queue(self):
+        with self._lock:
+            self.queue_paused_event.clear()
+            self.current_download_version += 1
+
+    def resume_queue(self):
+        with self._lock:
+            self.queue_paused_event.set()
             self.current_download_version += 1
 
     def add_to_queue(self, job_data):
@@ -63,7 +74,7 @@ class StateManager:
     def clear_queue(self):
         with self._lock:
             if self.queue.empty():
-                return # No change, no version increment
+                return
             while not self.queue.empty():
                 try:
                     self.queue.get_nowait()
@@ -145,7 +156,7 @@ class StateManager:
         paths_to_delete = []
         with self._lock:
             if not self.history:
-                return [] # No change
+                return []
             for item in self.history:
                 if item.get("log_path") and item.get("log_path") != "LOG_SAVE_ERROR":
                     paths_to_delete.append(item["log_path"])
@@ -175,6 +186,7 @@ class StateManager:
             return item.copy() if item else None
 
     def save_state(self):
+        state_to_save = {}
         with self._lock:
             state_to_save = {
                 "queue": list(self.queue.queue),
@@ -222,7 +234,6 @@ class StateManager:
                 self.next_log_id = state.get("next_log_id", len(self.history))
                 self.next_queue_id = state.get("next_queue_id", 0)
                 
-                # Load versions
                 self.history_state_version = state.get("history_state_version", 0)
                 self.queue_state_version = state.get("queue_state_version", 0)
                 self.current_download_version = state.get("current_download_version", 0)

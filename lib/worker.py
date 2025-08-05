@@ -22,85 +22,95 @@ def format_bytes(b):
     except (ValueError, TypeError):
         return "N/A"
 
+# --- Command Builder Refactor --- #
+
+def _get_music_args(job, final_folder_name, is_playlist):
+    """Builds the yt-dlp argument list for 'music' mode."""
+    album_metadata = final_folder_name if is_playlist else '%(album)s'
+    return [
+        '-f', 'bestaudio', '-x', '--audio-format', job.get("format", "mp3"),
+        '--audio-quality', job.get("quality", "0"), '--embed-metadata', '--embed-thumbnail',
+        '--postprocessor-args', f'-metadata album="{album_metadata}" -metadata date="{datetime.datetime.now().year}"',
+        '--parse-metadata', 'playlist_index:%(track_number)s',
+        '--parse-metadata', 'uploader:%(artist)s'
+    ]
+
+def _get_video_args(job):
+    """Builds the yt-dlp argument list for 'video' mode."""
+    quality = job.get('quality', 'best')
+    video_format = job.get('format', 'mp4')
+    codec_pref = job.get('codec', 'compatibility')
+    
+    quality_filter = f"[height<={quality[:-1]}]" if quality != 'best' else ""
+    
+    if codec_pref == 'compatibility':
+        format_str = f"bestvideo{quality_filter}[vcodec^=avc]+bestaudio[acodec^=m4a]/bestvideo{quality_filter}+bestaudio/best"
+    else: # 'quality'
+        format_str = f"bestvideo{quality_filter}+bestaudio/best"
+        
+    args = ['-f', format_str, '--merge-output-format', video_format]
+    if job.get('embed_subs'):
+        args.extend(['--embed-subs', '--sub-langs', 'en.*,en-US,en-GB'])
+    return args
+
+def _get_clip_args(job):
+    """Builds the yt-dlp argument list for 'clip' mode."""
+    if job.get('format') == 'audio':
+        return ['-f', 'bestaudio/best', '-x', '--audio-format', 'mp3', '--audio-quality', '0']
+    else:
+        return ['-f', 'bestvideo+bestaudio/best', '--merge-output-format', 'mp4']
+
 def build_yt_dlp_command(job, temp_dir_path, cookie_file_path):
+    """
+    Constructs the full yt-dlp command line argument list for a given download job.
+    """
     cmd = ['yt-dlp']
     mode = job.get("mode")
+    is_playlist = "playlist?list=" in job.get("url", "")
+    final_folder_name = job.get("folder") or "Misc Downloads"
+
+    # --- Basic Options ---
     cmd.extend(['--sleep-interval', '3', '--max-sleep-interval', '10'])
-    
     if job.get('proxy'):
         cmd.extend(['--proxy', job['proxy']])
     if job.get('rate_limit'):
         cmd.extend(['--limit-rate', job['rate_limit']])
 
-    final_folder_name = job.get("folder") or "Misc Downloads"
-    is_playlist = "playlist?list=" in job.get("url", "")
-
+    # --- Mode-Specific Arguments ---
     if mode == 'music':
-        album_metadata = final_folder_name if is_playlist else '%(album)s'
-        cmd.extend([
-            '-f', 'bestaudio', '-x', '--audio-format', job.get("format", "mp3"),
-            '--audio-quality', job.get("quality", "0"), '--embed-metadata', '--embed-thumbnail',
-            '--postprocessor-args', f'-metadata album="{album_metadata}" -metadata date="{datetime.datetime.now().year}"',
-            '--parse-metadata', 'playlist_index:%(track_number)s',
-            '--parse-metadata', 'uploader:%(artist)s'
-        ])
+        cmd.extend(_get_music_args(job, final_folder_name, is_playlist))
     elif mode == 'video':
-        quality = job.get('quality', 'best')
-        video_format = job.get('format', 'mp4')
-        codec_pref = job.get('codec', 'compatibility')
-
-        # ##-- FEATURE: Build the format string based on user's codec preference --##
-        format_str = ""
-        quality_filter = f"[height<={quality[:-1]}]" if quality != 'best' else ""
-        
-        if codec_pref == 'compatibility':
-            # Prioritize H.264 (avc) and AAC (m4a) for maximum device compatibility
-            format_str = f"bestvideo{quality_filter}[vcodec^=avc]+bestaudio[acodec^=m4a]/bestvideo{quality_filter}+bestaudio/best"
-        else: # 'quality'
-            # Default yt-dlp behavior, gets best available (often AV1/VP9 video, Opus audio)
-            format_str = f"bestvideo{quality_filter}+bestaudio/best"
-            
-        cmd.extend(['-f', format_str, '--merge-output-format', video_format])
-
-        if job.get('embed_subs'):
-            cmd.extend(['--embed-subs', '--sub-langs', 'en.*,en-US,en-GB'])
-
+        cmd.extend(_get_video_args(job))
     elif mode == 'clip':
-        if job.get('format') == 'audio':
-            cmd.extend(['-f', 'bestaudio/best', '-x', '--audio-format', 'mp3', '--audio-quality', '0'])
-        else:
-            cmd.extend(['-f', 'bestvideo+bestaudio/best', '--merge-output-format', 'mp4'])
+        cmd.extend(_get_clip_args(job))
     elif mode == 'custom':
-        custom_args_str = job.get('custom_args', '')
-        custom_args = shlex.split(custom_args_str)
-        cmd.extend(custom_args)
+        cmd.extend(shlex.split(job.get('custom_args', '')))
 
-    if mode != 'custom':
-        output_template = os.path.join(temp_dir_path, "%(playlist_index)02d - %(title)s.%(ext)s" if is_playlist else "%(title)s.%(ext)s")
-        cmd.extend(['-o', output_template])
-    elif '-o' not in cmd and '--output' not in cmd:
-        output_template = os.path.join(temp_dir_path, "%(title)s.%(ext)s")
+    # --- Output Template ---
+    if mode != 'custom' or ('-o' not in cmd and '--output' not in cmd):
+        output_template = os.path.join(temp_dir_path, 
+            "%(playlist_index)02d - %(title)s.%(ext)s" if is_playlist else "%(title)s.%(ext)s")
         cmd.extend(['-o', output_template])
     
+    # --- Other Flags ---
     if '--progress-template' not in cmd:
         cmd.extend(['--progress-template', '%(progress)j'])
     
-    start = job.get("playlist_start")
-    end = job.get("playlist_end")
+    start, end = job.get("playlist_start"), job.get("playlist_end")
     if start and end: cmd.extend(['--playlist-items', f'{start}-{end}'])
     elif start: cmd.extend(['--playlist-items', f'{start}:'])
     elif end: cmd.extend(['--playlist-items', f':{end}'])
 
-    if "playlist?list=" in job["url"] or job.get("refetch"): cmd.append('--ignore-errors')
+    if is_playlist or job.get("refetch"): 
+        cmd.append('--ignore-errors')
     if os.path.exists(cookie_file_path) and os.path.getsize(cookie_file_path) > 0:
         cmd.extend(['--cookies', cookie_file_path])
-    
     if job.get("archive"):
-        temp_archive_file = os.path.join(temp_dir_path, "archive.temp.txt")
-        cmd.extend(['--download-archive', temp_archive_file])
+        cmd.extend(['--download-archive', os.path.join(temp_dir_path, "archive.temp.txt")])
 
     cmd.append(job["url"])
     return cmd
+
 
 def _finalize_job(job, final_status, temp_log_path, config):
     temp_dir_path = os.path.join(config["temp_dir"], f"job_{job['id']}")
@@ -123,7 +133,6 @@ def _finalize_job(job, final_status, temp_log_path, config):
 
         if final_status in ["COMPLETED", "PARTIAL", "STOPPED"]:
             if os.path.exists(temp_dir_path):
-                # ##-- BEHAVIOR FIX: Check for files before creating the destination folder --##
                 files_to_move = [f for f in os.listdir(temp_dir_path) if f != "archive.temp.txt"]
                 
                 if files_to_move:
@@ -145,7 +154,6 @@ def _finalize_job(job, final_status, temp_log_path, config):
         if os.path.exists(temp_archive_path):
             final_archive_path = os.path.join(final_dest_dir, "archive.txt")
             try:
-                # Ensure destination for archive exists if it was the only thing to move
                 os.makedirs(final_dest_dir, exist_ok=True)
                 shutil.move(temp_archive_path, final_archive_path)
                 log(f"Successfully updated archive file at: {final_archive_path}")
@@ -158,7 +166,8 @@ def _finalize_job(job, final_status, temp_log_path, config):
             final_filename = final_filenames[0]
             final_title = os.path.splitext(final_filename)[0]
         elif moved_count > 1 and not is_playlist:
-            final_title = final_folder_name
+            final_filename = None
+            final_title = os.path.splitext(final_filenames[0])[0]
         
         if moved_count > 0 and final_status == "FAILED":
             final_status = "PARTIAL"
@@ -188,24 +197,46 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
         temp_dir_path = os.path.join(config["temp_dir"], f"job_{job['id']}")
         temp_log_path = os.path.join(log_dir, f"job_active_{job['id']}.log")
 
+        state_manager.update_current_download({
+            "url": job["url"], "progress": 0, "status": "Preparing...",
+            "title": job.get("folder") or job["url"], "job_data": job,
+            "log_path": temp_log_path
+        })
+
         try:
+            # ##-- UX FIX: Fetch title and thumbnail if not provided --##
             if not job.get("folder"):
                 try:
-                    print(f"WORKER: No folder name for job {job['id']}, fetching title...")
+                    print(f"WORKER: No folder name for job {job['id']}, fetching details...")
+                    state_manager.update_current_download({"status": "Fetching details..."})
+                    
                     is_playlist = "playlist?list=" in job["url"]
-                    print_field = 'playlist_title' if is_playlist else 'title'
-                    fetch_cmd = ['yt-dlp', '--print', print_field, '--playlist-items', '1', '-s', job["url"]]
+                    
+                    # Fetch both title and thumbnail in one command
+                    fetch_cmd = ['yt-dlp', '--print', '%(title)s\n%(thumbnail)s', '--playlist-items', '1', '-s', job["url"]]
+                    if is_playlist:
+                        fetch_cmd = ['yt-dlp', '--print', '%(playlist_title)s\n%(thumbnail)s', '--playlist-items', '1', '-s', job["url"]]
+
                     result = subprocess.run(fetch_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, check=True)
                     
                     output_lines = result.stdout.strip().splitlines()
-                    if output_lines:
-                        job["folder"] = sanitize_filename(output_lines[0])
-                        print(f"WORKER: Fetched folder name: {job['folder']}")
-                    else:
-                        raise ValueError("No title output from yt-dlp")
+                    
+                    title = "Misc Downloads"
+                    thumbnail_url = None
+
+                    if len(output_lines) >= 1:
+                        title = sanitize_filename(output_lines[0])
+                    if len(output_lines) >= 2:
+                        thumbnail_url = output_lines[1]
+
+                    job["folder"] = title
+                    print(f"WORKER: Fetched folder name: {title}")
+                    state_manager.update_current_download({"title": title, "thumbnail": thumbnail_url})
+
                 except Exception as e:
-                    print(f"WORKER: Could not auto-fetch title for job {job['id']}: {e}")
+                    print(f"WORKER: Could not auto-fetch details for job {job['id']}: {e}")
                     job["folder"] = "Misc Downloads"
+                    state_manager.update_current_download({"title": job["folder"]})
             
             os.makedirs(temp_dir_path, exist_ok=True)
             
@@ -218,14 +249,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
 
             cmd = build_yt_dlp_command(job, temp_dir_path, cookie_file_path)
             
-            state_manager.update_current_download({ 
-                "url": job["url"], "progress": 0, "status": "Starting...", 
-                "title": "Starting Download...", "job_data": job,
-                "playlist_title": None, "track_title": None,
-                "playlist_count": 0, "playlist_index": 0,
-                "speed": None, "eta": None, "file_size": None,
-                "log_path": temp_log_path
-            })
+            state_manager.update_current_download({"status": "Starting..."})
 
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace', bufsize=1)
             
@@ -310,12 +334,9 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
             state_manager.reset_current_download()
             time.sleep(0.2) 
 
-            # ##-- BUG FIX: Fixed race condition by renaming log BEFORE adding to history --##
-            # 1. Determine the next log ID and the final log path
             next_log_id = state_manager.next_log_id
             final_log_path = os.path.join(log_dir, f"job_{next_log_id}.log")
             
-            # 2. Try to move the log file to its final destination
             log_path_for_history = "LOG_SAVE_ERROR"
             try:
                 shutil.move(temp_log_path, final_log_path)
@@ -323,7 +344,6 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
             except Exception as e:
                 print(f"ERROR: Could not rename log file {temp_log_path} to {final_log_path}: {e}")
 
-            # 3. Now, create and add the history item with the definitive log path
             history_item = {
                 "url": job["url"], 
                 "title": final_title, 
@@ -331,8 +351,8 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
                 "filename": final_filename,
                 "job_data": job, 
                 "status": status,
-                "log_path": log_path_for_history # Use the final path or the error string
+                "log_path": log_path_for_history
             }
-            state_manager.add_to_history(history_item) # This now saves the state correctly
+            state_manager.add_to_history(history_item)
 
             state_manager.queue.task_done()
