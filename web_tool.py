@@ -1,7 +1,23 @@
 # web_tool.py
-import os, sys, subprocess
+import os, sys, subprocess, importlib.util
 
 #~ --- Update & Startup Logic --- ~#
+def _is_externally_managed():
+    """
+    Checks if the Python environment is externally managed (PEP 668).
+    This is common on modern Linux distributions.
+    """
+    try:
+        # The most reliable way is to check for the EXTERNALLY-MANAGED file
+        spec = importlib.util.find_spec("site")
+        if spec and spec.origin:
+            site_packages_path = os.path.dirname(spec.origin)
+            marker_file = os.path.join(site_packages_path, "EXTERNALLY-MANAGED")
+            return os.path.exists(marker_file)
+    except Exception:
+        pass
+    return False
+
 def run_startup_checks():
     """
     Checks for dependencies on startup. If they are missing, it attempts
@@ -32,11 +48,16 @@ def run_startup_checks():
             sys.exit(1)
 
     print("--- [2/3] Checking for yt-dlp updates ---")
-    try:
-        # Always use --user to avoid permission errors on protected systems
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--user', '--upgrade', 'yt-dlp'])
-    except Exception as e:
-        print(f"WARNING: Could not update yt-dlp: {e}")
+    if _is_externally_managed():
+        print("Skipping yt-dlp update in externally managed environment.")
+        print("Please use your system package manager (e.g., apt) to update yt-dlp.")
+    else:
+        try:
+            # Always use --user to avoid permission errors on protected systems
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--user', '--upgrade', 'yt-dlp'])
+        except Exception as e:
+            print(f"WARNING: Could not update yt-dlp: {e}")
+    
     print("--- [3/3] Startup checks complete ---")
 
 run_startup_checks()
