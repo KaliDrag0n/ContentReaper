@@ -20,7 +20,6 @@
     :root { --bs-body-bg: #f8f9fa; --bs-body-color: #212529; --bs-border-color: #dee2e6; --bs-card-bg: #fff; }
     [data-bs-theme="dark"] { --bs-body-bg: #212529; --bs-body-color: #dee2e6; --bs-border-color: #495057; --bs-card-bg: #343a40; }
     body { transition: background-color 0.2s linear, color 0.2s linear; }
-    /* ##-- MOBILE FIX: Use word-break: break-word for better wrapping --## */
     .word-break { word-break: break-word; }
     .folder-toggle { cursor: pointer; }
     .folder-toggle .bi-caret-right-fill { transition: transform 0.2s ease-in-out; }
@@ -110,18 +109,18 @@ const fetchAndRenderFiles = async (path = '', containerEl) => {
             li.dataset.path = item.path;
             li.dataset.name = item.name;
             
-            // ##-- MOBILE FIX: Removed text-truncate and use min-width: 0 on the flex container to allow proper wrapping --##
+            // ##-- UI FIX: Changed align-items-center to align-items-start to fix checkbox squishing --##
             let itemHTML = `
                 <div class="d-flex justify-content-between align-items-center">
-                    <div class="d-flex align-items-center flex-grow-1" style="min-width: 0;">
+                    <div class="d-flex align-items-start flex-grow-1" style="min-width: 0;">
                         <input class="form-check-input me-3 file-item-checkbox" type="checkbox">
             `;
 
             if (isDirectory) {
-                itemHTML += `<a class="d-flex align-items-center text-decoration-none text-body folder-toggle" data-bs-toggle="collapse" href="#${uniqueId}" role="button" aria-expanded="false" aria-controls="${uniqueId}"><i class="bi bi-caret-right-fill me-2"></i>`;
+                itemHTML += `<a class="d-flex align-items-start text-decoration-none text-body folder-toggle" data-bs-toggle="collapse" href="#${uniqueId}" role="button" aria-expanded="false" aria-controls="${uniqueId}"><i class="bi bi-caret-right-fill me-2 pt-1"></i>`;
             }
             
-            itemHTML += `<i class="bi ${icon} me-2"></i><div class="flex-grow-1 word-break"><span class="fw-medium">${item.name}</span><br><small class="text-muted">${formatBytes(item.size)}</small></div>`;
+            itemHTML += `<i class="bi ${icon} me-2 pt-1"></i><div class="flex-grow-1 word-break"><span class="fw-medium">${item.name}</span><br><small class="text-muted">${formatBytes(item.size)}</small></div>`;
 
             if (isDirectory) itemHTML += `</a>`;
 

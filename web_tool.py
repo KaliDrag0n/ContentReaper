@@ -10,8 +10,7 @@ from lib.sanitizer import sanitize_filename
 app = Flask(__name__)
 
 #~ --- Configuration --- ~#
-# ##-- FIX: APP_VERSION and GITHUB_REPO_SLUG are constants, not part of the user config --##
-APP_VERSION = "1.3.0" 
+APP_VERSION = "1.2.0" 
 GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -77,7 +76,6 @@ def trigger_update_and_restart():
     print("--- UPDATE PROCESS INITIATED ---")
     
     print("[1/4] Fetching latest release information...")
-    # ##-- FIX: Use the GITHUB_REPO_SLUG constant --##
     api_url = f"https://api.github.com/repos/{GITHUB_REPO_SLUG}/releases/latest"
     try:
         response = requests.get(api_url, timeout=15)
@@ -135,7 +133,6 @@ def trigger_update_and_restart():
 def _run_update_check():
     """The core logic for checking GitHub for updates."""
     global update_status
-    # ##-- FIX: Use the GITHUB_REPO_SLUG constant --##
     api_url = f"https://api.github.com/repos/{GITHUB_REPO_SLUG}/releases/latest"
     try:
         print("UPDATE: Checking for new version...")
@@ -183,7 +180,6 @@ def load_config():
         try:
             with open(CONF_CONFIG_FILE, 'r', encoding='utf-8') as f:
                 loaded_config = json.load(f)
-                # Ensure core identity keys aren't loaded from user config
                 loaded_config.pop("app_version", None)
                 loaded_config.pop("github_repo_slug", None)
                 CONFIG.update(loaded_config)
@@ -309,7 +305,9 @@ def add_to_queue_route():
             job.update({
                 "quality": request.form.get("video_quality", "best"),
                 "format": request.form.get("video_format", "mp4"),
-                "embed_subs": request.form.get("video_embed_subs") == "on"
+                "embed_subs": request.form.get("video_embed_subs") == "on",
+                # ##-- FEATURE: Pass the new codec preference to the job data --##
+                "codec": request.form.get("video_codec_preference", "compatibility")
             })
         elif mode == 'clip':
             job.update({ "format": request.form.get("clip_format", "video") })

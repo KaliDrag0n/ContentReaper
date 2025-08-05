@@ -21,7 +21,6 @@
     :root { --bs-body-bg: #f8f9fa; --bs-body-color: #212529; --bs-border-color: #dee2e6; --bs-card-bg: #fff; }
     [data-bs-theme="dark"] { --bs-body-bg: #212529; --bs-body-color: #dee2e6; --bs-border-color: #495057; --bs-card-bg: #343a40; }
     body { transition: background-color 0.2s linear, color 0.2s linear; }
-    /* ##-- MOBILE FIX: Use word-break: break-word for better wrapping --## */
     .word-break { word-break: break-word; }
     .mode-options, #playlist-range-options, #url-preview, #queue-controls { display: none; }
     .mode-selector .btn { width: 100%; }
@@ -94,7 +93,48 @@
           <div class="mb-3"><label class="form-label">URL(s) <small>(one per line)</small></label><textarea name="urls" class="form-control" placeholder="https://..." required rows="2"></textarea></div>
           <div id="url-preview" class="d-flex align-items-center p-2 border rounded mb-3 bg-body-tertiary"><img src="" class="me-3 rounded"><strong id="preview-title"></strong></div>
           <div id="music-options" class="mode-options"><div class="row"><div class="col-md-5 mb-3"><label class="form-label">Album/Playlist Name <small>(optional)</small></label><input type="text" name="music_foldername" class="form-control"></div><div class="col-md-4 mb-3"><label class="form-label">Audio Format</label><select name="music_audio_format" class="form-select"><option value="mp3">MP3 (VBR)</option><option value="flac">FLAC (Lossless)</option><option value="opus">Opus (High Efficiency)</option></select></div><div class="col-md-3 mb-3"><label class="form-label">Audio Quality</label><select name="music_audio_quality" class="form-select"><option value="0">Best (VBR ~245k)</option><option value="3">High (VBR ~190k)</option><option value="5">Standard (VBR ~165k)</option><option value="7">Low (VBR ~130k)</option><option value="9">Worst (VBR ~65k)</option></select></div></div><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="music_embed_art" checked><label class="form-check-label">Embed Album Art</label></div></div>
-          <div id="video-options" class="mode-options"><div class="row"><div class="col-md-6 mb-3"><label class="form-label">Folder Name <small>(optional)</small></label><input type="text" name="video_foldername" class="form-control"></div><div class="col-md-4 mb-3"><label class="form-label">Video Quality</label><select name="video_quality" class="form-select"><option value="best">Best Available</option><option value="1080p">1080p (Full HD)</option><option value="720p">720p (HD)</option></select></div><div class="col-md-2 mb-3"><label class="form-label">Format</label><select name="video_format" class="form-select"><option value="mp4" selected>MP4</option><option value="mkv">MKV</option></select></div></div><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="video_embed_subs"><label class="form-check-label">Embed Subtitles</label></div></div>
+          
+          <!-- ##-- FEATURE: Added Codec Preference dropdown for Video mode --## -->
+          <div id="video-options" class="mode-options">
+            <div class="row">
+              <div class="col-md-6 mb-3">
+                <label class="form-label">Folder Name <small>(optional)</small></label>
+                <input type="text" name="video_foldername" class="form-control">
+              </div>
+              <div class="col-md-3 mb-3">
+                <label class="form-label">Video Quality</label>
+                <select name="video_quality" class="form-select">
+                  <option value="best">Best Available</option>
+                  <option value="1080p">1080p (Full HD)</option>
+                  <option value="720p">720p (HD)</option>
+                </select>
+              </div>
+              <div class="col-md-3 mb-3">
+                <label class="form-label">Format</label>
+                <select name="video_format" class="form-select">
+                  <option value="mp4" selected>MP4</option>
+                  <option value="mkv">MKV</option>
+                </select>
+              </div>
+            </div>
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">Codec Preference</label>
+                    <select name="video_codec_preference" class="form-select">
+                        <option value="compatibility" selected>Best Compatibility (H.264/AAC)</option>
+                        <option value="quality">Best Quality (Modern Codecs)</option>
+                    </select>
+                    <div class="form-text">Choose "Compatibility" for older devices like TVs or streaming sticks.</div>
+                </div>
+                <div class="col-md-6 d-flex align-items-center pt-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="video_embed_subs">
+                        <label class="form-check-label">Embed Subtitles</label>
+                    </div>
+                </div>
+            </div>
+          </div>
+
           <div id="clip-options" class="mode-options"><div class="mb-3"><label class="form-label">Format</label><select name="clip_format" class="form-select"><option value="video">Quick Video (Best)</option><option value="audio">Quick Audio (MP3)</option></select></div></div>
           <div id="custom-options" class="mode-options"><div class="mb-3"><label class="form-label">Folder Name <small>(optional)</small></label><input type="text" name="custom_foldername" class="form-control" placeholder="Leave blank to use video/playlist title"></div><div class="mb-3"><label for="custom_args" class="form-label">Custom yt-dlp Flags</label><textarea class="form-control" id="custom_args" name="custom_args" rows="3" placeholder="-f best -x --audio-format mp3"></textarea><div class="form-text">Enter the command line arguments for yt-dlp. The URL and output path will be added automatically.<strong class="text-warning">Note:</strong> Progress may not display in the UI if you override the progress template.</div></div></div>
           <div id="playlist-range-options" class="row mb-3"><div class="col-md-6"><label class="form-label">Start Index <small>(optional)</small></label><input type="number" name="playlist_start" class="form-control" min="1" placeholder="e.g., 5"></div><div class="col-md-6"><label class="form-label">End Index <small>(optional)</small></label><input type="number" name="playlist_end" class="form-control" min="1" placeholder="e.g., 20"></div></div>
@@ -277,7 +317,6 @@ async function fetchHistory() {
             const li = document.createElement("li");
             li.className = "list-group-item";
             li.dataset.logId = item.log_id;
-            // ##-- MOBILE FIX: Added word-break class to prevent overflow --##
             li.innerHTML = `<div class="d-flex justify-content-between align-items-center">
                 <div class="flex-grow-1" style="min-width: 0;">
                     <span class="badge ${badgeClass} me-2">${item.status}</span>
@@ -301,7 +340,6 @@ const fetchStatus = async () => {
         const currentDiv = document.getElementById("current-status");
         if (current) {
             const playlistIndicator = current.playlist_count > 0 ? `<span class="ms-2 badge bg-secondary">${current.playlist_index || '0'}/${current.playlist_count}</span>` : '';
-            // ##-- MOBILE FIX: Added word-break class and flex-wrap for buttons --##
             const titleHTML = current.playlist_title ? `<strong class="word-break">${current.playlist_title}</strong>${playlistIndicator}<br><small class="text-muted word-break">${current.track_title || 'Loading track...'}</small>` : `<strong class="word-break">${current.title || current.url}</strong>`;
             const headerHTML = `<div class="d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center mb-1">
                 <div class="w-100" style="min-width: 0;">${titleHTML}</div>
@@ -323,7 +361,6 @@ const fetchStatus = async () => {
         const newIds = data.queue.map(job => job.id.toString());
         const existingIds = [...queueList.children].map(li => li.dataset.jobId);
         if (JSON.stringify(newIds) !== JSON.stringify(existingIds)) {
-            // ##-- MOBILE FIX: Added word-break class --##
             queueList.innerHTML = data.queue.length === 0 ? "<li class='list-group-item'>Queue is empty.</li>" : data.queue.map(job => `<li class="list-group-item d-flex justify-content-between align-items-center" data-job-id="${job.id}"><div class="d-flex align-items-center" style="min-width: 0;"><i class="bi bi-grip-vertical queue-handle me-2"></i><span class="word-break">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span></div><button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}"></button></li>`).join('');
         }
 

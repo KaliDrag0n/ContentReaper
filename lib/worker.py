@@ -47,10 +47,24 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path):
     elif mode == 'video':
         quality = job.get('quality', 'best')
         video_format = job.get('format', 'mp4')
-        format_str = f"bestvideo[height<={quality[:-1]}]+bestaudio/best" if quality != 'best' else 'bestvideo+bestaudio/best'
+        codec_pref = job.get('codec', 'compatibility')
+
+        # ##-- FEATURE: Build the format string based on user's codec preference --##
+        format_str = ""
+        quality_filter = f"[height<={quality[:-1]}]" if quality != 'best' else ""
+        
+        if codec_pref == 'compatibility':
+            # Prioritize H.264 (avc) and AAC (m4a) for maximum device compatibility
+            format_str = f"bestvideo{quality_filter}[vcodec^=avc]+bestaudio[acodec^=m4a]/bestvideo{quality_filter}+bestaudio/best"
+        else: # 'quality'
+            # Default yt-dlp behavior, gets best available (often AV1/VP9 video, Opus audio)
+            format_str = f"bestvideo{quality_filter}+bestaudio/best"
+            
         cmd.extend(['-f', format_str, '--merge-output-format', video_format])
+
         if job.get('embed_subs'):
             cmd.extend(['--embed-subs', '--sub-langs', 'en.*,en-US,en-GB'])
+
     elif mode == 'clip':
         if job.get('format') == 'audio':
             cmd.extend(['-f', 'bestaudio/best', '-x', '--audio-format', 'mp3', '--audio-quality', '0'])
@@ -102,23 +116,37 @@ def _finalize_job(job, final_status, temp_log_path, config):
         def log(message):
             log_file.write(message + '\n')
 
-        log(f"Finalizing job...")
+        log(f"Finalizing job with status: {final_status}...")
         
         os.makedirs(final_dest_dir, exist_ok=True)
         moved_count = 0
         final_filenames = []
 
-        if os.path.exists(temp_dir_path):
-            for f in os.listdir(temp_dir_path):
-                source_path = os.path.join(temp_dir_path, f)
-                dest_path = os.path.join(final_dest_dir, f)
-                try:
-                    shutil.move(source_path, dest_path)
-                    final_filenames.append(f)
-                    moved_count += 1
-                except Exception as e:
-                    log(f"ERROR: Could not move completed file {f}: {e}")
-            log(f"Moved {moved_count} file(s) to final destination.")
+        if final_status in ["COMPLETED", "PARTIAL", "STOPPED"]:
+            if os.path.exists(temp_dir_path):
+                for f in os.listdir(temp_dir_path):
+                    if f == "archive.temp.txt":
+                        continue
+                    source_path = os.path.join(temp_dir_path, f)
+                    dest_path = os.path.join(final_dest_dir, f)
+                    try:
+                        shutil.move(source_path, dest_path)
+                        final_filenames.append(f)
+                        moved_count += 1
+                    except Exception as e:
+                        log(f"ERROR: Could not move completed file {f}: {e}")
+                log(f"Moved {moved_count} file(s) to final destination.")
+        else:
+            log("Skipping file move for cancelled/failed job.")
+
+        temp_archive_path = os.path.join(temp_dir_path, "archive.temp.txt")
+        if os.path.exists(temp_archive_path):
+            final_archive_path = os.path.join(final_dest_dir, "archive.txt")
+            try:
+                shutil.move(temp_archive_path, final_archive_path)
+                log(f"Successfully updated archive file at: {final_archive_path}")
+            except Exception as e:
+                log(f"ERROR: Could not move updated archive file: {e}")
 
         if is_playlist:
             final_title = final_folder_name
@@ -135,6 +163,7 @@ def _finalize_job(job, final_status, temp_log_path, config):
         if os.path.exists(temp_dir_path):
             try:
                 shutil.rmtree(temp_dir_path)
+                log(f"Successfully removed temporary directory: {temp_dir_path}")
             except OSError as e:
                 log(f"Error removing temp folder {temp_dir_path}: {e}")
 
@@ -156,28 +185,21 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
         temp_log_path = os.path.join(log_dir, f"job_active_{job['id']}.log")
 
         try:
-            # ##-- IMPROVEMENT: Made auto-fetching folder name more robust --##
-            # If a folder name isn't provided by the user, try to get it from yt-dlp.
             if not job.get("folder"):
                 try:
                     print(f"WORKER: No folder name for job {job['id']}, fetching title...")
                     is_playlist = "playlist?list=" in job["url"]
                     print_field = 'playlist_title' if is_playlist else 'title'
-                    # Use a short timeout to avoid waiting forever on a stuck process
                     fetch_cmd = ['yt-dlp', '--print', print_field, '--playlist-items', '1', '-s', job["url"]]
                     result = subprocess.run(fetch_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, check=True)
                     
                     output_lines = result.stdout.strip().splitlines()
                     if output_lines:
-                        # Sanitize the fetched title to make it a valid folder name
                         job["folder"] = sanitize_filename(output_lines[0])
                         print(f"WORKER: Fetched folder name: {job['folder']}")
                     else:
-                        # If yt-dlp gives no output, raise an exception to fall back to the default
                         raise ValueError("No title output from yt-dlp")
                 except Exception as e:
-                    # If fetching the title fails for any reason, log it and use a default name.
-                    # This prevents the entire job from failing just because the title couldn't be fetched.
                     print(f"WORKER: Could not auto-fetch title for job {job['id']}: {e}")
                     job["folder"] = "Misc Downloads"
             
@@ -228,7 +250,6 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
                             if update["status"] == 'Downloading':
                                 progress_percent = progress_data.get("_percent_str") or progress_data.get("progress", {}).get("fraction")
                                 if progress_percent:
-                                    # Handle both float (0-1) and string ('x%') progress formats
                                     if isinstance(progress_percent, float):
                                         update["progress"] = progress_percent * 100
                                     else:
@@ -252,7 +273,6 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
                             
                             state_manager.update_current_download(update)
                         except (json.JSONDecodeError, TypeError, ValueError):
-                            # Ignore lines that look like JSON but aren't valid
                             pass
                     elif '[download] Downloading item' in line:
                         match = re.search(r'Downloading item (\d+) of (\d+)', line)
