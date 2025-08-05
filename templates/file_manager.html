@@ -71,7 +71,7 @@
 
 <script>
 const formatBytes = (bytes, decimals = 2) => {
-    if (bytes === 0 || !bytes) return '0 Bytes';
+    if (!Number.isFinite(bytes) || bytes === 0) return '0 Bytes';
     const k = 1024;
     const dm = decimals < 0 ? 0 : decimals;
     const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
@@ -109,7 +109,15 @@ const fetchAndRenderFiles = async (path = '', containerEl) => {
             li.dataset.path = item.path;
             li.dataset.name = item.name;
             
-            // ##-- UI FIX: Changed align-items-center to align-items-start to fix checkbox squishing --##
+            // ##-- FEATURE: Display item count for directories, size for files --##
+            let sizeInfo = '';
+            if (item.size != null) {
+                sizeInfo = `<br><small class="text-muted">${formatBytes(item.size)}</small>`;
+            } else if (item.item_count != null) {
+                const plural = item.item_count === 1 ? 'item' : 'items';
+                sizeInfo = `<br><small class="text-muted">${item.item_count} ${plural}</small>`;
+            }
+
             let itemHTML = `
                 <div class="d-flex justify-content-between align-items-center">
                     <div class="d-flex align-items-start flex-grow-1" style="min-width: 0;">
@@ -120,7 +128,7 @@ const fetchAndRenderFiles = async (path = '', containerEl) => {
                 itemHTML += `<a class="d-flex align-items-start text-decoration-none text-body folder-toggle" data-bs-toggle="collapse" href="#${uniqueId}" role="button" aria-expanded="false" aria-controls="${uniqueId}"><i class="bi bi-caret-right-fill me-2 pt-1"></i>`;
             }
             
-            itemHTML += `<i class="bi ${icon} me-2 pt-1"></i><div class="flex-grow-1 word-break"><span class="fw-medium">${item.name}</span><br><small class="text-muted">${formatBytes(item.size)}</small></div>`;
+            itemHTML += `<i class="bi ${icon} me-2 pt-1"></i><div class="flex-grow-1 word-break"><span class="fw-medium">${item.name}</span>${sizeInfo}</div>`;
 
             if (isDirectory) itemHTML += `</a>`;
 

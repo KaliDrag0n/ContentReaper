@@ -216,17 +216,41 @@ def settings_route():
 def file_manager_route():
     return render_template("file_manager.html")
 
-@app.route("/status")
-def status_route():
-    with state_manager._lock:
-        current_dl = state_manager.current_download
-        response = {
-            "queue": state_manager.get_queue_list(),
-            "current": current_dl if current_dl.get("url") else None,
-            "history_version": state_manager.history_state_version,
-            "is_paused": not state_manager.queue_paused_event.is_set()
-        }
-    return jsonify(response)
+@app.route("/api/status/stream")
+def status_stream_route():
+    def generate_status_updates():
+        last_history_ver = -1
+        last_queue_ver = -1
+        last_current_dl_ver = -1
+
+        try:
+            while True:
+                with state_manager._lock:
+                    history_changed = state_manager.history_state_version != last_history_ver
+                    queue_changed = state_manager.queue_state_version != last_queue_ver
+                    current_dl_changed = state_manager.current_download_version != last_current_dl_ver
+                    
+                    if history_changed or queue_changed or current_dl_changed:
+                        current_dl = state_manager.current_download
+                        response = {
+                            "queue": state_manager.get_queue_list(),
+                            "current": current_dl if current_dl.get("url") else None,
+                            "history": state_manager.get_history_summary(),
+                            "is_paused": not state_manager.queue_paused_event.is_set()
+                        }
+                        
+                        yield f"data: {json.dumps(response)}\n\n"
+                        
+                        last_history_ver = state_manager.history_state_version
+                        last_queue_ver = state_manager.queue_state_version
+                        last_current_dl_ver = state_manager.current_download_version
+                
+                time.sleep(0.5)
+        except GeneratorExit:
+            print("Client disconnected from status stream.")
+
+    return Response(generate_status_updates(), mimetype='text/event-stream')
+
 
 # --- API Routes ---
 @app.route("/api/update_check")
@@ -306,7 +330,6 @@ def add_to_queue_route():
                 "quality": request.form.get("video_quality", "best"),
                 "format": request.form.get("video_format", "mp4"),
                 "embed_subs": request.form.get("video_embed_subs") == "on",
-                # ##-- FEATURE: Pass the new codec preference to the job data --##
                 "codec": request.form.get("video_codec_preference", "compatibility")
             })
         elif mode == 'clip':
@@ -348,11 +371,13 @@ def reorder_queue_route():
 @app.route('/queue/pause', methods=['POST'])
 def pause_queue_route():
     state_manager.queue_paused_event.clear()
+    state_manager.current_download_version += 1
     return jsonify({"message": "Queue paused."})
 
 @app.route('/queue/resume', methods=['POST'])
 def resume_queue_route():
     state_manager.queue_paused_event.set()
+    state_manager.current_download_version += 1
     return jsonify({"message": "Queue resumed."})
 
 
@@ -393,10 +418,6 @@ def preview_route():
         return jsonify({"message": "Preview request timed out."}), 504
     except Exception as e:
         return jsonify({"message": f"Could not get preview: {e}"}), 500
-
-@app.route('/history')
-def get_history_route():
-    return jsonify({"history": state_manager.get_history_summary()})
 
 @app.route('/history/log/<int:log_id>')
 def history_log_route(log_id):
@@ -485,20 +506,6 @@ def stop_route():
     return jsonify({"message": message})
 
 # --- File Manager API ---
-def get_dir_size(path, size_dict):
-    total = 0
-    try:
-        with os.scandir(path) as it:
-            for entry in it:
-                if entry.is_file():
-                    total += entry.stat().st_size
-                elif entry.is_dir():
-                    total += get_dir_size(entry.path, size_dict)
-    except (FileNotFoundError, PermissionError):
-        pass
-    size_dict[path] = total
-    return total
-
 @app.route("/api/files")
 def list_files_route():
     base_download_dir = os.path.realpath(CONFIG.get("download_dir"))
@@ -513,29 +520,27 @@ def list_files_route():
         return jsonify([])
 
     items = []
-    dir_threads = []
-    dir_sizes = {}
-    for name in os.listdir(safe_req_path):
-        full_path = os.path.join(safe_req_path, name)
-        relative_path = os.path.join(req_path, name)
-        try:
+    try:
+        for name in os.listdir(safe_req_path):
+            full_path = os.path.join(safe_req_path, name)
+            relative_path = os.path.join(req_path, name)
+            
+            item_data = {"name": name, "path": relative_path}
+            
             if os.path.isdir(full_path):
-                thread = threading.Thread(target=get_dir_size, args=(full_path, dir_sizes))
-                thread.start()
-                dir_threads.append(thread)
-                items.append({"name": name, "path": relative_path, "type": "directory", "size": -1})
+                item_data["type"] = "directory"
+                try:
+                    # ##-- FEATURE: Count items in directory instead of calculating size --##
+                    item_data["item_count"] = len(os.listdir(full_path))
+                except OSError:
+                    item_data["item_count"] = 0 # Handle cases where directory is not accessible
             else:
-                items.append({"name": name, "path": relative_path, "type": "file", "size": os.path.getsize(full_path)})
-        except Exception as e:
-            print(f"Could not scan item {full_path}: {e}")
-    
-    for t in dir_threads:
-        t.join(timeout=5.0)
-
-    for item in items:
-        if item['type'] == 'directory':
-            full_path_for_size = os.path.join(safe_req_path, item['name'])
-            item['size'] = dir_sizes.get(full_path_for_size, 0)
+                item_data["type"] = "file"
+                item_data["size"] = os.path.getsize(full_path)
+            
+            items.append(item_data)
+    except Exception as e:
+        print(f"Could not scan item in {safe_req_path}: {e}")
 
     return jsonify(sorted(items, key=lambda x: (x['type'] == 'file', x['name'].lower())))
 

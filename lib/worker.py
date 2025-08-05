@@ -118,24 +118,26 @@ def _finalize_job(job, final_status, temp_log_path, config):
 
         log(f"Finalizing job with status: {final_status}...")
         
-        os.makedirs(final_dest_dir, exist_ok=True)
         moved_count = 0
         final_filenames = []
 
         if final_status in ["COMPLETED", "PARTIAL", "STOPPED"]:
             if os.path.exists(temp_dir_path):
-                for f in os.listdir(temp_dir_path):
-                    if f == "archive.temp.txt":
-                        continue
-                    source_path = os.path.join(temp_dir_path, f)
-                    dest_path = os.path.join(final_dest_dir, f)
-                    try:
-                        shutil.move(source_path, dest_path)
-                        final_filenames.append(f)
-                        moved_count += 1
-                    except Exception as e:
-                        log(f"ERROR: Could not move completed file {f}: {e}")
-                log(f"Moved {moved_count} file(s) to final destination.")
+                # ##-- BEHAVIOR FIX: Check for files before creating the destination folder --##
+                files_to_move = [f for f in os.listdir(temp_dir_path) if f != "archive.temp.txt"]
+                
+                if files_to_move:
+                    os.makedirs(final_dest_dir, exist_ok=True)
+                    for f in files_to_move:
+                        source_path = os.path.join(temp_dir_path, f)
+                        dest_path = os.path.join(final_dest_dir, f)
+                        try:
+                            shutil.move(source_path, dest_path)
+                            final_filenames.append(f)
+                            moved_count += 1
+                        except Exception as e:
+                            log(f"ERROR: Could not move completed file {f}: {e}")
+                    log(f"Moved {moved_count} file(s) to final destination.")
         else:
             log("Skipping file move for cancelled/failed job.")
 
@@ -143,6 +145,8 @@ def _finalize_job(job, final_status, temp_log_path, config):
         if os.path.exists(temp_archive_path):
             final_archive_path = os.path.join(final_dest_dir, "archive.txt")
             try:
+                # Ensure destination for archive exists if it was the only thing to move
+                os.makedirs(final_dest_dir, exist_ok=True)
                 shutil.move(temp_archive_path, final_archive_path)
                 log(f"Successfully updated archive file at: {final_archive_path}")
             except Exception as e:
@@ -306,22 +310,29 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
             state_manager.reset_current_download()
             time.sleep(0.2) 
 
+            # ##-- BUG FIX: Fixed race condition by renaming log BEFORE adding to history --##
+            # 1. Determine the next log ID and the final log path
+            next_log_id = state_manager.next_log_id
+            final_log_path = os.path.join(log_dir, f"job_{next_log_id}.log")
+            
+            # 2. Try to move the log file to its final destination
+            log_path_for_history = "LOG_SAVE_ERROR"
+            try:
+                shutil.move(temp_log_path, final_log_path)
+                log_path_for_history = final_log_path
+            except Exception as e:
+                print(f"ERROR: Could not rename log file {temp_log_path} to {final_log_path}: {e}")
+
+            # 3. Now, create and add the history item with the definitive log path
             history_item = {
                 "url": job["url"], 
                 "title": final_title, 
                 "folder": final_folder, 
                 "filename": final_filename,
                 "job_data": job, 
-                "status": status
+                "status": status,
+                "log_path": log_path_for_history # Use the final path or the error string
             }
-            log_id = state_manager.add_to_history(history_item)
-            final_log_path = os.path.join(log_dir, f"job_{log_id}.log")
-            
-            try:
-                shutil.move(temp_log_path, final_log_path)
-                state_manager.update_history_item(log_id, {"log_path": final_log_path})
-            except Exception as e:
-                print(f"ERROR: Could not rename log file {temp_log_path} to {final_log_path}: {e}")
-                state_manager.update_history_item(log_id, {"log_path": "LOG_SAVE_ERROR"})
+            state_manager.add_to_history(history_item) # This now saves the state correctly
 
             state_manager.queue.task_done()
