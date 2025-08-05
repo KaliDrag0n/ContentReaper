@@ -60,17 +60,18 @@ def _get_clip_args(job):
     else:
         return ['-f', 'bestvideo+bestaudio/best', '--merge-output-format', 'mp4']
 
-def build_yt_dlp_command(job, temp_dir_path, cookie_file_path):
+def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmpeg_path):
     """
     Constructs the full yt-dlp command line argument list for a given download job.
     """
-    cmd = ['yt-dlp']
+    cmd = [yt_dlp_path] # Use the provided path
     mode = job.get("mode")
     is_playlist = "playlist?list=" in job.get("url", "")
     final_folder_name = job.get("folder") or "Misc Downloads"
 
     # --- Basic Options ---
     cmd.extend(['--sleep-interval', '3', '--max-sleep-interval', '10'])
+    cmd.extend(['--ffmpeg-location', os.path.dirname(ffmpeg_path)]) # Explicitly tell yt-dlp where ffmpeg is
     if job.get('proxy'):
         cmd.extend(['--proxy', job['proxy']])
     if job.get('rate_limit'):
@@ -185,7 +186,7 @@ def _finalize_job(job, final_status, temp_log_path, config):
 
 # --- Main Worker Thread --- #
 
-def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
+def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path, ffmpeg_path):
     while True:
         state_manager.queue_paused_event.wait()
 
@@ -213,9 +214,9 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
                     is_playlist = "playlist?list=" in job["url"]
                     
                     # Fetch both title and thumbnail in one command
-                    fetch_cmd = ['yt-dlp', '--print', '%(title)s\n%(thumbnail)s', '--playlist-items', '1', '-s', job["url"]]
+                    fetch_cmd = [yt_dlp_path, '--print', '%(title)s\n%(thumbnail)s', '--playlist-items', '1', '-s', job["url"]]
                     if is_playlist:
-                        fetch_cmd = ['yt-dlp', '--print', '%(playlist_title)s\n%(thumbnail)s', '--playlist-items', '1', '-s', job["url"]]
+                        fetch_cmd = [yt_dlp_path, '--print', '%(playlist_title)s\n%(thumbnail)s', '--playlist-items', '1', '-s', job["url"]]
 
                     result = subprocess.run(fetch_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, check=True)
                     
@@ -247,7 +248,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path):
                     temp_archive_file = os.path.join(temp_dir_path, "archive.temp.txt")
                     shutil.copy2(main_archive_file, temp_archive_file)
 
-            cmd = build_yt_dlp_command(job, temp_dir_path, cookie_file_path)
+            cmd = build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmpeg_path)
             
             state_manager.update_current_download({"status": "Starting..."})
 

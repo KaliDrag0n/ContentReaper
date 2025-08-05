@@ -1,59 +1,50 @@
 # web_tool.py
 import os, sys, subprocess, importlib.util
 
-#~ --- Update & Startup Logic --- ~#
-def run_startup_checks():
-    """
-    Checks for dependencies on startup. If they are missing, it attempts
-    to install them to the user's local site-packages.
-    """
-    print("--- [1/3] Running startup dependency checks ---")
+#~ --- Dependency & Startup Logic --- ~#
+# This initial check ensures the core web server libraries are available.
+try:
+    import flask
+    import waitress
+except ImportError:
+    print("Core Python packages not found. Attempting to install 'flask' and 'waitress'...")
     try:
-        import flask
-        import waitress
-        print("Dependencies are satisfied.")
-    except ImportError:
-        print("Required Python packages not found. Attempting to install...")
-        APP_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-        requirements_path = os.path.join(APP_ROOT_DIR, "requirements.txt")
-        if not os.path.exists(requirements_path):
-            print(f"FATAL: requirements.txt not found at {requirements_path}. Cannot proceed.")
-            sys.exit(1)
-        
-        try:
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--user', '-r', requirements_path])
-            print("\nDependencies installed successfully.")
-            print("Please restart the application for the changes to take effect.")
-            sys.exit(0)
-        except subprocess.CalledProcessError as e:
-            print(f"\nERROR: Failed to install dependencies using pip. Error: {e}")
-            print("Please install the required packages manually.")
-            print(f"You can try running: pip install --user -r {requirements_path}")
-            sys.exit(1)
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--user', 'flask', 'waitress'])
+        print("\nDependencies installed successfully. Please restart the application.")
+        sys.exit(0)
+    except subprocess.CalledProcessError as e:
+        print(f"\nERROR: Failed to install core dependencies. Please run 'pip install flask waitress' manually. Error: {e}")
+        sys.exit(1)
 
-    print("--- [2/3] Checking for yt-dlp updates ---")
-    try:
-        # ##-- FIX: Run the command but capture output to handle specific errors gracefully --##
-        # This prevents crashes on systems with externally managed Python environments (PEP 668).
-        command = [sys.executable, '-m', 'pip', 'install', '--user', '--upgrade', 'yt-dlp']
-        result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='replace')
+# Now, import our new dependency manager
+from lib import dependency_manager
 
-        # check=True is not used, so we check the return code manually.
-        if result.returncode != 0:
-            # If the specific PEP 668 error occurs, we ignore it and inform the user.
-            if "externally-managed-environment" in result.stderr:
-                print("Skipping yt-dlp update in externally managed environment.")
-                print("Please use your system package manager (e.g., apt) to update yt-dlp.")
-            else:
-                # For any other error, print a warning.
-                print(f"WARNING: Could not update yt-dlp. Stderr: {result.stderr}")
+APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-    except Exception as e:
-        print(f"WARNING: An unexpected error occurred while trying to update yt-dlp: {e}")
-    
-    print("--- [3/3] Startup checks complete ---")
+# Run the main dependency check for yt-dlp and ffmpeg
+YT_DLP_PATH, FFMPEG_PATH = dependency_manager.ensure_dependencies(APP_ROOT)
 
-run_startup_checks()
+# If either dependency failed, we cannot continue.
+if not YT_DLP_PATH or not FFMPEG_PATH:
+    print("\nApplication cannot start due to missing critical dependencies.")
+    # Add a pause on Windows so the user can see the error before the window closes.
+    if platform.system() == "Windows":
+        os.system("pause")
+    sys.exit(1)
+
+print("\n--- [2/3] Checking for yt-dlp updates ---")
+try:
+    # We still run this to update a user's system-wide yt-dlp if it's being used.
+    # The dependency manager will have chosen the system path if it exists.
+    command = [sys.executable, '-m', 'pip', 'install', '--user', '--upgrade', 'yt-dlp']
+    result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='replace')
+    if result.returncode != 0 and "externally-managed-environment" in result.stderr:
+        print("Skipping yt-dlp pip update in externally managed environment.")
+except Exception as e:
+    print(f"WARNING: An unexpected error occurred while trying to update yt-dlp via pip: {e}")
+
+print("--- [3/3] Startup checks complete ---")
+
 
 from flask import Flask, request, render_template, jsonify, redirect, url_for, Response, send_file
 import threading, json, atexit, time, signal, requests, shutil, io, zipfile, re, platform
@@ -68,7 +59,6 @@ app = Flask(__name__)
 #~ --- Configuration --- ~#
 APP_VERSION = "1.2.0" 
 GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
-APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # --- File & Folder Paths ---
 CONF_CONFIG_FILE = os.path.join(APP_ROOT, "config.json")
@@ -142,7 +132,7 @@ def trigger_update_and_restart():
         return
 
     print("[3/4] Applying update...")
-    preserved_items = ["downloads", ".temp", "logs", "config.json", "state.json", "cookies.txt", ".git"]
+    preserved_items = ["downloads", ".temp", "logs", "config.json", "state.json", "cookies.txt", ".git", "bin"] # Added 'bin' to preserved items
     try:
         for item in os.listdir(update_source_dir):
             source_item_path = os.path.join(update_source_dir, item)
@@ -345,6 +335,21 @@ def add_to_queue_route():
     
     folder_name = sanitize_filename(folder_name)
 
+    # --- Server-side validation for playlist indices ---
+    p_start_str = request.form.get("playlist_start", "").strip()
+    p_end_str = request.form.get("playlist_end", "").strip()
+    
+    try:
+        playlist_start = int(p_start_str) if p_start_str else None
+    except ValueError:
+        playlist_start = None # Ignore non-integer input
+    
+    try:
+        playlist_end = int(p_end_str) if p_end_str else None
+    except ValueError:
+        playlist_end = None # Ignore non-integer input
+    # --- End of validation ---
+
     jobs_added = 0
     for url in urls:
         url = url.strip()
@@ -354,8 +359,8 @@ def add_to_queue_route():
             "url": url, "mode": mode,
             "folder": folder_name,
             "archive": request.form.get("use_archive") == "yes",
-            "playlist_start": request.form.get("playlist_start"),
-            "playlist_end": request.form.get("playlist_end"),
+            "playlist_start": playlist_start,
+            "playlist_end": playlist_end,
             "proxy": request.form.get("proxy", "").strip(),
             "rate_limit": request.form.get("rate_limit", "").strip()
         }
@@ -651,7 +656,7 @@ def initialize_app():
     
     worker_thread = threading.Thread(
         target=yt_dlp_worker, 
-        args=(state_manager, CONFIG, LOG_DIR, CONF_COOKIE_FILE), 
+        args=(state_manager, CONFIG, LOG_DIR, CONF_COOKIE_FILE, YT_DLP_PATH, FFMPEG_PATH), # Pass the new paths
         daemon=True
     )
     worker_thread.start()

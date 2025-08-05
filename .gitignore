@@ -6,3 +6,4 @@ logs
 __pycache__
 .temp
 change.log
+/bin
