@@ -1,6 +1,29 @@
 # web_tool.py
+import os, sys, subprocess
+
+#~ --- Update & Startup Logic --- ~#
+def run_startup_checks():
+    """
+    Checks for dependencies on startup and installs/updates them.
+    This runs ONCE when the application starts.
+    """
+    print("--- [1/3] Running startup dependency checks ---")
+    try:
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt'])
+    except Exception as e:
+        print(f"ERROR: Could not install Python dependencies from requirements.txt: {e}")
+
+    print("--- [2/3] Checking for yt-dlp updates ---")
+    try:
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'yt-dlp'])
+    except Exception as e:
+        print(f"ERROR: Could not update yt-dlp: {e}")
+    print("--- [3/3] Startup checks complete ---")
+
+run_startup_checks()
+
 from flask import Flask, request, render_template, jsonify, redirect, url_for, Response, send_file
-import threading, os, json, atexit, time, signal, subprocess, requests, shutil, io, zipfile, re, sys, platform
+import threading, json, atexit, time, signal, requests, shutil, io, zipfile, re, platform
 
 # --- Local Imports from 'lib' directory ---
 from lib.state_manager import StateManager
@@ -47,26 +70,6 @@ def is_safe_path(basedir, path, follow_symlinks=True):
     if follow_symlinks:
         return os.path.realpath(path).startswith(basedir)
     return os.path.abspath(path).startswith(basedir)
-
-#~ --- Update & Startup Logic --- ~#
-def run_startup_checks():
-    """
-    Checks for dependencies on startup and installs/updates them.
-    This runs ONCE when the application starts.
-    """
-    print("--- [1/3] Running startup dependency checks ---")
-    try:
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt'])
-    except Exception as e:
-        print(f"ERROR: Could not install Python dependencies from requirements.txt: {e}")
-
-    print("--- [2/3] Checking for yt-dlp updates ---")
-    try:
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'yt-dlp'])
-    except Exception as e:
-        print(f"ERROR: Could not update yt-dlp: {e}")
-    print("--- [3/3] Startup checks complete ---")
-
 
 def trigger_update_and_restart():
     """
@@ -650,7 +653,6 @@ def initialize_app():
     worker_thread.start()
 
 #~ --- Main Execution --- ~#
-run_startup_checks()
 initialize_app()
 
 if __name__ == "__main__":
