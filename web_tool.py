@@ -2,22 +2,6 @@
 import os, sys, subprocess, importlib.util
 
 #~ --- Update & Startup Logic --- ~#
-def _is_externally_managed():
-    """
-    Checks if the Python environment is externally managed (PEP 668).
-    This is common on modern Linux distributions.
-    """
-    try:
-        # The most reliable way is to check for the EXTERNALLY-MANAGED file
-        spec = importlib.util.find_spec("site")
-        if spec and spec.origin:
-            site_packages_path = os.path.dirname(spec.origin)
-            marker_file = os.path.join(site_packages_path, "EXTERNALLY-MANAGED")
-            return os.path.exists(marker_file)
-    except Exception:
-        pass
-    return False
-
 def run_startup_checks():
     """
     Checks for dependencies on startup. If they are missing, it attempts
@@ -48,15 +32,24 @@ def run_startup_checks():
             sys.exit(1)
 
     print("--- [2/3] Checking for yt-dlp updates ---")
-    if _is_externally_managed():
-        print("Skipping yt-dlp update in externally managed environment.")
-        print("Please use your system package manager (e.g., apt) to update yt-dlp.")
-    else:
-        try:
-            # Always use --user to avoid permission errors on protected systems
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--user', '--upgrade', 'yt-dlp'])
-        except Exception as e:
-            print(f"WARNING: Could not update yt-dlp: {e}")
+    try:
+        # ##-- FIX: Run the command but capture output to handle specific errors gracefully --##
+        # This prevents crashes on systems with externally managed Python environments (PEP 668).
+        command = [sys.executable, '-m', 'pip', 'install', '--user', '--upgrade', 'yt-dlp']
+        result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='replace')
+
+        # check=True is not used, so we check the return code manually.
+        if result.returncode != 0:
+            # If the specific PEP 668 error occurs, we ignore it and inform the user.
+            if "externally-managed-environment" in result.stderr:
+                print("Skipping yt-dlp update in externally managed environment.")
+                print("Please use your system package manager (e.g., apt) to update yt-dlp.")
+            else:
+                # For any other error, print a warning.
+                print(f"WARNING: Could not update yt-dlp. Stderr: {result.stderr}")
+
+    except Exception as e:
+        print(f"WARNING: An unexpected error occurred while trying to update yt-dlp: {e}")
     
     print("--- [3/3] Startup checks complete ---")
 
