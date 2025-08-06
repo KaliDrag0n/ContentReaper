@@ -21,9 +21,9 @@
             const res = await fetch(endpoint, options);
             if (!res.ok) {
                 // Try to parse the error response from the server, otherwise use the default status text.
-                const errorData = await res.json().catch(() => ({ message: `Request failed with status: ${res.statusText}` }));
-                // Use the 'message' key from the server's JSON response.
-                throw new Error(errorData.message || 'An unknown error occurred.');
+                const errorData = await res.json().catch(() => ({ message: `Request failed: ${res.statusText}` }));
+                // Use the 'message' key from the server's JSON response, or fall back to the status text.
+                throw new Error(errorData.message || res.statusText);
             }
             // Handle JSON response or other response types
             if (res.headers.get("Content-Type")?.includes("application/json")) {
@@ -105,7 +105,7 @@
     function renderCurrentStatus(current) {
         const currentDiv = document.getElementById("current-status");
 
-        if (current) {
+        if (current && current.url) { // Check if a job is actually running
             const thumbnailHTML = current.thumbnail 
                 ? `<div class="flex-shrink-0 mb-3 mb-md-0 me-md-3"><img src="${current.thumbnail}" class="now-downloading-thumbnail" alt="Thumbnail"></div>`
                 : '';
@@ -169,7 +169,7 @@
         const historyList = document.getElementById("history-list");
         document.getElementById("clear-history-btn").style.display = historyForDisplay.length > 0 ? 'block' : 'none';
 
-        if (historyForDisplay.length === 0 && historyList.children.length > 0) {
+        if (historyForDisplay.length === 0 && historyList.children.length > 0 && historyList.children[0].dataset.logId) {
             historyList.innerHTML = "<li class='list-group-item'>Nothing in history.</li>";
             return;
         }
@@ -380,6 +380,6 @@
         };
 
         checkForUpdates();
-        setInterval(checkForUpdates, 900000);
+        setInterval(checkForUpdates, 900000); // Check for updates every 15 minutes
     });
 })();

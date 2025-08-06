@@ -229,6 +229,7 @@ class StateManager:
                 abandoned_job = state.get("current_job")
                 if isinstance(abandoned_job, dict):
                     print(f"Re-queueing abandoned job: {abandoned_job.get('id')}")
+                    # By inserting at the front, we prioritize the job that was running.
                     queue_items.insert(0, abandoned_job)
 
                 self.history = state.get("history", [])
@@ -237,6 +238,7 @@ class StateManager:
                     self.history = []
 
                 self.next_log_id = state.get("next_log_id", len(self.history))
+                # Start with a safe base for the next queue ID
                 self.next_queue_id = state.get("next_queue_id", 0)
                 
                 self.history_state_version = state.get("history_state_version", 0)
@@ -249,12 +251,14 @@ class StateManager:
                 
                 # First, find the highest existing ID in the list to avoid any collisions
                 for job in queue_items:
-                    if job.get('id') is not None and job.get('id') >= max_id:
-                        max_id = job.get('id') + 1
+                    job_id = job.get('id')
+                    if job_id is not None and job_id >= max_id:
+                        max_id = job_id + 1
 
                 # Now, iterate through the list, assign unique IDs where needed, and add to the queue
                 for job in queue_items:
                     job_id = job.get('id')
+                    # If the job has no ID or its ID is already used, assign a new one
                     if job_id is None or job_id in loaded_ids:
                         job['id'] = max_id
                         max_id += 1
@@ -262,20 +266,27 @@ class StateManager:
                     loaded_ids.add(job['id'])
                     self.queue.put(job)
                 
+                # Ensure the next ID is greater than any we've just processed
                 self.next_queue_id = max_id
                 # --- END FIX ---
                 
-                print(f"Loaded {self.queue.qsize()} items from queue and {len(self.history)} history entries.")
+                print(f"Loaded {self.queue.qsize()} items into queue and {len(self.history)} history entries.")
 
         except json.JSONDecodeError as e:
             print(f"Could not load state file (invalid JSON). Error: {e}")
             corrupted_path = self.state_file + ".bak"
             if os.path.exists(self.state_file):
-                os.rename(self.state_file, corrupted_path)
-            print(f"Backed up corrupted state file to {corrupted_path}")
+                try:
+                    os.rename(self.state_file, corrupted_path)
+                    print(f"Backed up corrupted state file to {corrupted_path}")
+                except OSError as e_rename:
+                    print(f"Could not back up corrupted state file. Error: {e_rename}")
         except Exception as e:
             print(f"An unexpected error occurred loading the state file. Error: {e}")
             corrupted_path = self.state_file + ".bak"
             if os.path.exists(self.state_file):
-                os.rename(self.state_file, corrupted_path)
-            print(f"Backed up corrupted state file to {corrupted_path}")
+                try:
+                    os.rename(self.state_file, corrupted_path)
+                    print(f"Backed up corrupted state file to {corrupted_path}")
+                except OSError as e_rename:
+                    print(f"Could not back up corrupted state file. Error: {e_rename}")

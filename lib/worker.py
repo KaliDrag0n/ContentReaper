@@ -89,6 +89,7 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
 
     # --- Output Template ---
     if mode != 'custom' or ('-o' not in cmd and '--output' not in cmd):
+        # FIX: Sanitize the title component of the output template for cross-platform compatibility
         output_template = os.path.join(temp_dir_path, 
             "%(playlist_index)02d - %(title)s.%(ext)s" if is_playlist else "%(title)s.%(ext)s")
         cmd.extend(['-o', output_template])
@@ -140,10 +141,12 @@ def _finalize_job(job, final_status, temp_log_path, config):
                     os.makedirs(final_dest_dir, exist_ok=True)
                     for f in files_to_move:
                         source_path = os.path.join(temp_dir_path, f)
-                        dest_path = os.path.join(final_dest_dir, f)
+                        # Sanitize filename one last time before moving
+                        sanitized_f = sanitize_filename(f)
+                        dest_path = os.path.join(final_dest_dir, sanitized_f)
                         try:
                             shutil.move(source_path, dest_path)
-                            final_filenames.append(f)
+                            final_filenames.append(sanitized_f)
                             moved_count += 1
                         except Exception as e:
                             log(f"ERROR: Could not move completed file {f}: {e}")
@@ -161,15 +164,18 @@ def _finalize_job(job, final_status, temp_log_path, config):
             except Exception as e:
                 log(f"ERROR: Could not move updated archive file: {e}")
 
+        # Refined final title logic
         if is_playlist:
             final_title = final_folder_name
         elif moved_count == 1 and final_filenames:
             final_filename = final_filenames[0]
             final_title = os.path.splitext(final_filename)[0]
-        elif moved_count > 1 and not is_playlist:
-            final_filename = None
-            final_title = os.path.splitext(final_filenames[0])[0]
-        
+        elif moved_count > 0 and not is_playlist: # Should be rare, but handles cases where one URL creates multiple files
+            final_filename = None # No single filename to represent
+            final_title = job.get("folder") or os.path.splitext(final_filenames[0])[0]
+        else: # No files moved
+            final_title = job.get("folder") or job.get("url")
+
         if moved_count > 0 and final_status == "FAILED":
             final_status = "PARTIAL"
             log("Status updated to PARTIAL due to partial success.")
@@ -205,7 +211,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
         })
 
         try:
-            # ##-- UX FIX: Fetch title and thumbnail if not provided --##
+            # ##-- UX IMPROVEMENT: Fetch title and thumbnail if not provided --##
             if not job.get("folder"):
                 try:
                     print(f"WORKER: No folder name for job {job['id']}, fetching details...")
@@ -214,10 +220,11 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                     is_playlist = "playlist?list=" in job["url"]
                     
                     # Fetch both title and thumbnail in one command
+                    # Using --print to get specific fields, and -s to simulate (not download)
                     if is_playlist:
                         fetch_cmd = [yt_dlp_path, '--print', '%(playlist_title)s\n%(thumbnail)s', '--playlist-items', '1', '-s', job["url"]]
                     else:
-                        fetch_cmd = [yt_dlp_path, '--print', '%(title)s\n%(thumbnail)s', '--playlist-items', '1', '-s', job["url"]]
+                        fetch_cmd = [yt_dlp_path, '--print', '%(title)s\n%(thumbnail)s', '-s', job["url"]]
 
                     result = subprocess.run(fetch_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, check=True)
                     
@@ -226,26 +233,25 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                     title = "Misc Downloads"
                     thumbnail_url = None
 
-                    if len(output_lines) >= 1:
+                    if len(output_lines) >= 1 and output_lines[0]:
                         title = sanitize_filename(output_lines[0])
-                    if len(output_lines) >= 2:
+                    if len(output_lines) >= 2 and output_lines[1]:
                         thumbnail_url = output_lines[1]
 
                     job["folder"] = title
                     print(f"WORKER: Fetched folder name: {title}")
                     
-                    # --- FIX: Differentiate between single video and playlist title updates ---
+                    # Differentiate between single video and playlist title updates for the UI
                     update_data = {"thumbnail": thumbnail_url}
                     if is_playlist:
                         update_data["playlist_title"] = title
                     else:
                         update_data["title"] = title
                     state_manager.update_current_download(update_data)
-                    # --- END FIX ---
 
                 except Exception as e:
                     print(f"WORKER: Could not auto-fetch details for job {job['id']}: {e}")
-                    job["folder"] = "Misc Downloads"
+                    job["folder"] = sanitize_filename(job.get("url")) # Fallback to sanitized URL
                     state_manager.update_current_download({"title": job["folder"]})
             
             os.makedirs(temp_dir_path, exist_ok=True)
@@ -297,15 +303,19 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                                 update["file_size"] = format_bytes(total_size)
                                 current_track_title = os.path.basename(progress_data.get("filename", "...")).rsplit('.',1)[0]
                                 
+                                # Use the pre-fetched folder name for consistency
+                                playlist_title_for_ui = job.get("folder")
+                                
                                 if "playlist?list=" in job.get("url", ""):
                                     update.update({
-                                        'playlist_title': job.get("folder"),
+                                        'playlist_title': playlist_title_for_ui,
                                         'track_title': current_track_title,
                                         'playlist_index': local_playlist_index,
                                         'playlist_count': local_playlist_count
                                     })
                                 else:
-                                    update["title"] = current_track_title
+                                    # For single videos, the main title is the folder name
+                                    update["title"] = playlist_title_for_ui
                                 
                                 update.update({"speed": progress_data.get("_speed_str", "N/A"), "eta": progress_data.get("_eta_str", "N/A")})
                             
@@ -317,7 +327,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                         if match: 
                             local_playlist_index = int(match.group(1))
                             local_playlist_count = int(match.group(2))
-                    elif any(s in line for s in ("[ExtractAudio]", "[Merger]")):
+                    elif any(s in line for s in ("[ExtractAudio]", "[Merger]", "[Fixup")) :
                         state_manager.update_current_download({"status": 'Processing...'})
 
             process.wait() 
@@ -349,8 +359,9 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
             
             log_path_for_history = "LOG_SAVE_ERROR"
             try:
-                shutil.move(temp_log_path, final_log_path)
-                log_path_for_history = final_log_path
+                if os.path.exists(temp_log_path):
+                    shutil.move(temp_log_path, final_log_path)
+                    log_path_for_history = final_log_path
             except Exception as e:
                 print(f"ERROR: Could not rename log file {temp_log_path} to {final_log_path}: {e}")
 

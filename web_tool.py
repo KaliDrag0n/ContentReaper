@@ -5,14 +5,15 @@ import os, sys, subprocess, importlib.util, platform
 try:
     import flask
     import waitress
+    import requests
 except ImportError:
-    print("Core Python packages not found. Attempting to install 'flask' and 'waitress'...")
+    print("Core Python packages not found. Attempting to install 'flask', 'waitress', and 'requests'...")
     try:
-        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--user', 'flask', 'waitress'])
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--user', 'flask', 'waitress', 'requests'])
         print("\nDependencies installed successfully. Please restart the application.")
         sys.exit(0)
     except subprocess.CalledProcessError as e:
-        print(f"\nERROR: Failed to install core dependencies. Please run 'pip install flask waitress' manually. Error: {e}")
+        print(f"\nERROR: Failed to install core dependencies. Please run 'pip install flask waitress requests' manually. Error: {e}")
         sys.exit(1)
 
 from lib import dependency_manager
@@ -28,17 +29,21 @@ if not YT_DLP_PATH or not FFMPEG_PATH:
 
 print("\n--- [2/3] Checking for yt-dlp updates ---")
 try:
-    command = [sys.executable, '-m', 'pip', 'install', '--user', '--upgrade', 'yt-dlp']
-    result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='replace')
-    if result.returncode != 0 and "externally-managed-environment" in result.stderr:
-        print("Skipping yt-dlp pip update in externally managed environment.")
+    # Attempt to update yt-dlp directly via its own command
+    update_command = [YT_DLP_PATH, '-U']
+    print(f"Running yt-dlp update with command: {' '.join(update_command)}")
+    update_result = subprocess.run(update_command, capture_output=True, text=True, encoding='utf-8', errors='replace')
+    print(update_result.stdout)
+    if update_result.returncode != 0:
+        print(f"yt-dlp update check may have failed. Stderr: {update_result.stderr}")
 except Exception as e:
-    print(f"WARNING: An unexpected error occurred while trying to update yt-dlp via pip: {e}")
+    print(f"WARNING: An unexpected error occurred while trying to update yt-dlp: {e}")
+
 
 print("--- [3/3] Startup checks complete ---")
 
 from flask import Flask, request, render_template, jsonify, redirect, url_for, Response, send_file
-import threading, json, atexit, time, signal, requests, shutil, io, zipfile, re
+import threading, json, atexit, time, signal, shutil, io, zipfile, re
 
 from lib.state_manager import StateManager
 from lib.worker import yt_dlp_worker
@@ -47,7 +52,7 @@ from lib.sanitizer import sanitize_filename
 app = Flask(__name__)
 
 #~ --- Configuration --- ~#
-APP_VERSION = "1.2.1" # Version bump for new features
+APP_VERSION = "1.3.0" # Version bump for new features
 GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
 
 CONF_CONFIG_FILE = os.path.join(APP_ROOT, "config.json")
@@ -73,7 +78,6 @@ def is_safe_path(basedir, path, follow_symlinks=True):
         return os.path.realpath(path).startswith(basedir)
     return os.path.abspath(path).startswith(basedir)
 
-# --- IMPROVEMENT: Configuration Validation Helper ---
 def validate_config_paths():
     """Checks download and temp directories for validity and writability."""
     errors = {}
@@ -97,7 +101,6 @@ def validate_config_paths():
         errors['temp_dir'] = "Path is not writable by the application."
         
     return errors
-# --- END IMPROVEMENT ---
 
 def trigger_update_and_restart():
     print("--- UPDATE PROCESS INITIATED ---")
@@ -149,7 +152,7 @@ def trigger_update_and_restart():
 
     print("[4/4] Update applied. Restarting server...")
     state_manager.save_state()
-    os.execv(sys.executable, ['python'] + sys.argv)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 def _run_update_check():
     global update_status
@@ -160,18 +163,19 @@ def _run_update_check():
         res.raise_for_status()
         latest_release = res.json()
         latest_version_tag = latest_release.get("tag_name", "").lstrip('v')
-        current_parts = [int(p) for p in APP_VERSION.split('.')]
-        latest_parts = [int(p) for p in latest_version_tag.split('.')]
-        with state_manager._lock:
-            if latest_parts > current_parts:
-                print(f"UPDATE: New version found! Latest: {latest_version_tag}, Current: {APP_VERSION}")
+        
+        # Simple version comparison
+        if latest_version_tag > APP_VERSION:
+            print(f"UPDATE: New version found! Latest: {latest_version_tag}, Current: {APP_VERSION}")
+            with state_manager._lock:
                 update_status.update({
                     "update_available": True, "latest_version": latest_version_tag,
                     "release_url": latest_release.get("html_url"),
                     "release_notes": latest_release.get("body")
                 })
-            else:
-                print("UPDATE: You are on the latest version.")
+        else:
+            print("UPDATE: You are on the latest version.")
+            with state_manager._lock:
                 update_status["update_available"] = False
         return True
     except Exception as e:
@@ -230,7 +234,7 @@ def settings_route():
                            saved=request.args.get('saved'),
                            app_version=APP_VERSION,
                            update_info=current_update_status,
-                           config_errors=config_errors) # Pass errors to the template
+                           config_errors=config_errors)
 
 @app.route("/file_manager")
 def file_manager_route():
@@ -290,7 +294,8 @@ def install_update_route():
     return jsonify({"message": "Update process initiated."})
 
 def extract_urls_from_text(text):
-    return re.findall(r'(?:(?:https?|ftp):\/\/)?[\w/\-?=%.]+\.[\w/\-?=%.]+', text)
+    """Finds all http/https URLs in a block of text."""
+    return re.findall(r'https?://[^\s"]+', text)
 
 @app.route("/queue", methods=["POST"])
 def add_to_queue_route():
@@ -394,7 +399,10 @@ def live_log_stream_route():
             yield f"data: No active log file found.\n\n"
             return
         with open(log_path, 'r', encoding='utf-8') as log_file:
-            for line in log_file: yield f"data: {line.strip()}\n\n"
+            # First, stream existing content
+            for line in log_file: 
+                yield f"data: {line.strip()}\n\n"
+            # Then, tail the file for new content
             while state_manager.current_download.get("url") is not None:
                 if line := log_file.readline():
                     yield f"data: {line.strip()}\n\n"
@@ -419,7 +427,8 @@ def delete_from_history_route(log_id):
     path_to_delete = state_manager.delete_from_history(log_id)
     if path_to_delete is None: return jsonify({"message": "Item not found."}), 404
     try:
-        if os.path.exists(path_to_delete): os.remove(path_to_delete)
+        if path_to_delete and os.path.exists(path_to_delete): 
+            os.remove(path_to_delete)
     except Exception as e:
         print(f"ERROR: Could not delete log file {path_to_delete}: {e}")
     return jsonify({"message": "History log deleted."})
@@ -437,31 +446,49 @@ def stop_route():
 def list_files_route():
     base_download_dir = os.path.realpath(CONFIG.get("download_dir"))
     req_path = request.args.get('path', '')
-    safe_req_path = os.path.realpath(os.path.join(base_download_dir, req_path))
+    
+    # Prevent path traversal attacks
+    safe_req_path = os.path.abspath(os.path.join(base_download_dir, req_path))
     if not is_safe_path(base_download_dir, safe_req_path):
         return jsonify({"error": "Access Denied"}), 403
     if not os.path.isdir(safe_req_path): return jsonify([])
+
     items = []
     try:
         for name in os.listdir(safe_req_path):
             full_path = os.path.join(safe_req_path, name)
-            item_data = {"name": name, "path": os.path.join(req_path, name)}
-            if os.path.isdir(full_path):
-                item_data.update({"type": "directory", "item_count": len(os.listdir(full_path))})
-            else:
-                item_data.update({"type": "file", "size": os.path.getsize(full_path)})
-            items.append(item_data)
-    except Exception as e:
-        print(f"Could not scan item in {safe_req_path}: {e}")
+            # Create a relative path for the client to use
+            relative_path = os.path.relpath(full_path, base_download_dir)
+            item_data = {"name": name, "path": relative_path.replace("\\", "/")} # Ensure forward slashes for client
+            
+            try:
+                if os.path.isdir(full_path):
+                    item_data.update({"type": "directory", "item_count": len(os.listdir(full_path))})
+                else:
+                    item_data.update({"type": "file", "size": os.path.getsize(full_path)})
+                items.append(item_data)
+            except OSError:
+                # This can happen for broken symlinks or permission errors on sub-items
+                continue
+    except OSError as e:
+        print(f"Could not scan directory {safe_req_path}: {e}")
+        return jsonify({"error": f"Cannot access directory: {e.strerror}"}), 500
+        
     return jsonify(sorted(items, key=lambda x: (x['type'] == 'file', x['name'].lower())))
 
 @app.route("/download_item")
 def download_item_route():
     paths = request.args.getlist('paths')
     if not paths: return "Missing path parameter.", 400
+    
     download_dir = os.path.realpath(CONFIG.get("download_dir"))
-    safe_full_paths = [p for path in paths if is_safe_path(download_dir, p := os.path.realpath(os.path.join(download_dir, path))) and os.path.exists(p)]
-    if not safe_full_paths: return "No valid files specified.", 404
+    safe_full_paths = []
+    for path in paths:
+        full_path = os.path.abspath(os.path.join(download_dir, path))
+        if is_safe_path(download_dir, full_path) and os.path.exists(full_path):
+            safe_full_paths.append(full_path)
+
+    if not safe_full_paths: return "No valid files specified or access denied.", 404
 
     if len(safe_full_paths) == 1 and os.path.isfile(safe_full_paths[0]):
         return send_file(safe_full_paths[0], as_attachment=True)
@@ -474,10 +501,13 @@ def download_item_route():
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
         for full_path in safe_full_paths:
             if os.path.isdir(full_path):
+                # Correctly calculate arcname for directories
+                base_arcname = os.path.basename(full_path)
                 for root, _, files in os.walk(full_path):
                     for file in files:
                         file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, os.path.dirname(full_path))
+                        # arcname should be relative to the directory being zipped
+                        arcname = os.path.join(base_arcname, os.path.relpath(file_path, full_path))
                         zip_file.write(file_path, arcname=arcname)
             else:
                 zip_file.write(full_path, arcname=os.path.basename(full_path))
@@ -488,10 +518,12 @@ def download_item_route():
 def delete_item_route():
     paths = (request.get_json() or {}).get('paths', [])
     if not paths: return jsonify({"message": "Missing path parameter."}), 400
+    
     download_dir = os.path.realpath(CONFIG.get("download_dir"))
     deleted_count, errors = 0, []
+    
     for item_path in paths:
-        full_path = os.path.realpath(os.path.join(download_dir, item_path))
+        full_path = os.path.abspath(os.path.join(download_dir, item_path))
         if not is_safe_path(download_dir, full_path):
             errors.append(f"Access denied for {item_path}")
             continue
@@ -502,6 +534,7 @@ def delete_item_route():
             deleted_count += 1
         except Exception as e:
             errors.append(f"Error deleting {item_path}: {e}")
+            
     if errors:
         return jsonify({"message": f"Completed with errors. Deleted {deleted_count} item(s).", "errors": errors}), 500
     return jsonify({"message": f"Successfully deleted {deleted_count} item(s)."})
@@ -518,8 +551,8 @@ def initialize_app():
     threading.Thread(target=yt_dlp_worker, args=(state_manager, CONFIG, LOG_DIR, CONF_COOKIE_FILE, YT_DLP_PATH, FFMPEG_PATH), daemon=True).start()
 
 #~ --- Main Execution --- ~#
-initialize_app()
 if __name__ == "__main__":
-    from waitress import serve
+    initialize_app()
     print("--- Starting Server with Waitress ---")
+    print(f"Server running at: http://0.0.0.0:8080 or http://127.0.0.1:8080")
     serve(app, host="0.0.0.0", port=8080)
