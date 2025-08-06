@@ -52,7 +52,7 @@ from lib.sanitizer import sanitize_filename
 app = Flask(__name__)
 
 #~ --- Configuration --- ~#
-APP_VERSION = "1.3.0" # Version bump for new features
+APP_VERSION = "1.4.4" # Version bump for bugfix
 GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
 
 CONF_CONFIG_FILE = os.path.join(APP_ROOT, "config.json")
@@ -205,6 +205,28 @@ def load_config():
             print(f"Error loading config: {e}")
     save_config()
 
+#~ --- App Initialization --- ~#
+def initialize_app():
+    """
+    Loads config, creates directories, and starts background threads.
+    This function should only be called ONCE.
+    """
+    load_config()
+    os.makedirs(CONFIG["download_dir"], exist_ok=True)
+    os.makedirs(CONFIG["temp_dir"], exist_ok=True)
+    os.makedirs(LOG_DIR, exist_ok=True)
+    atexit.register(state_manager.save_state)
+    state_manager.load_state()
+    
+    # Start background threads
+    update_thread = threading.Thread(target=scheduled_update_check, daemon=True)
+    update_thread.start()
+    
+    worker_thread = threading.Thread(target=yt_dlp_worker, args=(state_manager, CONFIG, LOG_DIR, CONF_COOKIE_FILE, YT_DLP_PATH, FFMPEG_PATH), daemon=True)
+    worker_thread.start()
+    
+    print("\n--- Application Initialized ---")
+
 #~ --- Flask Routes --- ~#
 @app.route("/")
 def index_route():
@@ -220,11 +242,9 @@ def settings_route():
         with open(CONF_COOKIE_FILE, 'w', encoding='utf-8') as f:
             f.write(CONFIG["cookie_file_content"])
         save_config()
-        # After saving, re-validate to show the user if the new paths are valid
         config_errors = validate_config_paths()
         return redirect(url_for('settings_route', saved='true'))
     
-    # Validate paths on every GET request to the settings page
     config_errors = validate_config_paths()
     with state_manager._lock:
         current_update_status = update_status.copy()
@@ -240,38 +260,18 @@ def settings_route():
 def file_manager_route():
     return render_template("file_manager.html")
 
-@app.route("/api/status/stream")
-def status_stream_route():
-    def generate_status_updates():
-        last_history_ver = -1
-        last_queue_ver = -1
-        last_current_dl_ver = -1
-        try:
-            while True:
-                response = None
-                with state_manager._lock:
-                    history_changed = state_manager.history_state_version != last_history_ver
-                    queue_changed = state_manager.queue_state_version != last_queue_ver
-                    current_dl_changed = state_manager.current_download_version != last_current_dl_ver
-                    if history_changed or queue_changed or current_dl_changed:
-                        current_dl = state_manager.current_download
-                        response = {
-                            "queue": state_manager.get_queue_list(),
-                            "current": current_dl if current_dl.get("url") else None,
-                            "history": state_manager.get_history_summary(),
-                            "is_paused": not state_manager.queue_paused_event.is_set()
-                        }
-                        last_history_ver = state_manager.history_state_version
-                        last_queue_ver = state_manager.queue_state_version
-                        last_current_dl_ver = state_manager.current_download_version
-                if response:
-                    yield f"data: {json.dumps(response)}\n\n"
-                time.sleep(0.5)
-        except GeneratorExit:
-            print("Client disconnected from status stream.")
-    return Response(generate_status_updates(), mimetype='text/event-stream')
+@app.route("/api/status")
+def status_poll_route():
+    with state_manager._lock:
+        current_dl = state_manager.current_download
+        response = {
+            "queue": state_manager.get_queue_list(),
+            "current": current_dl if current_dl.get("url") else None,
+            "history": state_manager.get_history_summary(),
+            "is_paused": not state_manager.queue_paused_event.is_set()
+        }
+    return jsonify(response)
 
-# --- API Routes ---
 @app.route("/api/update_check")
 def update_check_route():
     with state_manager._lock:
@@ -372,6 +372,7 @@ def continue_job_route():
     job = request.get_json()
     if not job or "url" not in job:
         return jsonify({"message": "Invalid job data."}), 400
+    
     state_manager.add_to_queue(job)
     return jsonify({"message": f"Re-queued job: {job.get('title', job['url'])}"})
 
@@ -399,10 +400,8 @@ def live_log_stream_route():
             yield f"data: No active log file found.\n\n"
             return
         with open(log_path, 'r', encoding='utf-8') as log_file:
-            # First, stream existing content
             for line in log_file: 
                 yield f"data: {line.strip()}\n\n"
-            # Then, tail the file for new content
             while state_manager.current_download.get("url") is not None:
                 if line := log_file.readline():
                     yield f"data: {line.strip()}\n\n"
@@ -447,7 +446,6 @@ def list_files_route():
     base_download_dir = os.path.realpath(CONFIG.get("download_dir"))
     req_path = request.args.get('path', '')
     
-    # Prevent path traversal attacks
     safe_req_path = os.path.abspath(os.path.join(base_download_dir, req_path))
     if not is_safe_path(base_download_dir, safe_req_path):
         return jsonify({"error": "Access Denied"}), 403
@@ -457,9 +455,8 @@ def list_files_route():
     try:
         for name in os.listdir(safe_req_path):
             full_path = os.path.join(safe_req_path, name)
-            # Create a relative path for the client to use
             relative_path = os.path.relpath(full_path, base_download_dir)
-            item_data = {"name": name, "path": relative_path.replace("\\", "/")} # Ensure forward slashes for client
+            item_data = {"name": name, "path": relative_path.replace("\\", "/")}
             
             try:
                 if os.path.isdir(full_path):
@@ -468,7 +465,6 @@ def list_files_route():
                     item_data.update({"type": "file", "size": os.path.getsize(full_path)})
                 items.append(item_data)
             except OSError:
-                # This can happen for broken symlinks or permission errors on sub-items
                 continue
     except OSError as e:
         print(f"Could not scan directory {safe_req_path}: {e}")
@@ -501,12 +497,10 @@ def download_item_route():
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
         for full_path in safe_full_paths:
             if os.path.isdir(full_path):
-                # Correctly calculate arcname for directories
                 base_arcname = os.path.basename(full_path)
                 for root, _, files in os.walk(full_path):
                     for file in files:
                         file_path = os.path.join(root, file)
-                        # arcname should be relative to the directory being zipped
                         arcname = os.path.join(base_arcname, os.path.relpath(file_path, full_path))
                         zip_file.write(file_path, arcname=arcname)
             else:
@@ -539,20 +533,15 @@ def delete_item_route():
         return jsonify({"message": f"Completed with errors. Deleted {deleted_count} item(s).", "errors": errors}), 500
     return jsonify({"message": f"Successfully deleted {deleted_count} item(s)."})
 
-#~ --- App Initialization --- ~#
-def initialize_app():
-    load_config()
-    os.makedirs(CONFIG["download_dir"], exist_ok=True)
-    os.makedirs(CONFIG["temp_dir"], exist_ok=True)
-    os.makedirs(LOG_DIR, exist_ok=True)
-    atexit.register(state_manager.save_state)
-    state_manager.load_state()
-    threading.Thread(target=scheduled_update_check, daemon=True).start()
-    threading.Thread(target=yt_dlp_worker, args=(state_manager, CONFIG, LOG_DIR, CONF_COOKIE_FILE, YT_DLP_PATH, FFMPEG_PATH), daemon=True).start()
+
+# --- FIX: Move initialization to run when the module is imported by Waitress ---
+initialize_app()
+
 
 #~ --- Main Execution --- ~#
 if __name__ == "__main__":
-    initialize_app()
-    print("--- Starting Server with Waitress ---")
-    print(f"Server running at: http://0.0.0.0:8080 or http://127.0.0.1:8080")
-    serve(app, host="0.0.0.0", port=8080)
+    # This block is now only used for direct execution (e.g., `python web_tool.py`)
+    # Waitress will not run this block.
+    print("--- Starting Server with Waitress (Debug Mode) ---")
+    print(f"Server running at: http://127.0.0.1:8080")
+    serve(app, host="127.0.0.1", port=8080)

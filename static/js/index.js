@@ -3,6 +3,7 @@
     let logModalInstance, toastInstance, updateModalInstance;
     let liveLogEventSource = null;
     let globalHistoryData = [];
+    let statusPollTimeout; // To hold the timer for polling
 
     // --- CORE UTILITY FUNCTIONS ---
     const showToast = (message, title = 'Notification', type = 'success') => {
@@ -15,30 +16,24 @@
         toastInstance.show();
     };
 
-    // --- IMPROVEMENT: Refined Error Handling ---
     async function apiRequest(endpoint, options = {}) {
         try {
             const res = await fetch(endpoint, options);
             if (!res.ok) {
-                // Try to parse the error response from the server, otherwise use the default status text.
                 const errorData = await res.json().catch(() => ({ message: `Request failed: ${res.statusText}` }));
-                // Use the 'message' key from the server's JSON response, or fall back to the status text.
                 throw new Error(errorData.message || res.statusText);
             }
-            // Handle JSON response or other response types
             if (res.headers.get("Content-Type")?.includes("application/json")) {
                 return res.json();
             }
             return res;
         } catch (error) {
-            // Display the specific error message in a toast.
             if (error.name !== 'AbortError') {
                 showToast(error.message, 'Error', 'danger');
             }
-            throw error; // Re-throw the error so calling functions can also handle it if needed.
+            throw error;
         }
     }
-    // --- END IMPROVEMENT ---
 
     // --- UI MODE LOGIC ---
     const switchMode = (mode) => {
@@ -98,14 +93,14 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ mode: mode })
-        }).catch(err => console.error("Stop request failed", err)); // Catch potential errors from the stop request itself
+        }).catch(err => console.error("Stop request failed", err));
     };
 
     // --- RENDERING LOGIC ---
     function renderCurrentStatus(current) {
         const currentDiv = document.getElementById("current-status");
 
-        if (current && current.url) { // Check if a job is actually running
+        if (current && current.url) {
             const thumbnailHTML = current.thumbnail 
                 ? `<div class="flex-shrink-0 mb-3 mb-md-0 me-md-3"><img src="${current.thumbnail}" class="now-downloading-thumbnail" alt="Thumbnail"></div>`
                 : '';
@@ -155,11 +150,20 @@
         const queueList = document.getElementById("queue-list");
         document.getElementById("queue-controls").style.display = queue.length > 0 ? 'flex' : 'none';
         
-        const newIds = queue.map(job => job.id.toString());
-        const existingIds = [...queueList.children].map(li => li.dataset.jobId);
-        
-        if (JSON.stringify(newIds) !== JSON.stringify(existingIds)) {
-            queueList.innerHTML = queue.length === 0 ? "<li class='list-group-item'>Queue is empty.</li>" : queue.map(job => `<li class="list-group-item d-flex justify-content-between align-items-center" data-job-id="${job.id}"><div class="d-flex align-items-center" style="min-width: 0;"><i class="bi bi-grip-vertical queue-handle me-2"></i><span class="word-break">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span></div><button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}"></button></li>`).join('');
+        // --- FIX: Simplified rendering logic to prevent visual glitches ---
+        if (queue.length === 0) {
+            queueList.innerHTML = "<li class='list-group-item'>Queue is empty.</li>";
+        } else {
+            const queueHTML = queue.map(job => 
+                `<li class="list-group-item d-flex justify-content-between align-items-center" data-job-id="${job.id}">
+                    <div class="d-flex align-items-center" style="min-width: 0;">
+                        <i class="bi bi-grip-vertical queue-handle me-2"></i>
+                        <span class="word-break">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span>
+                    </div>
+                    <button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}"></button>
+                </li>`
+            ).join('');
+            queueList.innerHTML = queueHTML;
         }
     }
 
@@ -169,37 +173,11 @@
         const historyList = document.getElementById("history-list");
         document.getElementById("clear-history-btn").style.display = historyForDisplay.length > 0 ? 'block' : 'none';
 
-        if (historyForDisplay.length === 0 && historyList.children.length > 0 && historyList.children[0].dataset.logId) {
+        if (historyForDisplay.length === 0) {
             historyList.innerHTML = "<li class='list-group-item'>Nothing in history.</li>";
-            return;
+        } else {
+            historyList.innerHTML = historyForDisplay.map(item => createHistoryItemElement(item)).join('');
         }
-
-        const existingNodes = new Map();
-        for (const child of historyList.children) {
-            if (child.dataset.logId) {
-                existingNodes.set(child.dataset.logId, child);
-            }
-        }
-
-        historyForDisplay.forEach((item, index) => {
-            const logId = item.log_id.toString();
-            const existingLi = existingNodes.get(logId);
-
-            if (existingLi) {
-                const currentStatus = existingLi.dataset.status;
-                if (currentStatus !== item.status) {
-                    const newLi = createHistoryItemElement(item);
-                    historyList.replaceChild(newLi, existingLi);
-                }
-                existingNodes.delete(logId);
-            } else {
-                const newLi = createHistoryItemElement(item);
-                const referenceNode = historyList.children[index] || null;
-                historyList.insertBefore(newLi, referenceNode);
-            }
-        });
-
-        existingNodes.forEach(node => node.remove());
     }
 
     function createHistoryItemElement(item) {
@@ -215,20 +193,17 @@
             case 'CANCELLED': badgeClass = 'bg-secondary'; break;
             case 'FAILED': case 'ERROR': badgeClass = 'bg-danger'; break;
         }
-        const li = document.createElement("li");
-        li.className = "list-group-item";
-        li.dataset.logId = item.log_id;
-        li.dataset.status = item.status;
-        li.innerHTML = `<div class="d-flex justify-content-between align-items-center">
-            <div class="flex-grow-1" style="min-width: 0;">
-                <span class="badge ${badgeClass} me-2">${item.status}</span>
-                <strong class="word-break">${item.title || "Unknown"}</strong>
-                <br>
-                <small class="text-muted word-break">${item.folder ? `Folder: ${item.folder}` : `URL: ${item.url}`}</small>
+        return `<li class="list-group-item" data-log-id="${item.log_id}" data-status="${item.status}">
+            <div class="d-flex justify-content-between align-items-center">
+                <div class="flex-grow-1" style="min-width: 0;">
+                    <span class="badge ${badgeClass} me-2">${item.status}</span>
+                    <strong class="word-break">${item.title || "Unknown"}</strong>
+                    <br>
+                    <small class="text-muted word-break">${item.folder ? `Folder: ${item.folder}` : `URL: ${item.url}`}</small>
+                </div>
+                <div class="btn-group ms-2">${actionButton}<button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log"><i class="bi bi-file-text"></i></button><button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete"><i class="bi bi-trash-fill"></i></button></div>
             </div>
-            <div class="btn-group ms-2">${actionButton}<button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log"><i class="bi bi-file-text"></i></button><button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete"><i class="bi bi-trash-fill"></i></button></div>
-        </div>`;
-        return li;
+        </li>`;
     }
 
     function renderPauseState(is_paused) {
@@ -254,7 +229,18 @@
         renderPauseState(data.is_paused);
     }
 
-    // --- EVENT HANDLERS & ACTIONS ---
+    const pollStatus = async () => {
+        try {
+            const data = await apiRequest('/api/status');
+            renderStatus(data);
+        } catch (error) {
+            console.error("Status poll failed:", error);
+        } finally {
+            clearTimeout(statusPollTimeout);
+            statusPollTimeout = setTimeout(pollStatus, 1500);
+        }
+    };
+
     const requeueJob = async (job) => {
         try {
             await apiRequest('/queue/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(job) });
@@ -315,13 +301,10 @@
             e.preventDefault();
             try {
                 const data = await apiRequest('/queue', { method: 'POST', body: new FormData(this) });
-                // Only show success toast if the request didn't throw an error
                 showToast(data.message, 'Success', 'success');
                 this.reset();
                 handleUrlInput();
             } catch(error) { 
-                // The apiRequest function already shows the error toast.
-                // We can add more specific error handling here if needed.
                 console.error("Failed to add job:", error);
             }
         });
@@ -364,22 +347,9 @@
             },
         });
 
-        const statusEventSource = new EventSource('/api/status/stream');
-        statusEventSource.onmessage = function(event) {
-            try {
-                const data = JSON.parse(event.data);
-                renderStatus(data);
-            } catch (error) {
-                console.error("Failed to parse status update:", error);
-            }
-        };
-        statusEventSource.onerror = function() {
-            console.error("Status stream connection failed. UI will not receive live updates.");
-            showToast("Connection to server lost. Please refresh the page.", "Connection Error", "danger");
-            statusEventSource.close();
-        };
+        pollStatus();
 
         checkForUpdates();
-        setInterval(checkForUpdates, 900000); // Check for updates every 15 minutes
+        setInterval(checkForUpdates, 900000);
     });
 })();
