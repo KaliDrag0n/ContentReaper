@@ -21,7 +21,6 @@ const updateSelectionActions = () => {
         countSpan.textContent = `${selectedItems.length} item(s) selected`;
     }
     
-    // Update the "Select All" checkbox state
     if (allCheckboxes.length > 0) {
         selectAllCheckbox.checked = selectedItems.length === allCheckboxes.length;
         selectAllCheckbox.indeterminate = selectedItems.length > 0 && selectedItems.length < allCheckboxes.length;
@@ -101,95 +100,119 @@ const fetchAndRenderFiles = async (path = '', containerEl) => {
 
 const handleDelete = (paths, names) => {
     const title = names.length > 1 ? `Delete ${names.length} items?` : `Delete "${names[0]}"?`;
-    showConfirmModal(title, 'Are you sure you want to permanently delete the selected item(s)? This cannot be undone.', async () => {
+    window.showConfirmModal(title, 'Are you sure you want to permanently delete the selected item(s)? This cannot be undone.', async () => {
         try {
-            const response = await fetch('/api/delete_item', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paths: paths }) });
-            if (!response.ok) throw new Error('Delete request failed.');
+            await window.apiRequest('/api/delete_item', { 
+                method: 'POST', 
+                body: JSON.stringify({ paths: paths }) 
+            });
             fetchAndRenderFiles('', document.getElementById('file-list-root'));
         } catch (error) {
-            console.error("Delete failed:", error);
-            alert("Failed to delete item(s). See console for details.");
+            if (error.message !== "AUTH_REQUIRED") {
+                console.error("Delete failed:", error);
+            }
         }
     });
 };
 
 document.addEventListener('DOMContentLoaded', () => {
     const rootContainer = document.getElementById('file-list-root');
-    const savedTheme = localStorage.getItem('downloader_theme') || 'light';
-    applyTheme(savedTheme);
-
-    document.getElementById('theme-toggle').addEventListener('click', () => {
-        const newTheme = document.documentElement.dataset.bsTheme === 'dark' ? 'light' : 'dark';
-        applyTheme(newTheme);
-        localStorage.setItem('downloader_theme', newTheme);
-    });
-
-    const refreshBtn = document.getElementById('refresh-btn');
-    refreshBtn.addEventListener('click', async () => {
-        const icon = refreshBtn.querySelector('i');
-        const originalIconClass = icon.className;
-        refreshBtn.disabled = true;
-        icon.className = 'spinner-border spinner-border-sm';
-        
-        try {
-            await fetchAndRenderFiles('', rootContainer);
-        } finally {
-            refreshBtn.disabled = false;
-            icon.className = originalIconClass;
+    const checkGlobals = setInterval(() => {
+        if (window.applyTheme && window.apiRequest) {
+            clearInterval(checkGlobals);
+            initializePage();
         }
-    });
-    
-    rootContainer.addEventListener('click', (e) => {
-        const target = e.target;
-        const fileItem = target.closest('.file-item');
-        
-        const folderToggle = target.closest('.folder-toggle');
-        if (folderToggle) {
-            const collapseEl = document.querySelector(folderToggle.getAttribute('href'));
-            const nestedContainer = collapseEl.querySelector('.file-list-nested');
-            // Only fetch if it hasn't been opened before
-            if (nestedContainer && !nestedContainer.hasChildNodes()) {
-                fetchAndRenderFiles(fileItem.dataset.path, nestedContainer);
+    }, 50);
+
+    function initializePage() {
+        const savedTheme = localStorage.getItem('downloader_theme') || 'light';
+        window.applyTheme(savedTheme);
+
+        document.getElementById('theme-toggle').addEventListener('click', () => {
+            const newTheme = document.documentElement.dataset.bsTheme === 'dark' ? 'light' : 'dark';
+            window.applyTheme(newTheme);
+            localStorage.setItem('downloader_theme', newTheme);
+        });
+
+        const loginBtn = document.getElementById('login-btn');
+        const logoutBtn = document.getElementById('logout-btn');
+        window.apiRequest('/api/auth/status').then(status => {
+            if (status.password_set && !status.logged_in) {
+                loginBtn.style.display = 'inline-block';
             }
-        }
+            if (status.logged_in) {
+                logoutBtn.style.display = 'inline-block';
+            }
+        });
+        // --- FIX: Added event listener for the login button ---
+        loginBtn.addEventListener('click', () => window.showLoginModal());
 
-        if (target.classList.contains('file-item-checkbox')) {
+        const refreshBtn = document.getElementById('refresh-btn');
+        refreshBtn.addEventListener('click', async () => {
+            const icon = refreshBtn.querySelector('i');
+            const originalIconClass = icon.className;
+            refreshBtn.disabled = true;
+            icon.className = 'spinner-border spinner-border-sm';
+            
+            try {
+                await fetchAndRenderFiles('', rootContainer);
+            } finally {
+                refreshBtn.disabled = false;
+                icon.className = originalIconClass;
+            }
+        });
+        
+        rootContainer.addEventListener('click', (e) => {
+            const target = e.target;
+            const fileItem = target.closest('.file-item');
+            
+            const folderToggle = target.closest('.folder-toggle');
+            if (folderToggle) {
+                const collapseEl = document.querySelector(folderToggle.getAttribute('href'));
+                const nestedContainer = collapseEl.querySelector('.file-list-nested');
+                if (nestedContainer && !nestedContainer.hasChildNodes()) {
+                    fetchAndRenderFiles(fileItem.dataset.path, nestedContainer);
+                }
+            }
+
+            if (target.classList.contains('file-item-checkbox')) {
+                updateSelectionActions();
+            }
+
+            if (target.closest('.delete-btn')) {
+                e.preventDefault();
+                handleDelete([fileItem.dataset.path], [fileItem.dataset.name]);
+            }
+        });
+
+        document.getElementById('select-all-checkbox').addEventListener('change', (e) => {
+            document.querySelectorAll('.file-item-checkbox').forEach(cb => {
+                cb.checked = e.target.checked;
+            });
             updateSelectionActions();
-        }
-
-        if (target.closest('.delete-btn')) {
-            e.preventDefault();
-            handleDelete([fileItem.dataset.path], [fileItem.dataset.name]);
-        }
-    });
-
-    document.getElementById('select-all-checkbox').addEventListener('change', (e) => {
-        document.querySelectorAll('.file-item-checkbox').forEach(cb => {
-            cb.checked = e.target.checked;
         });
-        updateSelectionActions();
-    });
 
-    document.getElementById('delete-selected-btn').addEventListener('click', () => {
-        const selectedItems = document.querySelectorAll('.file-item-checkbox:checked');
-        const paths = [];
-        const names = [];
-        selectedItems.forEach(cb => {
-            const fileItem = cb.closest('.file-item');
-            paths.push(fileItem.dataset.path);
-            names.push(fileItem.dataset.name);
+        document.getElementById('delete-selected-btn').addEventListener('click', () => {
+            const selectedItems = document.querySelectorAll('.file-item-checkbox:checked');
+            const paths = [];
+            const names = [];
+            selectedItems.forEach(cb => {
+                const fileItem = cb.closest('.file-item');
+                paths.push(fileItem.dataset.path);
+                names.push(fileItem.dataset.name);
+            });
+            if (paths.length > 0) handleDelete(paths, names);
         });
-        if (paths.length > 0) handleDelete(paths, names);
-    });
 
-    document.getElementById('download-selected-btn').addEventListener('click', () => {
-        const selectedItems = document.querySelectorAll('.file-item-checkbox:checked');
-        const paths = Array.from(selectedItems).map(cb => cb.closest('.file-item').dataset.path);
-        if (paths.length === 0) return;
-        const queryParams = new URLSearchParams();
-        paths.forEach(path => queryParams.append('paths', path));
-        window.location.href = `/download_item?${queryParams.toString()}`;
-    });
+        document.getElementById('download-selected-btn').addEventListener('click', () => {
+            const selectedItems = document.querySelectorAll('.file-item-checkbox:checked');
+            const paths = Array.from(selectedItems).map(cb => cb.closest('.file-item').dataset.path);
+            if (paths.length === 0) return;
+            const queryParams = new URLSearchParams();
+            paths.forEach(path => queryParams.append('paths', path));
+            window.location.href = `/download_item?${queryParams.toString()}`;
+        });
 
-    fetchAndRenderFiles('', rootContainer);
+        fetchAndRenderFiles('', rootContainer);
+    }
 });

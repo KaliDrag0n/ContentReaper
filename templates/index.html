@@ -30,7 +30,6 @@
     .optimistic-item { opacity: 0.6; pointer-events: none; }
     .paused-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0, 0, 0, 0.5); color: white; display: flex; justify-content: center; align-items: center; font-size: 1.5rem; font-weight: bold; z-index: 10; border-radius: var(--bs-card-border-radius); }
     #queue-header { position: relative; z-index: 11; }
-    /* ##-- NEW: Styles for the thumbnail in the 'Now Downloading' section --## */
     .now-downloading-thumbnail { width: 120px; height: 90px; object-fit: cover; border-radius: var(--bs-border-radius); }
   </style>
 </head>
@@ -50,7 +49,27 @@
       <div class="modal-content">
         <div class="modal-header"><h5 class="modal-title" id="confirmModalTitle">Are you sure?</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
         <div class="modal-body" id="confirmModalBody">This action cannot be undone.</div>
-        <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button><button type="button" class="btn btn-danger" id="confirmModalButton">Confirm</button></div>
+        <div class="modal-footer"><button type="button" class="btn-secondary" data-bs-dismiss="modal">Cancel</button><button type="button" class="btn btn-danger" id="confirmModalButton">Confirm</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shared Login Modal -->
+  <div class="modal fade" id="loginModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">Login Required</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+        <div class="modal-body">
+          <p>Please enter the admin password to continue.</p>
+          <form id="login-form">
+            <div class="mb-3">
+              <label for="login-password-input" class="form-label">Password</label>
+              <input type="password" class="form-control" id="login-password-input" required>
+            </div>
+            <div id="login-error" class="text-danger small mb-3"></div>
+            <button type="submit" class="btn btn-primary w-100">Login</button>
+          </form>
+        </div>
       </div>
     </div>
   </div>
@@ -79,6 +98,9 @@
         <button id="update-notification-btn" class="btn btn-warning me-3" style="display: none;" title="A new update is available!"><i class="bi bi-bell-fill"></i> Update</button>
         <a href="/file_manager" class="btn btn-info me-3"><i class="bi bi-folder-fill"></i> File Manager</a>
         <a href="/settings" class="btn btn-secondary me-3"><i class="bi bi-gear-fill"></i> Settings</a>
+        <!-- NEW: Login/Logout buttons -->
+        <button class="btn btn-success me-3" id="login-btn" style="display: none;"><i class="bi bi-box-arrow-in-right"></i> Login</button>
+        <button class="btn btn-warning me-3" id="logout-btn" style="display: none;"><i class="bi bi-box-arrow-right"></i> Logout</button>
         <div class="form-check form-switch"><input class="form-check-input" type="checkbox" role="switch" id="theme-toggle"><label class="form-check-label" for="theme-toggle"><i class="bi bi-moon-stars-fill"></i></label></div>
       </div>
     </header>
@@ -93,7 +115,6 @@
         <form id="add-job-form">
           <input type="hidden" name="download_mode" id="download_mode_input">
           <div class="mb-3"><label class="form-label">URL(s) <small>(one per line)</small></label><textarea name="urls" class="form-control" placeholder="https://..." required rows="2"></textarea></div>
-          <!-- ##-- REMOVED: The old url-preview div is gone --## -->
           <div id="music-options" class="mode-options"><div class="row"><div class="col-md-5 mb-3"><label class="form-label">Album/Playlist Name <small>(optional)</small></label><input type="text" name="music_foldername" class="form-control"></div><div class="col-md-4 mb-3"><label class="form-label">Audio Format</label><select name="music_audio_format" class="form-select"><option value="mp3">MP3 (VBR)</option><option value="flac">FLAC (Lossless)</option><option value="opus">Opus (High Efficiency)</option></select></div><div class="col-md-3 mb-3"><label class="form-label">Audio Quality</label><select name="music_audio_quality" class="form-select"><option value="0">Best (VBR ~245k)</option><option value="3">High (VBR ~190k)</option><option value="5">Standard (VBR ~165k)</option><option value="7">Low (VBR ~130k)</option><option value="9">Worst (VBR ~65k)</option></select></div></div><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="music_embed_art" checked><label class="form-check-label">Embed Album Art</label></div></div>
           
           <div id="video-options" class="mode-options">

@@ -16,6 +16,7 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script src="/static/js/app.js" defer></script>
+  <script src="/static/js/settings.js" defer></script>
   <style>
     :root { --bs-body-bg: #f8f9fa; --bs-body-color: #212529; --bs-border-color: #dee2e6; --bs-card-bg: #fff; }
     [data-bs-theme="dark"] { --bs-body-bg: #212529; --bs-body-color: #dee2e6; --bs-border-color: #495057; --bs-card-bg: #343a40; }
@@ -24,10 +25,30 @@
 </head>
 <body>
 
+  <!-- Login Modal (shared across pages) -->
+  <div class="modal fade" id="loginModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">Login Required</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+        <div class="modal-body">
+          <p>Please enter the admin password to continue.</p>
+          <form id="login-form">
+            <div class="mb-3">
+              <label for="login-password-input" class="form-label">Password</label>
+              <input type="password" class="form-control" id="login-password-input" required>
+            </div>
+            <div id="login-error" class="text-danger small mb-3"></div>
+            <button type="submit" class="btn btn-primary w-100">Login</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal fade" id="confirmModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
       <div class="modal-content">
-        <div class="modal-header"><h5 class="modal-title" id="confirmModalTitle">Are you sure?</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+        <div class="modal-header"><h5 class="modal-title" id="confirmModalTitle">Are you sure?</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
         <div class="modal-body" id="confirmModalBody">This action cannot be undone.</div>
         <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button><button type="button" class="btn btn-danger" id="confirmModalButton">Confirm</button></div>
       </div>
@@ -39,6 +60,8 @@
       <h2 class="m-0 mb-2 mb-md-0"><i class="bi bi-gear-fill"></i> Settings</h2>
       <div class="d-flex align-items-center">
         <a href="/" class="btn btn-secondary me-3"><i class="bi bi-house-fill"></i> Home</a>
+        <button class="btn btn-success me-3" id="login-btn" style="display: none;"><i class="bi bi-box-arrow-in-right"></i> Login</button>
+        <button class="btn btn-warning me-3" id="logout-btn" style="display: none;"><i class="bi bi-box-arrow-right"></i> Logout</button>
         <div class="form-check form-switch">
           <input class="form-check-input" type="checkbox" role="switch" id="theme-toggle">
           <label class="form-check-label" for="theme-toggle"><i class="bi bi-moon-stars-fill"></i></label>
@@ -50,53 +73,78 @@
     <div class="alert alert-success" role="alert">Settings saved successfully!</div>
     {% endif %}
 
-    <div class="card">
+    <div class="alert alert-info" id="setup-alert" style="display: none;">
+        <h4 class="alert-heading">Welcome!</h4>
+        <p>To secure your application, please create an admin password. This will be required to change settings or perform sensitive actions in the future.</p>
+    </div>
+
+    <div class="card mb-4">
+      <div class="card-header">General Settings</div>
       <div class="card-body">
         <form method="POST">
           <div class="mb-3">
             <label for="download_dir" class="form-label">Download Directory</label>
-            <input type="text" class="form-control {% if config_errors.download_dir %}is-invalid{% endif %}" id="download_dir" name="download_dir" value="{{ config.download_dir }}">
-            {% if config_errors.download_dir %}
-            <div class="invalid-feedback">{{ config_errors.download_dir }}</div>
-            {% else %}
+            <input type="text" class="form-control" id="download_dir" name="download_dir" value="{{ config.download_dir }}">
             <div class="form-text">The absolute path on the server where completed files will be saved.</div>
-            {% endif %}
           </div>
           <div class="mb-3">
             <label for="temp_dir" class="form-label">Temporary Directory</label>
-            <input type="text" class="form-control {% if config_errors.temp_dir %}is-invalid{% endif %}" id="temp_dir" name="temp_dir" value="{{ config.temp_dir }}">
-            {% if config_errors.temp_dir %}
-            <div class="invalid-feedback">{{ config_errors.temp_dir }}</div>
-            {% else %}
+            <input type="text" class="form-control" id="temp_dir" name="temp_dir" value="{{ config.temp_dir }}">
             <div class="form-text">The path where temporary files will be stored during download.</div>
-            {% endif %}
           </div>
           <div class="mb-3">
             <label for="cookie_content" class="form-label">Cookies</label>
-            <textarea class="form-control" id="cookie_content" name="cookie_content" rows="6" placeholder="Paste your Netscape cookie file content here...">{{ config.cookie_file_content }}</textarea>
+            <!-- FIX: The value is now loaded via JavaScript -->
+            <textarea class="form-control" id="cookie_content" name="cookie_content" rows="6" placeholder="Login to view/edit cookies..."></textarea>
             <div class="form-text">Used for downloading private or age-restricted content.</div>
           </div>
-          <button type="submit" class="btn btn-primary">Save Settings</button>
+          <button type="submit" class="btn btn-primary">Save General Settings</button>
         </form>
       </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header">Admin Password</div>
+        <div class="card-body">
+            <form id="password-form">
+                <div class="mb-3" id="current-password-group">
+                    <label for="current-password" class="form-label">Current Password</label>
+                    <input type="password" class="form-control" id="current-password">
+                    <div class="form-text">Required to make changes if a password is already set.</div>
+                </div>
+                <div class="mb-3">
+                    <label for="new-password" class="form-label">New Password</label>
+                    <input type="password" class="form-control" id="new-password">
+                    <div class="form-text">Leave blank to remove password protection.</div>
+                </div>
+                <div class="mb-3">
+                    <label for="confirm-password" class="form-label">Confirm New Password</label>
+                    <input type="password" class="form-control" id="confirm-password">
+                </div>
+                <div id="password-status" class="form-text mb-2"></div>
+                <button type="submit" class="btn btn-success" id="password-submit-btn">Set/Update Password</button>
+            </form>
+        </div>
     </div>
 
     <div class="card mt-4">
         <div class="card-header d-flex justify-content-between align-items-center">Version Information<button class="btn btn-sm btn-primary" id="check-for-updates-btn"><i class="bi bi-arrow-repeat"></i> Check for Updates</button></div>
         <div class="card-body">
             <p>Current Version: <strong>{{ app_version }}</strong></p>
-            {% if update_info.update_available %}
-                <div class="alert alert-warning" role="alert">
-                    <h4 class="alert-heading"><i class="bi bi-gift-fill"></i> Update Available!</h4>
-                    <p>A new version, <strong>{{ update_info.latest_version }}</strong>, is ready for you.</p><hr>
-                    <div class="d-flex justify-content-start gap-2 flex-wrap">
-                        <a href="{{ update_info.release_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">View on GitHub</a>
-                        <button class="btn btn-success" id="install-update-btn"><i class="bi bi-cloud-download-fill"></i> Install Update & Restart</button>
+            <div id="update-info-container">
+                {% if update_info.update_available %}
+                    <div class="alert alert-warning" role="alert">
+                        <h4 class="alert-heading"><i class="bi bi-gift-fill"></i> Update Available!</h4>
+                        <p>A new version, <strong>{{ update_info.latest_version }}</strong>, is ready for you.</p><hr>
+                        <div class="d-flex justify-content-start gap-2 flex-wrap">
+                            <a href="{{ update_info.release_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">View on GitHub</a>
+                            <button class="btn btn-success" id="install-update-btn"><i class="bi bi-cloud-download-fill"></i> Install Update & Restart</button>
+                        </div>
                     </div>
-                </div>
-            {% else %}
-                <p class="text-success"><i class="bi bi-check-circle-fill"></i> You are running the latest version.</p>
-            {% endif %}
+                {% else %}
+                    <p class="text-success"><i class="bi bi-check-circle-fill"></i> You are running the latest version.</p>
+                {% endif %}
+            </div>
         </div>
     </div>
 
@@ -110,63 +158,5 @@
     </div>
   </div>
 
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-    const savedTheme = localStorage.getItem('downloader_theme') || 'light';
-    applyTheme(savedTheme);
-
-    const toggle = document.getElementById('theme-toggle');
-    if (toggle) {
-        toggle.addEventListener('click', () => {
-            const newTheme = document.documentElement.dataset.bsTheme === 'dark' ? 'light' : 'dark';
-            applyTheme(newTheme);
-            localStorage.setItem('downloader_theme', newTheme);
-        });
-    }
-
-    const updateBtn = document.getElementById('check-for-updates-btn');
-    if(updateBtn) {
-        updateBtn.addEventListener('click', async () => {
-            const originalHtml = updateBtn.innerHTML;
-            updateBtn.disabled = true;
-            updateBtn.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Checking...`;
-            try {
-                const response = await fetch('/api/force_update_check', { method: 'POST' });
-                if (!response.ok) throw new Error('Update check failed on the server.');
-                location.reload();
-            } catch (error) {
-                console.error("Failed to trigger update check:", error);
-                alert("Could not check for updates. See browser console for details.");
-                updateBtn.innerHTML = originalHtml;
-                updateBtn.disabled = false;
-            }
-        });
-    }
-
-    const installUpdateBtn = document.getElementById('install-update-btn');
-    if (installUpdateBtn) {
-        installUpdateBtn.addEventListener('click', () => {
-            showConfirmModal('Install Update?', 'This will stop the server, download the latest version, and restart the application. All ongoing downloads will be cancelled. Are you sure?', () => {
-                installUpdateBtn.disabled = true;
-                installUpdateBtn.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Starting Update...`;
-                fetch('/api/install_update', { method: 'POST' });
-                document.querySelector('.container').innerHTML = `<div class="alert alert-info mt-4" role="alert"><h4 class="alert-heading">Update in Progress</h4><p>The update process has been started. The server will restart automatically.</p><p class="mb-0">This page will become unresponsive. Please wait a minute and then refresh the page.</p></div>`;
-            });
-        });
-    }
-
-    const shutdownBtn = document.getElementById('shutdown-btn');
-    if (shutdownBtn) {
-        shutdownBtn.addEventListener('click', () => {
-            showConfirmModal('Shutdown Server?', 'Are you sure you want to shut down the server? This will stop all downloads. The server will only restart if you have a service manager like systemd configured.', () => {
-                shutdownBtn.disabled = true;
-                shutdownBtn.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Shutting down...`;
-                fetch('/api/shutdown', { method: 'POST' });
-                document.querySelector('.container').innerHTML = `<div class="alert alert-info mt-4" role="alert">The shutdown command has been sent. You can now close this page.</div>`;
-            });
-        });
-    }
-});
-</script>
 </body>
 </html>

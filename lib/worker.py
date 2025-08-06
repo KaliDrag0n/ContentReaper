@@ -29,16 +29,10 @@ def format_bytes(b):
 # --- Non-Blocking Stream Reader ---
 def _enqueue_output(stream, q):
     """
-    --- FIX: Reads raw bytes from a stream and puts decoded lines into a queue. ---
-    This is more robust than reading text directly and avoids platform-specific buffering issues.
+    Reads decoded text lines from a stream and puts them into a queue.
     """
-    for line_bytes in iter(stream.readline, b''):
-        try:
-            line_str = line_bytes.decode('utf-8', errors='replace')
-            q.put(line_str)
-        except Exception:
-            # In case of a decoding error, we can still try to push the raw representation
-            q.put(repr(line_bytes))
+    for line in iter(stream.readline, ''):
+        q.put(line)
     stream.close()
 
 # --- Command Builder ---
@@ -51,7 +45,8 @@ def _get_music_args(job, final_folder_name, is_playlist):
     return [
         '-f', 'bestaudio/best', '-x', '--audio-format', job.get("format", "mp3"),
         '--audio-quality', job.get("quality", "0"), '--embed-metadata', '--embed-thumbnail',
-        '--postprocessor-args', f'-metadata album="{safe_album_metadata}" -metadata date="{datetime.datetime.now().year}"',
+        '--ppa', f'FFmpegMetadata:-metadata album="{safe_album_metadata}"',
+        '--ppa', f'FFmpegMetadata:-metadata date="{datetime.datetime.now().year}"',
         '--parse-metadata', 'playlist_index:%(track_number)s',
         '--parse-metadata', 'uploader:%(artist)s'
     ]
@@ -98,8 +93,9 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
     elif mode == 'clip': cmd.extend(_get_clip_args(job))
     elif mode == 'custom': cmd.extend(shlex.split(job.get('custom_args', '')))
 
-    cmd.append('--print-json')
+    cmd.append('--progress')
     cmd.extend(['--progress-template', '%(progress)j'])
+    cmd.append('--print-json') 
 
     if '-o' not in cmd and '--output' not in cmd:
         output_template = os.path.join(temp_dir_path, 
@@ -194,9 +190,10 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
         status = "PENDING"
         temp_dir_path = os.path.join(config["temp_dir"], f"job_{job['id']}")
         temp_log_path = os.path.join(log_dir, f"job_active_{job['id']}.log")
+        process = None
         
         if job.get("status") == "ABANDONED":
-            _, final_folder, _, error_summary = _finalize_job(job, "ABANDONED", temp_log_path, config)
+            _, final_folder, _, _ = _finalize_job(job, "ABANDONED", temp_log_path, config)
             history_item = {
                 "url": job["url"], "title": job.get("folder") or job.get("url"), "folder": final_folder, 
                 "filenames": [], "job_data": job, "status": "ABANDONED",
@@ -221,8 +218,14 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
 
             cmd = build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmpeg_path)
             
-            # --- FIX: Launch subprocess without text-mode handling to read raw bytes ---
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                errors='replace'
+            )
             
             output_q = queue.Queue()
             reader_thread = threading.Thread(target=_enqueue_output, args=(process.stdout, output_q))
@@ -251,24 +254,42 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                     if line.startswith('{'):
                         try:
                             data = json.loads(line)
-                            if '_percent_str' in data:
-                                update = {"status": data.get("status", "Downloading...").capitalize()}
-                                if update["status"] == 'Downloading':
-                                    update["progress"] = float(str(data.get("_percent_str", "0").replace('%','')))
-                                    update["file_size"] = format_bytes(data.get("total_bytes") or data.get("total_bytes_estimate"))
-                                    update["speed"] = data.get("_speed_str", "N/A")
-                                    update["eta"] = data.get("_eta_str", "N/A")
+                            if data.get("status") == "downloading":
+                                update = {"status": "Downloading"}
+                                downloaded = data.get("downloaded_bytes")
+                                total = data.get("total_bytes") or data.get("total_bytes_estimate")
+                                if downloaded is not None and total is not None and total > 0:
+                                    update["progress"] = (downloaded / total) * 100
+                                
+                                update["file_size"] = format_bytes(total)
+                                
+                                speed = data.get("speed")
+                                update["speed"] = f'{format_bytes(speed)}/s' if speed else "N/A"
+                                
+                                eta = data.get("eta")
+                                if eta is not None:
+                                    update["eta"] = time.strftime('%M:%S', time.gmtime(eta))
+                                else:
+                                    update["eta"] = "N/A"
                                 state_manager.update_current_download(update)
-                            elif data.get("_type") == "video":
-                                if not job.get("folder"):
-                                    job["folder"] = sanitize_filename(data.get('playlist_title') or data.get('title', 'Unknown Title'))
+
+                            elif data.get("status") == "finished":
+                                state_manager.update_current_download({"status": "Processing..."})
+
+                            # --- FIX: Avoid mutating the original job object ---
+                            elif '_type' in data and data['_type'] == 'video':
+                                folder_title = job.get("folder")
+                                if not folder_title:
+                                    folder_title = sanitize_filename(data.get('playlist_title') or data.get('title', 'Unknown Title'))
+                                
                                 update = {
                                     "status": "Starting...", "progress": 0, "thumbnail": data.get('thumbnail'),
                                     "playlist_index": data.get('playlist_index'), "playlist_count": data.get('n_entries'),
-                                    "playlist_title": job.get("folder") if data.get('playlist_index') else None,
-                                    "track_title": data.get('title'), "title": job.get("folder")
+                                    "playlist_title": folder_title if data.get('playlist_index') else None,
+                                    "track_title": data.get('title'), "title": folder_title
                                 }
                                 state_manager.update_current_download(update)
+
                         except (json.JSONDecodeError, TypeError, ValueError):
                             pass
                     elif any(s in line for s in ("[ExtractAudio]", "[Merger]", "[Fixup")):
@@ -281,17 +302,29 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
             if state_manager.cancel_event.is_set() and process.poll() is None:
                 process.kill()
 
-            process.wait()
-            
-            if state_manager.cancel_event.is_set():
-                status = "STOPPED" if state_manager.stop_mode == "SAVE" else "CANCELLED"
-            elif process.returncode == 0:
-                status = "COMPLETED"
-            else:
+            try:
+                process.wait(timeout=3600) 
+            except subprocess.TimeoutExpired:
+                print(f"ERROR: Process for job {job.get('id')} timed out. Killing process.")
+                process.kill()
+                process.wait(timeout=10)
                 status = "FAILED"
+                with open(temp_log_path, 'a', encoding='utf-8') as log_file:
+                    log_file.write("\n--- ERROR: Process timed out and was killed. ---\n")
+
+            if status != "FAILED":
+                if state_manager.cancel_event.is_set():
+                    status = "STOPPED" if state_manager.stop_mode == "SAVE" else "CANCELLED"
+                elif process.returncode == 0:
+                    status = "COMPLETED"
+                else:
+                    status = "FAILED"
+
         except Exception as e:
             status = "ERROR"
             print(f"WORKER EXCEPTION for job {job.get('id')}: {e}")
+            if process and process.poll() is None:
+                process.kill()
             try:
                 with open(temp_log_path, 'a', encoding='utf-8') as log_file:
                     log_file.write(f"\n--- WORKER THREAD EXCEPTION ---\n{e}\n-------------------------------\n")

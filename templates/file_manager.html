@@ -31,6 +31,26 @@
 </head>
 <body>
 
+  <!-- Shared Login Modal -->
+  <div class="modal fade" id="loginModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">Login Required</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+        <div class="modal-body">
+          <p>Please enter the admin password to continue.</p>
+          <form id="login-form">
+            <div class="mb-3">
+              <label for="login-password-input" class="form-label">Password</label>
+              <input type="password" class="form-control" id="login-password-input" required>
+            </div>
+            <div id="login-error" class="text-danger small mb-3"></div>
+            <button type="submit" class="btn btn-primary w-100">Login</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal fade" id="confirmModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
       <div class="modal-content">
@@ -47,6 +67,9 @@
       <div class="d-flex align-items-center">
         <a href="/" class="btn btn-secondary me-3"><i class="bi bi-house-fill"></i> Home</a>
         <a href="/settings" class="btn btn-secondary me-3"><i class="bi bi-gear-fill"></i> Settings</a>
+        <!-- NEW: Login/Logout buttons -->
+        <button class="btn btn-success me-3" id="login-btn" style="display: none;"><i class="bi bi-box-arrow-in-right"></i> Login</button>
+        <button class="btn btn-warning me-3" id="logout-btn" style="display: none;"><i class="bi bi-box-arrow-right"></i> Logout</button>
         <div class="form-check form-switch">
           <input class="form-check-input" type="checkbox" role="switch" id="theme-toggle">
           <label class="form-check-label" for="theme-toggle"><i class="bi bi-moon-stars-fill"></i></label>
