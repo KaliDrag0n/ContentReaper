@@ -196,9 +196,7 @@
         // --- NEW: Create the error summary block if an error exists ---
         let errorSummaryHTML = '';
         if (item.error_summary) {
-            // Using Bootstrap's collapse component for a clean look
             const collapseId = `error-summary-${item.log_id}`;
-            // Sanitize the error summary to prevent HTML injection
             const sanitizedSummary = item.error_summary.replace(/</g, "&lt;").replace(/>/g, "&gt;");
             errorSummaryHTML = `
                 <div class="mt-2">
@@ -250,13 +248,14 @@
     }
 
     const pollStatus = async () => {
+        // --- FIX: Clear previous timeout to prevent multiple poll loops ---
+        clearTimeout(statusPollTimeout);
         try {
             const data = await apiRequest('/api/status');
             renderStatus(data);
         } catch (error) {
             console.error("Status poll failed:", error);
         } finally {
-            clearTimeout(statusPollTimeout);
             statusPollTimeout = setTimeout(pollStatus, 1500);
         }
     };
@@ -265,6 +264,7 @@
         try {
             await apiRequest('/queue/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(job) });
             showToast("Job re-queued successfully.", 'Success', 'success');
+            pollStatus(); // Poll immediately for faster UI update
         } catch(error) { console.error("Failed to re-queue job:", error); }
     };
 
@@ -319,27 +319,50 @@
 
         document.getElementById('add-job-form').addEventListener('submit', async function(e) {
             e.preventDefault();
+            const submitButton = this.querySelector('button[type="submit"]');
+            submitButton.disabled = true;
             try {
                 const data = await apiRequest('/queue', { method: 'POST', body: new FormData(this) });
                 showToast(data.message, 'Success', 'success');
                 this.reset();
                 handleUrlInput();
+                pollStatus(); // Poll immediately for faster UI update
             } catch(error) { 
                 console.error("Failed to add job:", error);
+            } finally {
+                submitButton.disabled = false;
             }
         });
 
         const urlTextarea = document.querySelector('textarea[name="urls"]');
         urlTextarea.addEventListener('input', handleUrlInput);
         
-        document.getElementById('clear-queue-btn').addEventListener('click', () => showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => apiRequest('/queue/clear', { method: 'POST' }).catch(err => console.error(err))));
-        document.getElementById('clear-history-btn').addEventListener('click', () => showConfirmModal('Clear History?', 'Are you sure you want to clear the entire download history?', () => apiRequest('/history/clear', { method: 'POST' }).catch(err => console.error(err))));
-        document.getElementById('pause-resume-btn').addEventListener('click', (e) => apiRequest(`/queue/${e.currentTarget.dataset.action}`, { method: 'POST' }).catch(err => console.error(err)));
+        document.getElementById('clear-queue-btn').addEventListener('click', () => showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => {
+            document.getElementById('queue-list').innerHTML = "<li class='list-group-item'>Queue is empty.</li>";
+            apiRequest('/queue/clear', { method: 'POST' }).catch(err => console.error(err));
+        }));
+        
+        document.getElementById('clear-history-btn').addEventListener('click', () => showConfirmModal('Clear History?', 'Are you sure you want to clear the entire download history?', () => {
+            document.getElementById('history-list').innerHTML = "<li class='list-group-item'>Nothing in history.</li>";
+            apiRequest('/history/clear', { method: 'POST' }).catch(err => console.error(err));
+        }));
+        
+        document.getElementById('pause-resume-btn').addEventListener('click', (e) => apiRequest(`/queue/${e.currentTarget.dataset.action}`, { method: 'POST' }).then(pollStatus).catch(err => console.error(err)));
+        
         document.getElementById('logModal').addEventListener('hidden.bs.modal', () => { if (liveLogEventSource) { liveLogEventSource.close(); liveLogEventSource = null; } });
         
         document.getElementById('queue-list').addEventListener('click', (e) => {
             const deleteBtn = e.target.closest('.queue-action-btn[data-action="delete"]');
-            if (deleteBtn) apiRequest(`/queue/delete/by-id/${deleteBtn.dataset.jobId}`, {method: 'POST'}).catch(err => console.error(err));
+            if (deleteBtn) {
+                const item = deleteBtn.closest('.list-group-item');
+                item.style.opacity = '0.5'; // Optimistic UI
+                apiRequest(`/queue/delete/by-id/${deleteBtn.dataset.jobId}`, {method: 'POST'})
+                    .then(() => item.remove())
+                    .catch(err => {
+                        console.error(err);
+                        item.style.opacity = '1'; // Revert on failure
+                    });
+            }
         });
 
         document.getElementById('history-list').addEventListener('click', (e) => {
@@ -348,9 +371,18 @@
             const li = actionBtn.closest('.list-group-item');
             const logId = parseInt(li.dataset.logId, 10);
             const action = actionBtn.dataset.action;
-            if (action === 'log') viewStaticLog(logId);
-            else if (action === 'delete') apiRequest(`/history/delete/${logId}`, { method: 'POST' }).catch(err => console.error(err));
-            else if (action === 'requeue') {
+
+            if (action === 'log') {
+                viewStaticLog(logId);
+            } else if (action === 'delete') {
+                li.style.opacity = '0.5'; // Optimistic UI
+                apiRequest(`/history/delete/${logId}`, { method: 'POST' })
+                    .then(() => li.remove())
+                    .catch(err => {
+                        console.error(err);
+                        li.style.opacity = '1';
+                    });
+            } else if (action === 'requeue') {
                 const historyItem = globalHistoryData.find(item => item.log_id === logId);
                 if (historyItem) requeueJob(historyItem.job_data);
             }
@@ -363,13 +395,15 @@
             onEnd: function (evt) {
                 const orderedIds = [...evt.to.children].map(li => li.dataset.jobId);
                 apiRequest('/queue/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order: orderedIds }) })
-                .catch(err => { console.error("Failed to reorder queue:", err); });
+                .catch(err => { 
+                    console.error("Failed to reorder queue:", err);
+                    pollStatus(); // Re-poll to revert to correct order
+                });
             },
         });
 
         pollStatus();
-
         checkForUpdates();
-        setInterval(checkForUpdates, 900000);
+        setInterval(checkForUpdates, 900000); // 15 minutes
     });
 })();

@@ -300,7 +300,10 @@ def extract_urls_from_text(text):
 def _parse_job_data(form_data):
     """Extracts job parameters from the request form."""
     mode = form_data.get("download_mode")
-    folder_name = sanitize_filename(form_data.get(f"{mode}_foldername", "").strip())
+    # --- FIX: Do NOT sanitize here. Just strip whitespace. ---
+    # Sanitization will happen in the worker right before the path is used.
+    # This allows an empty string to be passed, signaling the worker to use the video's title.
+    folder_name = form_data.get(f"{mode}_foldername", "").strip()
     
     try:
         playlist_start = int(p_start_str) if (p_start_str := form_data.get("playlist_start", "").strip()) else None

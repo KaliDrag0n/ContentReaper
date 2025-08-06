@@ -23,7 +23,7 @@ def format_bytes(b):
     except (ValueError, TypeError):
         return "N/A"
 
-# --- Command Builder Refactor --- #
+# --- Command Builder --- #
 
 def _get_music_args(job, final_folder_name, is_playlist):
     """Builds the yt-dlp argument list for 'music' mode."""
@@ -65,14 +65,16 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
     """
     Constructs the full yt-dlp command line argument list for a given download job.
     """
-    cmd = [yt_dlp_path] # Use the provided path
+    cmd = [yt_dlp_path]
     mode = job.get("mode")
     is_playlist = "playlist?list=" in job.get("url", "")
-    final_folder_name = job.get("folder") or "Misc Downloads"
+    
+    # The final folder name is now determined before this function is called.
+    final_folder_name = sanitize_filename(job.get("folder")) or "Misc Downloads"
 
     # --- Basic Options ---
     cmd.extend(['--sleep-interval', '3', '--max-sleep-interval', '10'])
-    cmd.extend(['--ffmpeg-location', os.path.dirname(ffmpeg_path)]) # Explicitly tell yt-dlp where ffmpeg is
+    cmd.extend(['--ffmpeg-location', os.path.dirname(ffmpeg_path)])
     if job.get('proxy'):
         cmd.extend(['--proxy', job['proxy']])
     if job.get('rate_limit'):
@@ -91,7 +93,7 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
     # --- Output Template ---
     if mode != 'custom' or ('-o' not in cmd and '--output' not in cmd):
         output_template = os.path.join(temp_dir_path, 
-            "%(playlist_index)02d - %(title)s.%(ext)s" if is_playlist else "%(title)s.%(ext)s")
+            "%(playlist_index)s - %(title)s.%(ext)s" if is_playlist else "%(title)s.%(ext)s")
         cmd.extend(['-o', output_template])
     
     # --- Other Flags ---
@@ -119,10 +121,9 @@ def _finalize_job(job, final_status, temp_log_path, config):
     Handles moving files, cleaning up, and determining the final state for a job.
     """
     temp_dir_path = os.path.join(config["temp_dir"], f"job_{job['id']}")
-    final_folder_name = job.get("folder") or "Misc Downloads"
+    final_folder_name = sanitize_filename(job.get("folder")) or "Misc Downloads"
     final_dest_dir = os.path.join(config["download_dir"], final_folder_name)
     
-    is_playlist = "playlist?list=" in job.get("url", "")
     final_title = "Unknown"
     final_filenames = []
     error_summary = None
@@ -141,14 +142,13 @@ def _finalize_job(job, final_status, temp_log_path, config):
                     os.makedirs(final_dest_dir, exist_ok=True)
                     for f in files_to_move:
                         source_path = os.path.join(temp_dir_path, f)
-                        sanitized_f = sanitize_filename(f)
-                        dest_path = os.path.join(final_dest_dir, sanitized_f)
+                        dest_path = os.path.join(final_dest_dir, f)
                         try:
                             shutil.move(source_path, dest_path)
-                            final_filenames.append(sanitized_f)
+                            final_filenames.append(f)
                         except Exception as e:
                             log(f"ERROR: Could not move completed file {f}: {e}")
-                    log(f"Moved {len(final_filenames)} file(s) to final destination.")
+                    log(f"Moved {len(final_filenames)} file(s) to final destination: {final_dest_dir}")
             
             temp_archive_path = os.path.join(temp_dir_path, "archive.temp.txt")
             if os.path.exists(temp_archive_path):
@@ -162,26 +162,16 @@ def _finalize_job(job, final_status, temp_log_path, config):
         else:
             log("Skipping file and archive move for cancelled/failed job.")
 
-        # Determine final title based on what we know
-        if is_playlist:
-            final_title = final_folder_name
-        elif final_filenames:
-            # If there's a folder name, use it. Otherwise, use the name of the first file.
-            final_title = final_folder_name if job.get("folder") else os.path.splitext(final_filenames[0])[0]
-        else:
-            final_title = job.get("folder") or job.get("url")
+        final_title = final_folder_name
 
-        # If a job failed but some files were moved, its status is 'PARTIAL'
         if final_status == "FAILED" and final_filenames:
             final_status = "PARTIAL"
             log("Status updated to PARTIAL due to partial success.")
         
-        # If the job truly failed or errored, grab the last few lines of the log as a summary
         if final_status in ["FAILED", "ERROR"]:
-            final_title = job.get("folder") or job.get("url") # Use URL for failed jobs for clarity
+            final_title = job.get("folder") or job.get("url")
             try:
                 with open(temp_log_path, 'r', encoding='utf-8') as f:
-                    # Use a deque for efficiently getting the last N lines
                     last_lines = deque(f, 15) 
                 error_summary = "\n".join(last_lines)
             except Exception as e:
@@ -218,56 +208,42 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
         })
 
         try:
-            # --- Always fetch details to ensure thumbnail consistency ---
-            try:
-                print(f"WORKER: Fetching details for job {job['id']}...")
-                state_manager.update_current_download({"status": "Fetching details..."})
-                
-                is_playlist = "playlist?list=" in job.get("url", "")
-                title_field = '%(playlist_title,title)s'
-                fetch_cmd = [yt_dlp_path, '--print', f'{title_field}\n%(thumbnail)s', '--playlist-items', '1', '-s', job["url"]]
+            # --- FIX: Re-instated a smarter pre-fetch for metadata ---
+            state_manager.update_current_download({"status": "Fetching details..."})
+            
+            # Use --dump-single-json to get all info in one go. It's faster.
+            fetch_cmd = [yt_dlp_path, '--dump-single-json', '--playlist-items', '1', job["url"]]
+            result = subprocess.run(fetch_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=45, check=True)
+            
+            metadata = json.loads(result.stdout)
 
-                result = subprocess.run(fetch_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, check=True)
-                
-                output_lines = result.stdout.strip().splitlines()
-                
-                fetched_title = None
-                thumbnail_url = None
+            # --- FIX: Make logs readable by pretty-printing the JSON ---
+            with open(temp_log_path, 'w', encoding='utf-8') as log_file:
+                log_file.write(f"--- Metadata for Job {job['id']} ---\n")
+                json.dump(metadata, log_file, indent=4)
+                log_file.write("\n-----------------------------------\n\n")
 
-                if len(output_lines) >= 1 and output_lines[0]:
-                    fetched_title = sanitize_filename(output_lines[0])
-                if len(output_lines) >= 2 and output_lines[1]:
-                    thumbnail_url = output_lines[1]
+            # Now, determine the folder name
+            if not job.get("folder"):
+                title_to_use = metadata.get('playlist_title') or metadata.get('title')
+                job["folder"] = sanitize_filename(title_to_use)
 
-                # Only use the fetched title if the user didn't provide a folder name
-                if not job.get("folder"):
-                    job["folder"] = fetched_title or "Misc Downloads"
-                
-                print(f"WORKER: Using folder name: {job['folder']}")
-                
-                update_data = {"thumbnail": thumbnail_url}
-                if is_playlist:
-                    update_data["playlist_title"] = job["folder"]
-                else:
-                    update_data["title"] = job["folder"]
-                state_manager.update_current_download(update_data)
-
-            except Exception as e:
-                print(f"WORKER: Could not auto-fetch details for job {job['id']}: {e}")
-                # If fetching fails, use the user-provided name or fall back to a sanitized URL
-                if not job.get("folder"):
-                    job["folder"] = sanitize_filename(job.get("url"))
-                state_manager.update_current_download({"title": job["folder"]})
+            is_playlist = "playlist?list=" in job.get("url", "")
+            update_data = {"thumbnail": metadata.get('thumbnail')}
+            if is_playlist:
+                update_data["playlist_title"] = job["folder"]
+            else:
+                update_data["title"] = job["folder"]
+            state_manager.update_current_download(update_data)
             
             os.makedirs(temp_dir_path, exist_ok=True)
             
             if job.get("archive"):
-                final_folder_name = job.get("folder")
-                main_archive_file = os.path.join(config["download_dir"], final_folder_name, "archive.txt")
+                main_archive_file = os.path.join(config["download_dir"], job["folder"], "archive.txt")
                 if os.path.exists(main_archive_file):
-                    temp_archive_file = os.path.join(temp_dir_path, "archive.temp.txt")
-                    shutil.copy2(main_archive_file, temp_archive_file)
+                    shutil.copy2(main_archive_file, os.path.join(temp_dir_path, "archive.temp.txt"))
 
+            # --- Now, build the command for the ACTUAL download ---
             cmd = build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmpeg_path)
             
             state_manager.update_current_download({"status": "Starting..."})
@@ -277,9 +253,9 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
             local_playlist_index = 0
             local_playlist_count = 0
             
-            with open(temp_log_path, 'w', encoding='utf-8') as log_file:
+            with open(temp_log_path, 'a', encoding='utf-8') as log_file:
                 log_file.write(f"Starting download for job {job['id']}\n")
-                log_file.write(f"Folder: {job.get('folder')}\n")
+                log_file.write(f"Final Folder Name: {job.get('folder')}\n")
                 log_file.write(f"Command: {' '.join(shlex.quote(c) for c in cmd)}\n\n")
                 log_file.flush()
 
@@ -297,31 +273,25 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                             update = {"status": progress_data.get("status", "Downloading...").capitalize()}
                             
                             if update["status"] == 'Downloading':
-                                progress_percent = progress_data.get("_percent_str") or progress_data.get("progress", {}).get("fraction")
+                                progress_percent = progress_data.get("_percent_str")
                                 if progress_percent:
-                                    if isinstance(progress_percent, float):
-                                        update["progress"] = progress_percent * 100
-                                    else:
-                                        update["progress"] = float(str(progress_percent).replace('%',''))
+                                    update["progress"] = float(str(progress_percent).replace('%',''))
                                 
                                 total_size = progress_data.get("total_bytes") or progress_data.get("total_bytes_estimate")
                                 update["file_size"] = format_bytes(total_size)
                                 current_track_title = os.path.basename(progress_data.get("filename", "...")).rsplit('.',1)[0]
                                 
-                                playlist_title_for_ui = job.get("folder")
-                                
                                 if "playlist?list=" in job.get("url", ""):
                                     update.update({
-                                        'playlist_title': playlist_title_for_ui,
                                         'track_title': current_track_title,
                                         'playlist_index': local_playlist_index,
                                         'playlist_count': local_playlist_count
                                     })
-                                else:
-                                    update["title"] = playlist_title_for_ui
                                 
-                                update.update({"speed": progress_data.get("_speed_str", "N/A"), "eta": progress_data.get("_eta_str", "N/A")})
-                            
+                                update.update({
+                                    "speed": progress_data.get("_speed_str", "N/A"), 
+                                    "eta": progress_data.get("_eta_str", "N/A")
+                                })
                             state_manager.update_current_download(update)
                         except (json.JSONDecodeError, TypeError, ValueError):
                             pass
@@ -345,14 +315,20 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
             else:
                 status = "FAILED"
 
+        except subprocess.CalledProcessError as e:
+            status = "ERROR"
+            print(f"WORKER METADATA FETCH FAILED for job {job.get('id')}: {e.stderr}")
+            try:
+                with open(temp_log_path, 'a', encoding='utf-8') as log_file:
+                    log_file.write(f"\n--- METADATA FETCH FAILED ---\n{e.stderr}\n---------------------------\n")
+            except: pass
         except Exception as e:
             status = "ERROR"
             print(f"WORKER EXCEPTION for job {job.get('id')}: {e}")
             try:
                 with open(temp_log_path, 'a', encoding='utf-8') as log_file:
                     log_file.write(f"\n--- WORKER THREAD EXCEPTION ---\n{e}\n-------------------------------\n")
-            except:
-                pass
+            except: pass
         
         finally:
             status, final_folder, final_title, final_filenames, error_summary = _finalize_job(job, status, temp_log_path, config)
@@ -375,7 +351,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                 "url": job["url"], 
                 "title": final_title, 
                 "folder": final_folder, 
-                "filenames": final_filenames, # Changed from 'filename' to 'filenames'
+                "filenames": final_filenames,
                 "job_data": job, 
                 "status": status,
                 "log_path": log_path_for_history,
