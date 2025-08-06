@@ -4,8 +4,9 @@
  * to avoid code duplication.
  */
 
-// --- FIX: Define a variable in a scope accessible by the modal logic ---
-let currentConfirmAction = () => {};
+// --- FIX: Define variables in a shared scope to be initialized once ---
+let confirmModalInstance = null;
+let onConfirmAction = () => {};
 
 /**
  * Applies a color theme to the entire document.
@@ -26,33 +27,44 @@ const applyTheme = (theme) => {
  * @param {function} onConfirm - The callback function to execute when the confirm button is clicked.
  */
 const showConfirmModal = (title, body, onConfirm) => {
-    const modalEl = document.getElementById('confirmModal');
-    if (!modalEl) return;
+    // Check if the modal was successfully initialized on page load.
+    if (!confirmModalInstance) {
+        console.error("Confirmation modal is not initialized.");
+        return;
+    }
 
     document.getElementById('confirmModalTitle').textContent = title;
     document.getElementById('confirmModalBody').textContent = body;
     
-    // --- FIX: Instead of cloning, just update the action to be performed ---
-    currentConfirmAction = () => {
-        const modalInstance = bootstrap.Modal.getInstance(modalEl);
-        // Ensure the callback is only called once and the modal is hidden.
-        if (onConfirm) onConfirm();
-        if (modalInstance) modalInstance.hide();
-    };
+    // Store the specific action to be performed for this confirmation.
+    onConfirmAction = onConfirm;
 
-    const modalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
-    modalInstance.show();
+    // Show the pre-existing modal instance.
+    confirmModalInstance.show();
 };
 
-// --- FIX: Add a single, persistent event listener when the DOM is loaded ---
+/**
+ * --- FIX: Initialize modal and add a single, persistent event listener when the DOM is loaded ---
+ * This new pattern ensures the modal and its listeners are only created once per page load,
+ * preventing the open/close loop bug.
+ */
 document.addEventListener('DOMContentLoaded', () => {
-    const confirmButton = document.getElementById('confirmModalButton');
-    if (confirmButton) {
-        confirmButton.addEventListener('click', () => {
-            // This listener now simply calls whatever function is currently assigned.
-            if (typeof currentConfirmAction === 'function') {
-                currentConfirmAction();
-            }
-        });
+    const modalEl = document.getElementById('confirmModal');
+    if (modalEl) {
+        // Create the Bootstrap Modal instance once and store it in our global variable.
+        confirmModalInstance = new bootstrap.Modal(modalEl);
+
+        const confirmButton = document.getElementById('confirmModalButton');
+        if (confirmButton) {
+            // Add a single, permanent click listener to the confirm button.
+            confirmButton.addEventListener('click', () => {
+                // When the confirm button is clicked, execute the currently stored action...
+                if (typeof onConfirmAction === 'function') {
+                    onConfirmAction();
+                }
+                // ...and then hide the modal.
+                confirmModalInstance.hide();
+            });
+        }
     }
 });

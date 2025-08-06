@@ -293,9 +293,17 @@ def install_update_route():
     threading.Thread(target=trigger_update_and_restart).start()
     return jsonify({"message": "Update process initiated."})
 
+# --- CHANGE: This function is now simpler and more robust. ---
 def extract_urls_from_text(text):
-    """Finds all http/https URLs in a block of text."""
-    return re.findall(r'https?://[^\s"]+', text)
+    """
+    Extracts URLs from a block of text. Assumes one URL per line,
+    which the frontend now enforces.
+    """
+    if not text:
+        return []
+    # Splits the text by lines, strips whitespace from each line,
+    # and filters out any empty lines that result.
+    return [line.strip() for line in text.strip().splitlines() if line.strip()]
 
 def _parse_job_data(form_data):
     """Extracts job parameters from the request form."""

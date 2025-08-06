@@ -4,6 +4,7 @@
     let liveLogEventSource = null;
     let globalHistoryData = [];
     let statusPollTimeout; // To hold the timer for polling
+    let urlInputTimeout; // To hold the timer for debouncing URL input
 
     // --- CORE UTILITY FUNCTIONS ---
     const showToast = (message, title = 'Notification', type = 'success') => {
@@ -69,10 +70,23 @@
     };
 
     const handleUrlInput = () => {
-        const urlTextarea = document.querySelector('textarea[name="urls"]');
-        const urls = urlTextarea.value.match(/(https?:\/\/[^\s]+|www\.[^\s]+)/g) || [];
-        const isPlaylist = urls.length > 0 && urls[0].includes('playlist?list=');
-        document.getElementById('playlist-range-options').style.display = isPlaylist ? 'flex' : 'none';
+        clearTimeout(urlInputTimeout);
+        urlInputTimeout = setTimeout(() => {
+            const urlTextarea = document.querySelector('textarea[name="urls"]');
+            const originalValue = urlTextarea.value;
+            const foundUrls = originalValue.match(/(https?:\/\/[^\s"]+|www\.[^\s"]+)/g) || [];
+            
+            if (foundUrls.length > 0) {
+                const cleanedValue = foundUrls.join('\n');
+                if (cleanedValue !== originalValue.trim()) {
+                    urlTextarea.value = cleanedValue;
+                }
+            }
+
+            const urlsInTextarea = urlTextarea.value.split('\n');
+            const isPlaylist = urlsInTextarea.some(url => url.includes('playlist?list='));
+            document.getElementById('playlist-range-options').style.display = isPlaylist ? 'flex' : 'none';
+        }, 400);
     };
     
     const handleStopRequest = (mode) => {
@@ -97,27 +111,29 @@
     };
 
     // --- RENDERING LOGIC ---
+
     function renderCurrentStatus(current) {
         const currentDiv = document.getElementById("current-status");
+        const currentJobUrl = currentDiv.dataset.jobUrl;
 
-        if (current && current.url) {
+        if (!current || !current.url) {
+            if (currentJobUrl !== "none") {
+                currentDiv.innerHTML = "<p>No active download.</p>";
+                currentDiv.dataset.jobUrl = "none";
+            }
+            return;
+        }
+
+        if (current.url !== currentJobUrl) {
             const thumbnailHTML = current.thumbnail 
-                ? `<div class="flex-shrink-0 mb-3 mb-md-0 me-md-3"><img src="${current.thumbnail}" class="now-downloading-thumbnail" alt="Thumbnail"></div>`
-                : '';
+                ? `<div class="flex-shrink-0 mb-3 mb-md-0 me-md-3"><img id="current-thumbnail-img" src="${current.thumbnail}" class="now-downloading-thumbnail" alt="Thumbnail"></div>`
+                : '<div class="flex-shrink-0 mb-3 mb-md-0 me-md-3" id="current-thumbnail-img"></div>';
 
-            const playlistIndicator = current.playlist_count > 0 
-                ? `<span class="ms-2 badge bg-secondary">${current.playlist_index || '0'}/${current.playlist_count}</span>` 
-                : '';
-
-            const titleHTML = current.playlist_title 
-                ? `<strong class="word-break">${current.playlist_title}</strong>${playlistIndicator}<br><small class="text-muted word-break">${current.track_title || 'Loading track...'}</small>` 
-                : `<strong class="word-break">${current.title || current.url}</strong>`;
-            
+            const titleHTML = `<div id="current-title-text"></div>`;
             const progress = current.progress ? current.progress.toFixed(1) : 0;
-            const progressHTML = `<div class="progress mb-2" role="progressbar" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar progress-bar-striped progress-bar-animated" style="width: ${progress}%;">${progress}%</div></div>`;
-            
-            const statsHTML = `<div class="d-flex justify-content-between mt-2 small text-muted"><small>Size: ${current.file_size || 'N/A'}</small><small>Speed: ${current.speed || 'N/A'}</small><small>ETA: ${current.eta || 'N/A'}</small></div>`;
-
+            const progressHTML = `<div class="progress mb-2" role="progressbar" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"><div id="current-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" style="width: ${progress}%;">${progress}%</div></div>`;
+            const statusTextHTML = `<p id="current-status-text" class="mb-1 small">${current.status}</p>`;
+            const statsHTML = `<div class="d-flex justify-content-between mt-2 small text-muted"><small>Size: <span id="current-stat-size">${current.file_size || 'N/A'}</span></small><small>Speed: <span id="current-stat-speed">${current.speed || 'N/A'}</span></small><small>ETA: <span id="current-stat-eta">${current.eta || 'N/A'}</span></small></div>`;
             const buttonsHTML = `<div class="btn-group mt-2" role="group">
                 <button id="view-log-btn" class="btn btn-info btn-sm">View Log</button>
                 <button id="stop-save-btn" class="btn btn-warning btn-sm" title="Stop download and save completed files.">Stop & Save</button>
@@ -130,19 +146,42 @@
                     <div class="flex-grow-1" style="min-width: 0;">
                         ${titleHTML}
                         ${progressHTML}
-                        <p class="mb-1 small">${current.status}</p>
+                        ${statusTextHTML}
                         ${statsHTML}
                         ${buttonsHTML}
                     </div>
                 </div>
             `;
+            currentDiv.dataset.jobUrl = current.url;
             
             document.getElementById('view-log-btn').addEventListener('click', viewLiveLog);
             document.getElementById('stop-save-btn').addEventListener('click', () => handleStopRequest('save'));
             document.getElementById('cancel-btn').addEventListener('click', () => handleStopRequest('cancel'));
+        }
 
-        } else {
-            currentDiv.innerHTML = "<p>No active download.</p>";
+        const titleEl = document.getElementById('current-title-text');
+        const playlistIndicator = current.playlist_count > 0 ? `<span class="ms-2 badge bg-secondary">${current.playlist_index || '0'}/${current.playlist_count}</span>` : '';
+        const newTitleHTML = current.playlist_title 
+            ? `<strong class="word-break">${current.playlist_title}</strong>${playlistIndicator}<br><small class="text-muted word-break">${current.track_title || 'Loading track...'}</small>` 
+            : `<strong class="word-break">${current.title || current.url}</strong>`;
+        if (titleEl.innerHTML !== newTitleHTML) {
+            titleEl.innerHTML = newTitleHTML;
+        }
+
+        const progressBar = document.getElementById('current-progress-bar');
+        const progress = current.progress ? current.progress.toFixed(1) : 0;
+        progressBar.style.width = `${progress}%`;
+        progressBar.textContent = `${progress}%`;
+        progressBar.setAttribute('aria-valuenow', progress);
+
+        document.getElementById('current-status-text').textContent = current.status;
+        document.getElementById('current-stat-size').textContent = current.file_size || 'N/A';
+        document.getElementById('current-stat-speed').textContent = current.speed || 'N/A';
+        document.getElementById('current-stat-eta').textContent = current.eta || 'N/A';
+        
+        const thumbnailEl = document.getElementById('current-thumbnail-img');
+        if (current.thumbnail && thumbnailEl.tagName !== 'IMG') {
+            thumbnailEl.outerHTML = `<div class="flex-shrink-0 mb-3 mb-md-0 me-md-3"><img id="current-thumbnail-img" src="${current.thumbnail}" class="now-downloading-thumbnail" alt="Thumbnail"></div>`;
         }
     }
 
@@ -152,34 +191,64 @@
         
         if (queue.length === 0) {
             queueList.innerHTML = "<li class='list-group-item'>Queue is empty.</li>";
-        } else {
-            const queueHTML = queue.map(job => 
-                `<li class="list-group-item d-flex justify-content-between align-items-center" data-job-id="${job.id}">
-                    <div class="d-flex align-items-center" style="min-width: 0;">
-                        <i class="bi bi-grip-vertical queue-handle me-2"></i>
-                        <span class="word-break">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span>
-                    </div>
-                    <button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}"></button>
-                </li>`
-            ).join('');
-            queueList.innerHTML = queueHTML;
+            return;
         }
+        
+        // A more efficient way to update the list could be implemented here if needed,
+        // but for the queue, a full redraw is often acceptable.
+        const queueHTML = queue.map(job => 
+            `<li class="list-group-item d-flex justify-content-between align-items-center" data-job-id="${job.id}">
+                <div class="d-flex align-items-center" style="min-width: 0;">
+                    <i class="bi bi-grip-vertical queue-handle me-2"></i>
+                    <span class="word-break">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span>
+                </div>
+                <button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}"></button>
+            </li>`
+        ).join('');
+        queueList.innerHTML = queueHTML;
     }
 
-    function renderHistory(history) {
-        globalHistoryData = history; 
-        const historyForDisplay = [...globalHistoryData].reverse();
+    /**
+     * --- CHANGE: This function is now fully intelligent. ---
+     * It compares the new history with the old and only adds new items,
+     * preventing the entire list from being redrawn and fixing the flickering.
+     */
+    function renderHistory(newHistory) {
         const historyList = document.getElementById("history-list");
+        const historyForDisplay = [...newHistory].reverse();
+
         document.getElementById("clear-history-btn").style.display = historyForDisplay.length > 0 ? 'block' : 'none';
 
         if (historyForDisplay.length === 0) {
             historyList.innerHTML = "<li class='list-group-item'>Nothing in history.</li>";
-        } else {
-            historyList.innerHTML = historyForDisplay.map(item => createHistoryItemElement(item)).join('');
+            globalHistoryData = [];
+            return;
         }
+
+        // Only add new items that are not already in the DOM
+        const existingLogIds = new Set([...historyList.children].map(li => li.dataset.logId));
+        const newItems = historyForDisplay.filter(item => !existingLogIds.has(String(item.log_id)));
+
+        if (newItems.length > 0) {
+            const fragment = document.createDocumentFragment();
+            newItems.forEach(item => {
+                const li = document.createElement('li');
+                li.className = 'list-group-item';
+                li.dataset.logId = item.log_id;
+                li.dataset.status = item.status;
+                li.innerHTML = createHistoryItemHTML(item);
+                fragment.appendChild(li);
+            });
+            // Add new items to the top of the list
+            historyList.prepend(fragment);
+        }
+        
+        // Update the global state
+        globalHistoryData = newHistory;
     }
 
-    function createHistoryItemElement(item) {
+    // Renamed from createHistoryItemElement to avoid confusion. This just returns the HTML string.
+    function createHistoryItemHTML(item) {
         let badgeClass = 'bg-secondary';
         let actionButton = `<button class="btn btn-sm btn-outline-secondary history-action-btn" data-action="requeue" title="Download Again"><i class="bi bi-arrow-clockwise"></i></button>`;
         switch(item.status) {
@@ -193,7 +262,6 @@
             case 'FAILED': case 'ERROR': badgeClass = 'bg-danger'; break;
         }
 
-        // --- NEW: Create the error summary block if an error exists ---
         let errorSummaryHTML = '';
         if (item.error_summary) {
             const collapseId = `error-summary-${item.log_id}`;
@@ -210,7 +278,7 @@
             `;
         }
 
-        return `<li class="list-group-item" data-log-id="${item.log_id}" data-status="${item.status}">
+        return `
             <div class="d-flex justify-content-between align-items-center">
                 <div class="flex-grow-1" style="min-width: 0;">
                     <span class="badge ${badgeClass} me-2">${item.status}</span>
@@ -221,7 +289,7 @@
                 <div class="btn-group ms-2">${actionButton}<button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log"><i class="bi bi-file-text"></i></button><button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete"><i class="bi bi-trash-fill"></i></button></div>
             </div>
             ${errorSummaryHTML}
-        </li>`;
+        `;
     }
 
     function renderPauseState(is_paused) {
@@ -248,7 +316,6 @@
     }
 
     const pollStatus = async () => {
-        // --- FIX: Clear previous timeout to prevent multiple poll loops ---
         clearTimeout(statusPollTimeout);
         try {
             const data = await apiRequest('/api/status');
@@ -264,7 +331,7 @@
         try {
             await apiRequest('/queue/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(job) });
             showToast("Job re-queued successfully.", 'Success', 'success');
-            pollStatus(); // Poll immediately for faster UI update
+            pollStatus();
         } catch(error) { console.error("Failed to re-queue job:", error); }
     };
 
@@ -326,7 +393,7 @@
                 showToast(data.message, 'Success', 'success');
                 this.reset();
                 handleUrlInput();
-                pollStatus(); // Poll immediately for faster UI update
+                pollStatus();
             } catch(error) { 
                 console.error("Failed to add job:", error);
             } finally {
@@ -355,12 +422,12 @@
             const deleteBtn = e.target.closest('.queue-action-btn[data-action="delete"]');
             if (deleteBtn) {
                 const item = deleteBtn.closest('.list-group-item');
-                item.style.opacity = '0.5'; // Optimistic UI
+                item.style.opacity = '0.5';
                 apiRequest(`/queue/delete/by-id/${deleteBtn.dataset.jobId}`, {method: 'POST'})
                     .then(() => item.remove())
                     .catch(err => {
                         console.error(err);
-                        item.style.opacity = '1'; // Revert on failure
+                        item.style.opacity = '1';
                     });
             }
         });
@@ -375,7 +442,7 @@
             if (action === 'log') {
                 viewStaticLog(logId);
             } else if (action === 'delete') {
-                li.style.opacity = '0.5'; // Optimistic UI
+                li.style.opacity = '0.5';
                 apiRequest(`/history/delete/${logId}`, { method: 'POST' })
                     .then(() => li.remove())
                     .catch(err => {
@@ -397,13 +464,13 @@
                 apiRequest('/queue/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order: orderedIds }) })
                 .catch(err => { 
                     console.error("Failed to reorder queue:", err);
-                    pollStatus(); // Re-poll to revert to correct order
+                    pollStatus();
                 });
             },
         });
 
         pollStatus();
         checkForUpdates();
-        setInterval(checkForUpdates, 900000); // 15 minutes
+        setInterval(checkForUpdates, 900000);
     });
 })();
