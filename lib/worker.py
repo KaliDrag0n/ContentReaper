@@ -214,9 +214,10 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                     is_playlist = "playlist?list=" in job["url"]
                     
                     # Fetch both title and thumbnail in one command
-                    fetch_cmd = [yt_dlp_path, '--print', '%(title)s\n%(thumbnail)s', '--playlist-items', '1', '-s', job["url"]]
                     if is_playlist:
                         fetch_cmd = [yt_dlp_path, '--print', '%(playlist_title)s\n%(thumbnail)s', '--playlist-items', '1', '-s', job["url"]]
+                    else:
+                        fetch_cmd = [yt_dlp_path, '--print', '%(title)s\n%(thumbnail)s', '--playlist-items', '1', '-s', job["url"]]
 
                     result = subprocess.run(fetch_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, check=True)
                     
@@ -232,7 +233,15 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
 
                     job["folder"] = title
                     print(f"WORKER: Fetched folder name: {title}")
-                    state_manager.update_current_download({"title": title, "thumbnail": thumbnail_url})
+                    
+                    # --- FIX: Differentiate between single video and playlist title updates ---
+                    update_data = {"thumbnail": thumbnail_url}
+                    if is_playlist:
+                        update_data["playlist_title"] = title
+                    else:
+                        update_data["title"] = title
+                    state_manager.update_current_download(update_data)
+                    # --- END FIX ---
 
                 except Exception as e:
                     print(f"WORKER: Could not auto-fetch details for job {job['id']}: {e}")

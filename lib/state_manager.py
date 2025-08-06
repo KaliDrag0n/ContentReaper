@@ -47,7 +47,6 @@ class StateManager:
             self.current_download.update(data)
             self.current_download_version += 1
 
-    # ##-- FIX: New thread-safe methods for pausing/resuming --##
     def pause_queue(self):
         with self._lock:
             self.queue_paused_event.clear()
@@ -221,11 +220,17 @@ class StateManager:
                 state = json.load(f)
             
             with self._lock:
+                # --- FIX: Combine abandoned job and queue for unified processing ---
+                queue_items = state.get("queue", [])
+                if not isinstance(queue_items, list):
+                    print("WARNING: Queue in state file is not a list. Resetting.")
+                    queue_items = []
+                
                 abandoned_job = state.get("current_job")
                 if isinstance(abandoned_job, dict):
                     print(f"Re-queueing abandoned job: {abandoned_job.get('id')}")
-                    self.queue.put(abandoned_job)
-                
+                    queue_items.insert(0, abandoned_job)
+
                 self.history = state.get("history", [])
                 if not isinstance(self.history, list):
                     print("WARNING: History in state file is not a list. Resetting.")
@@ -238,22 +243,30 @@ class StateManager:
                 self.queue_state_version = state.get("queue_state_version", 0)
                 self.current_download_version = state.get("current_download_version", 0)
                 
-                queue_items = state.get("queue", [])
-                if not isinstance(queue_items, list):
-                    print("WARNING: Queue in state file is not a list. Resetting.")
-                    queue_items = []
-
-                loaded_ids = {job.get('id') for job in queue_items if job.get('id') is not None}
+                # Process the combined list of queue items with robust ID assignment
+                loaded_ids = set()
                 max_id = self.next_queue_id
+                
+                # First, find the highest existing ID in the list to avoid any collisions
                 for job in queue_items:
-                    if 'id' not in job or job['id'] in loaded_ids:
+                    if job.get('id') is not None and job.get('id') >= max_id:
+                        max_id = job.get('id') + 1
+
+                # Now, iterate through the list, assign unique IDs where needed, and add to the queue
+                for job in queue_items:
+                    job_id = job.get('id')
+                    if job_id is None or job_id in loaded_ids:
                         job['id'] = max_id
-                        loaded_ids.add(max_id)
                         max_id += 1
+                    
+                    loaded_ids.add(job['id'])
                     self.queue.put(job)
+                
                 self.next_queue_id = max_id
+                # --- END FIX ---
                 
                 print(f"Loaded {self.queue.qsize()} items from queue and {len(self.history)} history entries.")
+
         except json.JSONDecodeError as e:
             print(f"Could not load state file (invalid JSON). Error: {e}")
             corrupted_path = self.state_file + ".bak"

@@ -13,14 +13,29 @@ const updateSelectionActions = () => {
     const selectedItems = document.querySelectorAll('.file-item-checkbox:checked');
     const actionsPanel = document.getElementById('selection-actions');
     const countSpan = document.getElementById('selection-count');
-    actionsPanel.style.display = selectedItems.length > 0 ? 'block' : 'none';
-    if (selectedItems.length > 0) countSpan.textContent = `${selectedItems.length} item(s) selected`;
+    const selectAllCheckbox = document.getElementById('select-all-checkbox');
+    const allCheckboxes = document.querySelectorAll('.file-item-checkbox');
+
+    actionsPanel.style.display = selectedItems.length > 0 ? 'flex' : 'none';
+    if (selectedItems.length > 0) {
+        countSpan.textContent = `${selectedItems.length} item(s) selected`;
+    }
+    
+    // Update the "Select All" checkbox state
+    if (allCheckboxes.length > 0) {
+        selectAllCheckbox.checked = selectedItems.length === allCheckboxes.length;
+        selectAllCheckbox.indeterminate = selectedItems.length > 0 && selectedItems.length < allCheckboxes.length;
+    } else {
+        selectAllCheckbox.checked = false;
+        selectAllCheckbox.indeterminate = false;
+    }
 };
 
 const fetchAndRenderFiles = async (path = '', containerEl) => {
-    containerEl.innerHTML = '<div class="list-group-item">Loading...</div>';
+    containerEl.innerHTML = '<div class="list-group-item"><div class="spinner-border spinner-border-sm me-2" role="status"></div>Loading...</div>';
     try {
         const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`);
+        if (!response.ok) throw new Error('Failed to fetch file list.');
         const files = await response.json();
         containerEl.innerHTML = '';
 
@@ -50,7 +65,7 @@ const fetchAndRenderFiles = async (path = '', containerEl) => {
             let itemHTML = `
                 <div class="d-flex justify-content-between align-items-center">
                     <div class="d-flex align-items-start flex-grow-1" style="min-width: 0;">
-                        <input class="form-check-input me-3 file-item-checkbox" type="checkbox">
+                        <input class="form-check-input me-3 file-item-checkbox" type="checkbox" value="${item.path}">
             `;
 
             if (isDirectory) {
@@ -77,8 +92,10 @@ const fetchAndRenderFiles = async (path = '', containerEl) => {
         });
 
     } catch (error) {
-        containerEl.innerHTML = '<div class="list-group-item text-danger">Failed to load files.</div>';
+        containerEl.innerHTML = `<div class="list-group-item text-danger">Error: ${error.message}</div>`;
         console.error("Error fetching files:", error);
+    } finally {
+        updateSelectionActions();
     }
 };
 
@@ -86,7 +103,8 @@ const handleDelete = (paths, names) => {
     const title = names.length > 1 ? `Delete ${names.length} items?` : `Delete "${names[0]}"?`;
     showConfirmModal(title, 'Are you sure you want to permanently delete the selected item(s)? This cannot be undone.', async () => {
         try {
-            await fetch('/api/delete_item', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paths: paths }) });
+            const response = await fetch('/api/delete_item', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paths: paths }) });
+            if (!response.ok) throw new Error('Delete request failed.');
             fetchAndRenderFiles('', document.getElementById('file-list-root'));
         } catch (error) {
             console.error("Delete failed:", error);
@@ -106,22 +124,32 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('downloader_theme', newTheme);
     });
 
-    document.getElementById('refresh-btn').addEventListener('click', () => fetchAndRenderFiles('', rootContainer));
+    const refreshBtn = document.getElementById('refresh-btn');
+    refreshBtn.addEventListener('click', async () => {
+        const icon = refreshBtn.querySelector('i');
+        const originalIconClass = icon.className;
+        refreshBtn.disabled = true;
+        icon.className = 'spinner-border spinner-border-sm';
+        
+        try {
+            await fetchAndRenderFiles('', rootContainer);
+        } finally {
+            refreshBtn.disabled = false;
+            icon.className = originalIconClass;
+        }
+    });
     
     rootContainer.addEventListener('click', (e) => {
         const target = e.target;
         const fileItem = target.closest('.file-item');
-        if (!fileItem) return;
-
-        const path = fileItem.dataset.path;
-        const name = fileItem.dataset.name;
-
+        
         const folderToggle = target.closest('.folder-toggle');
         if (folderToggle) {
             const collapseEl = document.querySelector(folderToggle.getAttribute('href'));
             const nestedContainer = collapseEl.querySelector('.file-list-nested');
+            // Only fetch if it hasn't been opened before
             if (nestedContainer && !nestedContainer.hasChildNodes()) {
-                fetchAndRenderFiles(path, nestedContainer);
+                fetchAndRenderFiles(fileItem.dataset.path, nestedContainer);
             }
         }
 
@@ -130,8 +158,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (target.closest('.delete-btn')) {
-            handleDelete([path], [name]);
+            e.preventDefault();
+            handleDelete([fileItem.dataset.path], [fileItem.dataset.name]);
         }
+    });
+
+    document.getElementById('select-all-checkbox').addEventListener('change', (e) => {
+        document.querySelectorAll('.file-item-checkbox').forEach(cb => {
+            cb.checked = e.target.checked;
+        });
+        updateSelectionActions();
     });
 
     document.getElementById('delete-selected-btn').addEventListener('click', () => {

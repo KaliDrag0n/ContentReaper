@@ -15,24 +15,30 @@
         toastInstance.show();
     };
 
+    // --- IMPROVEMENT: Refined Error Handling ---
     async function apiRequest(endpoint, options = {}) {
         try {
             const res = await fetch(endpoint, options);
             if (!res.ok) {
-                const errorData = await res.json().catch(() => ({ message: res.statusText }));
-                throw new Error(errorData.message || 'Request failed');
+                // Try to parse the error response from the server, otherwise use the default status text.
+                const errorData = await res.json().catch(() => ({ message: `Request failed with status: ${res.statusText}` }));
+                // Use the 'message' key from the server's JSON response.
+                throw new Error(errorData.message || 'An unknown error occurred.');
             }
+            // Handle JSON response or other response types
             if (res.headers.get("Content-Type")?.includes("application/json")) {
                 return res.json();
             }
             return res;
         } catch (error) {
+            // Display the specific error message in a toast.
             if (error.name !== 'AbortError') {
                 showToast(error.message, 'Error', 'danger');
             }
-            throw error;
+            throw error; // Re-throw the error so calling functions can also handle it if needed.
         }
     }
+    // --- END IMPROVEMENT ---
 
     // --- UI MODE LOGIC ---
     const switchMode = (mode) => {
@@ -74,7 +80,6 @@
         document.getElementById('playlist-range-options').style.display = isPlaylist ? 'flex' : 'none';
     };
     
-    // ##-- NEW: Function for optimistic UI on stop/cancel --##
     const handleStopRequest = (mode) => {
         const statusPara = document.querySelector('#current-status p.small');
         const stopSaveBtn = document.getElementById('stop-save-btn');
@@ -93,12 +98,11 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ mode: mode })
-        });
+        }).catch(err => console.error("Stop request failed", err)); // Catch potential errors from the stop request itself
     };
 
     // --- RENDERING LOGIC ---
-    function renderStatus(data) {
-        const current = data.current;
+    function renderCurrentStatus(current) {
         const currentDiv = document.getElementById("current-status");
 
         if (current) {
@@ -145,18 +149,92 @@
         } else {
             currentDiv.innerHTML = "<p>No active download.</p>";
         }
+    }
 
+    function renderQueue(queue) {
         const queueList = document.getElementById("queue-list");
-        document.getElementById("queue-controls").style.display = data.queue.length > 0 ? 'flex' : 'none';
-        const newIds = data.queue.map(job => job.id.toString());
+        document.getElementById("queue-controls").style.display = queue.length > 0 ? 'flex' : 'none';
+        
+        const newIds = queue.map(job => job.id.toString());
         const existingIds = [...queueList.children].map(li => li.dataset.jobId);
+        
         if (JSON.stringify(newIds) !== JSON.stringify(existingIds)) {
-            queueList.innerHTML = data.queue.length === 0 ? "<li class='list-group-item'>Queue is empty.</li>" : data.queue.map(job => `<li class="list-group-item d-flex justify-content-between align-items-center" data-job-id="${job.id}"><div class="d-flex align-items-center" style="min-width: 0;"><i class="bi bi-grip-vertical queue-handle me-2"></i><span class="word-break">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span></div><button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}"></button></li>`).join('');
+            queueList.innerHTML = queue.length === 0 ? "<li class='list-group-item'>Queue is empty.</li>" : queue.map(job => `<li class="list-group-item d-flex justify-content-between align-items-center" data-job-id="${job.id}"><div class="d-flex align-items-center" style="min-width: 0;"><i class="bi bi-grip-vertical queue-handle me-2"></i><span class="word-break">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span></div><button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}"></button></li>`).join('');
+        }
+    }
+
+    function renderHistory(history) {
+        globalHistoryData = history; 
+        const historyForDisplay = [...globalHistoryData].reverse();
+        const historyList = document.getElementById("history-list");
+        document.getElementById("clear-history-btn").style.display = historyForDisplay.length > 0 ? 'block' : 'none';
+
+        if (historyForDisplay.length === 0 && historyList.children.length > 0) {
+            historyList.innerHTML = "<li class='list-group-item'>Nothing in history.</li>";
+            return;
         }
 
+        const existingNodes = new Map();
+        for (const child of historyList.children) {
+            if (child.dataset.logId) {
+                existingNodes.set(child.dataset.logId, child);
+            }
+        }
+
+        historyForDisplay.forEach((item, index) => {
+            const logId = item.log_id.toString();
+            const existingLi = existingNodes.get(logId);
+
+            if (existingLi) {
+                const currentStatus = existingLi.dataset.status;
+                if (currentStatus !== item.status) {
+                    const newLi = createHistoryItemElement(item);
+                    historyList.replaceChild(newLi, existingLi);
+                }
+                existingNodes.delete(logId);
+            } else {
+                const newLi = createHistoryItemElement(item);
+                const referenceNode = historyList.children[index] || null;
+                historyList.insertBefore(newLi, referenceNode);
+            }
+        });
+
+        existingNodes.forEach(node => node.remove());
+    }
+
+    function createHistoryItemElement(item) {
+        let badgeClass = 'bg-secondary';
+        let actionButton = `<button class="btn btn-sm btn-outline-secondary history-action-btn" data-action="requeue" title="Download Again"><i class="bi bi-arrow-clockwise"></i></button>`;
+        switch(item.status) {
+            case 'COMPLETED': badgeClass = 'bg-success'; break;
+            case 'PARTIAL': badgeClass = 'bg-info text-dark'; break;
+            case 'STOPPED': 
+                badgeClass = 'bg-warning text-dark'; 
+                actionButton = `<button class="btn btn-sm btn-outline-success history-action-btn" data-action="requeue" title="Retry Download"><i class="bi bi-play-fill"></i></button>`;
+                break;
+            case 'CANCELLED': badgeClass = 'bg-secondary'; break;
+            case 'FAILED': case 'ERROR': badgeClass = 'bg-danger'; break;
+        }
+        const li = document.createElement("li");
+        li.className = "list-group-item";
+        li.dataset.logId = item.log_id;
+        li.dataset.status = item.status;
+        li.innerHTML = `<div class="d-flex justify-content-between align-items-center">
+            <div class="flex-grow-1" style="min-width: 0;">
+                <span class="badge ${badgeClass} me-2">${item.status}</span>
+                <strong class="word-break">${item.title || "Unknown"}</strong>
+                <br>
+                <small class="text-muted word-break">${item.folder ? `Folder: ${item.folder}` : `URL: ${item.url}`}</small>
+            </div>
+            <div class="btn-group ms-2">${actionButton}<button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log"><i class="bi bi-file-text"></i></button><button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete"><i class="bi bi-trash-fill"></i></button></div>
+        </div>`;
+        return li;
+    }
+
+    function renderPauseState(is_paused) {
         const pauseResumeBtn = document.getElementById('pause-resume-btn');
         const pausedOverlay = document.getElementById('paused-overlay');
-        if (data.is_paused) {
+        if (is_paused) {
             pauseResumeBtn.dataset.action = 'resume';
             pauseResumeBtn.innerHTML = '<i class="bi bi-play-fill"></i> Resume';
             pauseResumeBtn.classList.replace('btn-secondary', 'btn-success');
@@ -167,40 +245,13 @@
             pauseResumeBtn.classList.replace('btn-success', 'btn-secondary');
             pausedOverlay.style.display = 'none';
         }
+    }
 
-        globalHistoryData = data.history; 
-        const historyForDisplay = [...globalHistoryData].reverse();
-        const historyList = document.getElementById("history-list");
-        document.getElementById("clear-history-btn").style.display = historyForDisplay.length > 0 ? 'block' : 'none';
-        historyList.innerHTML = historyForDisplay.length === 0 ? "<li class='list-group-item'>Nothing in history.</li>" : "";
-        
-        historyForDisplay.forEach(item => {
-            let badgeClass = 'bg-secondary';
-            let actionButton = `<button class="btn btn-sm btn-outline-secondary history-action-btn" data-action="requeue" title="Download Again"><i class="bi bi-arrow-clockwise"></i></button>`;
-            switch(item.status) {
-                case 'COMPLETED': badgeClass = 'bg-success'; break;
-                case 'PARTIAL': badgeClass = 'bg-info text-dark'; break;
-                case 'STOPPED': 
-                    badgeClass = 'bg-warning text-dark'; 
-                    actionButton = `<button class="btn btn-sm btn-outline-success history-action-btn" data-action="requeue" title="Retry Download"><i class="bi bi-play-fill"></i></button>`;
-                    break;
-                case 'CANCELLED': badgeClass = 'bg-secondary'; break;
-                case 'FAILED': case 'ERROR': badgeClass = 'bg-danger'; break;
-            }
-            const li = document.createElement("li");
-            li.className = "list-group-item";
-            li.dataset.logId = item.log_id;
-            li.innerHTML = `<div class="d-flex justify-content-between align-items-center">
-                <div class="flex-grow-1" style="min-width: 0;">
-                    <span class="badge ${badgeClass} me-2">${item.status}</span>
-                    <strong class="word-break">${item.title || "Unknown"}</strong>
-                    <br>
-                    <small class="text-muted word-break">${item.folder ? `Folder: ${item.folder}` : `URL: ${item.url}`}</small>
-                </div>
-                <div class="btn-group ms-2">${actionButton}<button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log"><i class="bi bi-file-text"></i></button><button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete"><i class="bi bi-trash-fill"></i></button></div>
-            </div>`;
-            historyList.appendChild(li);
-        });
+    function renderStatus(data) {
+        renderCurrentStatus(data.current);
+        renderQueue(data.queue);
+        renderHistory(data.history);
+        renderPauseState(data.is_paused);
     }
 
     // --- EVENT HANDLERS & ACTIONS ---
@@ -264,26 +315,28 @@
             e.preventDefault();
             try {
                 const data = await apiRequest('/queue', { method: 'POST', body: new FormData(this) });
+                // Only show success toast if the request didn't throw an error
                 showToast(data.message, 'Success', 'success');
-            } catch(error) { 
-                console.error("Failed to add job:", error);
-            } finally {
                 this.reset();
                 handleUrlInput();
+            } catch(error) { 
+                // The apiRequest function already shows the error toast.
+                // We can add more specific error handling here if needed.
+                console.error("Failed to add job:", error);
             }
         });
 
         const urlTextarea = document.querySelector('textarea[name="urls"]');
         urlTextarea.addEventListener('input', handleUrlInput);
         
-        document.getElementById('clear-queue-btn').addEventListener('click', () => showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => apiRequest('/queue/clear', { method: 'POST' })));
-        document.getElementById('clear-history-btn').addEventListener('click', () => showConfirmModal('Clear History?', 'Are you sure you want to clear the entire download history?', () => apiRequest('/history/clear', { method: 'POST' })));
-        document.getElementById('pause-resume-btn').addEventListener('click', (e) => apiRequest(`/queue/${e.currentTarget.dataset.action}`, { method: 'POST' }));
+        document.getElementById('clear-queue-btn').addEventListener('click', () => showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => apiRequest('/queue/clear', { method: 'POST' }).catch(err => console.error(err))));
+        document.getElementById('clear-history-btn').addEventListener('click', () => showConfirmModal('Clear History?', 'Are you sure you want to clear the entire download history?', () => apiRequest('/history/clear', { method: 'POST' }).catch(err => console.error(err))));
+        document.getElementById('pause-resume-btn').addEventListener('click', (e) => apiRequest(`/queue/${e.currentTarget.dataset.action}`, { method: 'POST' }).catch(err => console.error(err)));
         document.getElementById('logModal').addEventListener('hidden.bs.modal', () => { if (liveLogEventSource) { liveLogEventSource.close(); liveLogEventSource = null; } });
         
         document.getElementById('queue-list').addEventListener('click', (e) => {
             const deleteBtn = e.target.closest('.queue-action-btn[data-action="delete"]');
-            if (deleteBtn) apiRequest(`/queue/delete/by-id/${deleteBtn.dataset.jobId}`, {method: 'POST'});
+            if (deleteBtn) apiRequest(`/queue/delete/by-id/${deleteBtn.dataset.jobId}`, {method: 'POST'}).catch(err => console.error(err));
         });
 
         document.getElementById('history-list').addEventListener('click', (e) => {
@@ -293,7 +346,7 @@
             const logId = parseInt(li.dataset.logId, 10);
             const action = actionBtn.dataset.action;
             if (action === 'log') viewStaticLog(logId);
-            else if (action === 'delete') apiRequest(`/history/delete/${logId}`, { method: 'POST' });
+            else if (action === 'delete') apiRequest(`/history/delete/${logId}`, { method: 'POST' }).catch(err => console.error(err));
             else if (action === 'requeue') {
                 const historyItem = globalHistoryData.find(item => item.log_id === logId);
                 if (historyItem) requeueJob(historyItem.job_data);

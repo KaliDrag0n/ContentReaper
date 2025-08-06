@@ -55,13 +55,21 @@
         <form method="POST">
           <div class="mb-3">
             <label for="download_dir" class="form-label">Download Directory</label>
-            <input type="text" class="form-control" id="download_dir" name="download_dir" value="{{ config.download_dir }}">
+            <input type="text" class="form-control {% if config_errors.download_dir %}is-invalid{% endif %}" id="download_dir" name="download_dir" value="{{ config.download_dir }}">
+            {% if config_errors.download_dir %}
+            <div class="invalid-feedback">{{ config_errors.download_dir }}</div>
+            {% else %}
             <div class="form-text">The absolute path on the server where completed files will be saved.</div>
+            {% endif %}
           </div>
           <div class="mb-3">
             <label for="temp_dir" class="form-label">Temporary Directory</label>
-            <input type="text" class="form-control" id="temp_dir" name="temp_dir" value="{{ config.temp_dir }}">
+            <input type="text" class="form-control {% if config_errors.temp_dir %}is-invalid{% endif %}" id="temp_dir" name="temp_dir" value="{{ config.temp_dir }}">
+            {% if config_errors.temp_dir %}
+            <div class="invalid-feedback">{{ config_errors.temp_dir }}</div>
+            {% else %}
             <div class="form-text">The path where temporary files will be stored during download.</div>
+            {% endif %}
           </div>
           <div class="mb-3">
             <label for="cookie_content" class="form-label">Cookies</label>
