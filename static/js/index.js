@@ -150,7 +150,6 @@
         const queueList = document.getElementById("queue-list");
         document.getElementById("queue-controls").style.display = queue.length > 0 ? 'flex' : 'none';
         
-        // --- FIX: Simplified rendering logic to prevent visual glitches ---
         if (queue.length === 0) {
             queueList.innerHTML = "<li class='list-group-item'>Queue is empty.</li>";
         } else {
@@ -193,6 +192,26 @@
             case 'CANCELLED': badgeClass = 'bg-secondary'; break;
             case 'FAILED': case 'ERROR': badgeClass = 'bg-danger'; break;
         }
+
+        // --- NEW: Create the error summary block if an error exists ---
+        let errorSummaryHTML = '';
+        if (item.error_summary) {
+            // Using Bootstrap's collapse component for a clean look
+            const collapseId = `error-summary-${item.log_id}`;
+            // Sanitize the error summary to prevent HTML injection
+            const sanitizedSummary = item.error_summary.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            errorSummaryHTML = `
+                <div class="mt-2">
+                    <button class="btn btn-sm btn-outline-danger" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="false" aria-controls="${collapseId}">
+                        <i class="bi bi-exclamation-triangle-fill"></i> Show Error Summary
+                    </button>
+                </div>
+                <div class="collapse" id="${collapseId}">
+                    <pre class="card card-body mt-2 p-2 bg-body-tertiary small" style="max-height: 200px; overflow-y: auto;"><code>${sanitizedSummary}</code></pre>
+                </div>
+            `;
+        }
+
         return `<li class="list-group-item" data-log-id="${item.log_id}" data-status="${item.status}">
             <div class="d-flex justify-content-between align-items-center">
                 <div class="flex-grow-1" style="min-width: 0;">
@@ -203,6 +222,7 @@
                 </div>
                 <div class="btn-group ms-2">${actionButton}<button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log"><i class="bi bi-file-text"></i></button><button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete"><i class="bi bi-trash-fill"></i></button></div>
             </div>
+            ${errorSummaryHTML}
         </li>`;
     }
 

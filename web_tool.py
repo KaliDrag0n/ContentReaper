@@ -52,7 +52,7 @@ from lib.sanitizer import sanitize_filename
 app = Flask(__name__)
 
 #~ --- Configuration --- ~#
-APP_VERSION = "1.4.4" # Version bump for bugfix
+APP_VERSION = "1.4.5" # Version bump for feature/refactor
 GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
 
 CONF_CONFIG_FILE = os.path.join(APP_ROOT, "config.json")
@@ -297,41 +297,57 @@ def extract_urls_from_text(text):
     """Finds all http/https URLs in a block of text."""
     return re.findall(r'https?://[^\s"]+', text)
 
+def _parse_job_data(form_data):
+    """Extracts job parameters from the request form."""
+    mode = form_data.get("download_mode")
+    folder_name = sanitize_filename(form_data.get(f"{mode}_foldername", "").strip())
+    
+    try:
+        playlist_start = int(p_start_str) if (p_start_str := form_data.get("playlist_start", "").strip()) else None
+        playlist_end = int(p_end_str) if (p_end_str := form_data.get("playlist_end", "").strip()) else None
+    except ValueError:
+        raise ValueError("Playlist start/end must be a number.")
+
+    job_base = {
+        "mode": mode, "folder": folder_name,
+        "archive": form_data.get("use_archive") == "yes",
+        "playlist_start": playlist_start, "playlist_end": playlist_end,
+        "proxy": form_data.get("proxy", "").strip(),
+        "rate_limit": form_data.get("rate_limit", "").strip()
+    }
+    
+    if mode == 'music':
+        job_base.update({"format": form_data.get("music_audio_format"), "quality": form_data.get("music_audio_quality")})
+    elif mode == 'video':
+        job_base.update({
+            "quality": form_data.get("video_quality"), "format": form_data.get("video_format"),
+            "embed_subs": form_data.get("video_embed_subs") == "on", "codec": form_data.get("video_codec_preference")
+        })
+    elif mode == 'clip':
+        job_base.update({"format": form_data.get("clip_format")})
+    elif mode == 'custom':
+        job_base.update({"custom_args": form_data.get("custom_args")})
+        
+    return job_base
+
 @app.route("/queue", methods=["POST"])
 def add_to_queue_route():
     urls = extract_urls_from_text(request.form.get("urls", ""))
     if not urls:
         return jsonify({"message": "No valid URLs found in the input."}), 400
     
-    mode = request.form.get("download_mode")
-    folder_name = sanitize_filename(request.form.get(f"{mode}_foldername", "").strip())
-    
     try:
-        playlist_start = int(p_start_str) if (p_start_str := request.form.get("playlist_start", "").strip()) else None
-        playlist_end = int(p_end_str) if (p_end_str := request.form.get("playlist_end", "").strip()) else None
-    except ValueError:
-        return jsonify({"message": "Playlist start/end must be a number."}), 400
+        job_base = _parse_job_data(request.form)
+    except ValueError as e:
+        return jsonify({"message": str(e)}), 400
 
     jobs_added = 0
     for url in urls:
         if not (url := url.strip()): continue
         
-        job = { "url": url, "mode": mode, "folder": folder_name,
-                "archive": request.form.get("use_archive") == "yes",
-                "playlist_start": playlist_start, "playlist_end": playlist_end,
-                "proxy": request.form.get("proxy", "").strip(),
-                "rate_limit": request.form.get("rate_limit", "").strip() }
-
-        if mode == 'music':
-            job.update({"format": request.form.get("music_audio_format"), "quality": request.form.get("music_audio_quality")})
-        elif mode == 'video':
-            job.update({"quality": request.form.get("video_quality"), "format": request.form.get("video_format"),
-                        "embed_subs": request.form.get("video_embed_subs") == "on", "codec": request.form.get("video_codec_preference")})
-        elif mode == 'clip':
-            job.update({"format": request.form.get("clip_format")})
-        elif mode == 'custom':
-            job.update({"custom_args": request.form.get("custom_args")})
-
+        job = job_base.copy()
+        job["url"] = url
+        
         state_manager.add_to_queue(job)
         jobs_added += 1
     
@@ -534,7 +550,7 @@ def delete_item_route():
     return jsonify({"message": f"Successfully deleted {deleted_count} item(s)."})
 
 
-# --- FIX: Move initialization to run when the module is imported by Waitress ---
+# --- Move initialization to run when the module is imported by Waitress ---
 initialize_app()
 
 
@@ -542,6 +558,7 @@ initialize_app()
 if __name__ == "__main__":
     # This block is now only used for direct execution (e.g., `python web_tool.py`)
     # Waitress will not run this block.
+    from waitress import serve
     print("--- Starting Server with Waitress (Debug Mode) ---")
     print(f"Server running at: http://127.0.0.1:8080")
     serve(app, host="127.0.0.1", port=8080)

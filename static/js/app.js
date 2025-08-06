@@ -4,6 +4,9 @@
  * to avoid code duplication.
  */
 
+// --- FIX: Define a variable in a scope accessible by the modal logic ---
+let currentConfirmAction = () => {};
+
 /**
  * Applies a color theme to the entire document.
  * @param {string} theme - The theme to apply ('light' or 'dark').
@@ -28,19 +31,28 @@ const showConfirmModal = (title, body, onConfirm) => {
 
     document.getElementById('confirmModalTitle').textContent = title;
     document.getElementById('confirmModalBody').textContent = body;
-    const confirmButton = document.getElementById('confirmModalButton');
     
-    // Clone and replace the button to remove any old event listeners.
-    // This is a robust way to ensure the onConfirm callback is always the correct one.
-    const newConfirmButton = confirmButton.cloneNode(true);
-    confirmButton.parentNode.replaceChild(newConfirmButton, confirmButton);
-    
-    newConfirmButton.addEventListener('click', () => {
+    // --- FIX: Instead of cloning, just update the action to be performed ---
+    currentConfirmAction = () => {
         const modalInstance = bootstrap.Modal.getInstance(modalEl);
-        onConfirm();
+        // Ensure the callback is only called once and the modal is hidden.
+        if (onConfirm) onConfirm();
         if (modalInstance) modalInstance.hide();
-    });
+    };
 
     const modalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
     modalInstance.show();
 };
+
+// --- FIX: Add a single, persistent event listener when the DOM is loaded ---
+document.addEventListener('DOMContentLoaded', () => {
+    const confirmButton = document.getElementById('confirmModalButton');
+    if (confirmButton) {
+        confirmButton.addEventListener('click', () => {
+            // This listener now simply calls whatever function is currently assigned.
+            if (typeof currentConfirmAction === 'function') {
+                currentConfirmAction();
+            }
+        });
+    }
+});

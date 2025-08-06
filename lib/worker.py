@@ -7,6 +7,7 @@ import datetime
 import shutil
 import time
 import shlex 
+from collections import deque
 from .sanitizer import sanitize_filename
 
 # --- Helper Functions --- #
@@ -114,24 +115,24 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
 
 
 def _finalize_job(job, final_status, temp_log_path, config):
+    """
+    Handles moving files, cleaning up, and determining the final state for a job.
+    """
     temp_dir_path = os.path.join(config["temp_dir"], f"job_{job['id']}")
-    
     final_folder_name = job.get("folder") or "Misc Downloads"
     final_dest_dir = os.path.join(config["download_dir"], final_folder_name)
     
     is_playlist = "playlist?list=" in job.get("url", "")
     final_title = "Unknown"
-    final_filename = None
-    
+    final_filenames = []
+    error_summary = None
+
     with open(temp_log_path, 'a', encoding='utf-8') as log_file:
         def log(message):
             log_file.write(message + '\n')
 
         log(f"Finalizing job with status: {final_status}...")
         
-        moved_count = 0
-        final_filenames = []
-
         if final_status in ["COMPLETED", "PARTIAL", "STOPPED"]:
             if os.path.exists(temp_dir_path):
                 files_to_move = [f for f in os.listdir(temp_dir_path) if f != "archive.temp.txt"]
@@ -145,17 +146,14 @@ def _finalize_job(job, final_status, temp_log_path, config):
                         try:
                             shutil.move(source_path, dest_path)
                             final_filenames.append(sanitized_f)
-                            moved_count += 1
                         except Exception as e:
                             log(f"ERROR: Could not move completed file {f}: {e}")
-                    log(f"Moved {moved_count} file(s) to final destination.")
+                    log(f"Moved {len(final_filenames)} file(s) to final destination.")
             
-            # --- FIX: Move archive handling inside the status check ---
             temp_archive_path = os.path.join(temp_dir_path, "archive.temp.txt")
             if os.path.exists(temp_archive_path):
                 final_archive_path = os.path.join(final_dest_dir, "archive.txt")
                 try:
-                    # The destination directory will only be created if there are files to move or an archive to update.
                     os.makedirs(final_dest_dir, exist_ok=True)
                     shutil.move(temp_archive_path, final_archive_path)
                     log(f"Successfully updated archive file at: {final_archive_path}")
@@ -164,23 +162,30 @@ def _finalize_job(job, final_status, temp_log_path, config):
         else:
             log("Skipping file and archive move for cancelled/failed job.")
 
+        # Determine final title based on what we know
         if is_playlist:
             final_title = final_folder_name
-        elif moved_count == 1 and final_filenames:
-            final_filename = final_filenames[0]
-            final_title = os.path.splitext(final_filename)[0]
-        elif moved_count > 0 and not is_playlist:
-            final_filename = None
-            final_title = job.get("folder") or os.path.splitext(final_filenames[0])[0]
+        elif final_filenames:
+            # If there's a folder name, use it. Otherwise, use the name of the first file.
+            final_title = final_folder_name if job.get("folder") else os.path.splitext(final_filenames[0])[0]
         else:
             final_title = job.get("folder") or job.get("url")
 
-        if final_status in ["FAILED", "ERROR"] and final_title == sanitize_filename(job.get("url")):
-            final_title = job.get("url")
-
-        if moved_count > 0 and final_status == "FAILED":
+        # If a job failed but some files were moved, its status is 'PARTIAL'
+        if final_status == "FAILED" and final_filenames:
             final_status = "PARTIAL"
             log("Status updated to PARTIAL due to partial success.")
+        
+        # If the job truly failed or errored, grab the last few lines of the log as a summary
+        if final_status in ["FAILED", "ERROR"]:
+            final_title = job.get("folder") or job.get("url") # Use URL for failed jobs for clarity
+            try:
+                with open(temp_log_path, 'r', encoding='utf-8') as f:
+                    # Use a deque for efficiently getting the last N lines
+                    last_lines = deque(f, 15) 
+                error_summary = "\n".join(last_lines)
+            except Exception as e:
+                error_summary = f"Could not read log file to get error summary: {e}"
 
         if os.path.exists(temp_dir_path):
             try:
@@ -189,7 +194,7 @@ def _finalize_job(job, final_status, temp_log_path, config):
             except OSError as e:
                 log(f"Error removing temp folder {temp_dir_path}: {e}")
 
-    return final_status, final_folder_name, final_title, final_filename
+    return final_status, final_folder_name, final_title, final_filenames, error_summary
 
 
 # --- Main Worker Thread --- #
@@ -213,7 +218,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
         })
 
         try:
-            # --- FIX: Always fetch details to ensure thumbnail consistency ---
+            # --- Always fetch details to ensure thumbnail consistency ---
             try:
                 print(f"WORKER: Fetching details for job {job['id']}...")
                 state_manager.update_current_download({"status": "Fetching details..."})
@@ -350,7 +355,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                 pass
         
         finally:
-            status, final_folder, final_title, final_filename = _finalize_job(job, status, temp_log_path, config)
+            status, final_folder, final_title, final_filenames, error_summary = _finalize_job(job, status, temp_log_path, config)
             
             state_manager.reset_current_download()
             time.sleep(0.2) 
@@ -370,10 +375,11 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                 "url": job["url"], 
                 "title": final_title, 
                 "folder": final_folder, 
-                "filename": final_filename,
+                "filenames": final_filenames, # Changed from 'filename' to 'filenames'
                 "job_data": job, 
                 "status": status,
-                "log_path": log_path_for_history
+                "log_path": log_path_for_history,
+                "error_summary": error_summary
             }
             state_manager.add_to_history(history_item)
 
