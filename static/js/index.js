@@ -1,42 +1,75 @@
+/**
+ * static/js/index.js
+ * * This file contains the core logic for the main dashboard page.
+ * It handles:
+ * - Polling the server for status updates.
+ * - Rendering the 'Now Downloading', 'Queue', and 'History' sections.
+ * - Handling all user interactions like adding, deleting, and reordering jobs.
+ * - Displaying notifications and modals.
+ */
 (function() {
-    // --- GLOBAL STATE & CONFIG ---
+    'use strict';
+
+    // --- GLOBAL STATE & CACHED ELEMENTS ---
     let logModalInstance, toastInstance, updateModalInstance;
     let liveLogEventSource = null;
-    let globalHistoryData = [];
     let statusPollTimeout; // To hold the timer for polling
     let urlInputTimeout; // To hold the timer for debouncing URL input
 
     // --- CORE UTILITY FUNCTIONS ---
+
+    /**
+     * Shows a Bootstrap toast notification.
+     * @param {string} message - The main message to display.
+     * @param {string} [title='Notification'] - The title of the toast.
+     * @param {'success'|'danger'|'info'} [type='success'] - The toast type for styling.
+     */
     const showToast = (message, title = 'Notification', type = 'success') => {
         const toastEl = document.getElementById('actionToast');
+        if (!toastEl) return;
         document.getElementById('toastTitle').textContent = title;
         document.getElementById('toastBody').textContent = message;
-        toastEl.classList.remove('bg-success', 'bg-danger', 'bg-info', 'text-white');
-        toastEl.classList.add(type === 'danger' ? 'bg-danger' : (type === 'info' ? 'bg-info' : 'bg-success'), 'text-white');
+        toastEl.className = 'toast text-white'; // Reset classes
+        toastEl.classList.add(type === 'danger' ? 'bg-danger' : (type === 'info' ? 'bg-info' : 'bg-success'));
         if (!toastInstance) toastInstance = new bootstrap.Toast(toastEl);
         toastInstance.show();
     };
 
+    /**
+     * A wrapper for the fetch API to handle common error cases and JSON parsing.
+     * @param {string} endpoint - The API endpoint to request.
+     * @param {object} [options={}] - Standard fetch options.
+     * @returns {Promise<any>} - A promise that resolves with the response data.
+     */
     async function apiRequest(endpoint, options = {}) {
         try {
             const res = await fetch(endpoint, options);
             if (!res.ok) {
-                const errorData = await res.json().catch(() => ({ message: `Request failed: ${res.statusText}` }));
-                throw new Error(errorData.message || res.statusText);
+                const errorData = await res.json().catch(() => ({ message: `Request failed with status: ${res.status}` }));
+                throw new Error(errorData.message || 'An unknown error occurred.');
             }
+            // Handle responses that might not have a body (e.g., 204 No Content)
+            if (res.status === 204) return null;
+            // Check content type before assuming JSON
             if (res.headers.get("Content-Type")?.includes("application/json")) {
                 return res.json();
             }
-            return res;
+            return res.text(); // Return as text if not JSON
         } catch (error) {
+            // Don't show an error for user-initiated aborts
             if (error.name !== 'AbortError') {
-                showToast(error.message, 'Error', 'danger');
+                showToast(error.message, 'API Error', 'danger');
             }
-            throw error;
+            throw error; // Re-throw to allow further handling
         }
     }
 
     // --- UI MODE LOGIC ---
+
+    /**
+     * Switches the download form to the selected mode.
+     * @param {string} mode - The mode to switch to ('music', 'video', etc.).
+     */
     const switchMode = (mode) => {
         document.querySelectorAll('.mode-selector .btn').forEach(b => b.classList.remove('active'));
         document.querySelector(`.mode-selector .btn[data-mode="${mode}"]`).classList.add('active');
@@ -47,13 +80,21 @@
     };
 
     // --- API-DRIVEN FEATURES ---
+
+    /**
+     * Checks for application updates and displays a notification if available.
+     */
     const checkForUpdates = async () => {
         try {
             const data = await apiRequest('/api/update_check');
             const updateBtn = document.getElementById('update-notification-btn');
             if (data.update_available) {
                 document.getElementById('update-version-text').textContent = data.latest_version;
-                document.getElementById('update-notes-content').innerHTML = data.release_notes.replace(/\r\n/g, '<br>');
+                // Use textContent for security, then replace newlines with <br>
+                const notesContent = document.getElementById('update-notes-content');
+                notesContent.textContent = data.release_notes;
+                notesContent.innerHTML = notesContent.innerHTML.replace(/\r\n/g, '<br>');
+                
                 document.getElementById('update-release-link').href = data.release_url;
                 updateBtn.style.display = 'block';
 
@@ -69,40 +110,30 @@
         }
     };
 
+    /**
+     * Debounced function to handle URL input, cleaning it and showing/hiding playlist options.
+     */
     const handleUrlInput = () => {
         clearTimeout(urlInputTimeout);
         urlInputTimeout = setTimeout(() => {
             const urlTextarea = document.querySelector('textarea[name="urls"]');
-            const originalValue = urlTextarea.value;
-            const foundUrls = originalValue.match(/(https?:\/\/[^\s"]+|www\.[^\s"]+)/g) || [];
-            
-            if (foundUrls.length > 0) {
-                const cleanedValue = foundUrls.join('\n');
-                if (cleanedValue !== originalValue.trim()) {
-                    urlTextarea.value = cleanedValue;
-                }
-            }
+            const urls = (urlTextarea.value.match(/(https?:\/\/[^\s"]+|www\.[^\s"]+)/g) || []).join('\n');
+            urlTextarea.value = urls;
 
-            const urlsInTextarea = urlTextarea.value.split('\n');
-            const isPlaylist = urlsInTextarea.some(url => url.includes('playlist?list='));
+            const isPlaylist = urls.includes('playlist?list=');
             document.getElementById('playlist-range-options').style.display = isPlaylist ? 'flex' : 'none';
         }, 400);
     };
     
+    /**
+     * Sends a request to the server to stop the current download.
+     * @param {'save'|'cancel'} mode - Whether to save completed files or discard everything.
+     */
     const handleStopRequest = (mode) => {
-        const statusPara = document.querySelector('#current-status p.small');
-        const stopSaveBtn = document.getElementById('stop-save-btn');
-        const cancelBtn = document.getElementById('cancel-btn');
-        const viewLogBtn = document.getElementById('view-log-btn');
-
-        if (stopSaveBtn) stopSaveBtn.disabled = true;
-        if (cancelBtn) cancelBtn.disabled = true;
-        if (viewLogBtn) viewLogBtn.disabled = true;
-
-        if (statusPara) {
-            statusPara.textContent = mode === 'save' ? 'Stopping...' : 'Cancelling...';
-        }
-
+        document.getElementById('stop-save-btn').disabled = true;
+        document.getElementById('cancel-btn').disabled = true;
+        document.getElementById('current-status-text').textContent = mode === 'save' ? 'Stopping...' : 'Cancelling...';
+        
         apiRequest('/stop', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -112,61 +143,68 @@
 
     // --- RENDERING LOGIC ---
 
+    /**
+     * --- REFACTOR: Efficiently updates the 'Now Downloading' card. ---
+     * Instead of replacing innerHTML, this function targets and updates individual elements,
+     * preventing content flashes and improving performance.
+     */
     function renderCurrentStatus(current) {
         const currentDiv = document.getElementById("current-status");
         const currentJobUrl = currentDiv.dataset.jobUrl;
 
+        // If there's no active download, clear the card and return.
         if (!current || !current.url) {
             if (currentJobUrl !== "none") {
-                currentDiv.innerHTML = "<p>No active download.</p>";
+                currentDiv.innerHTML = "<p class='m-0'>No active download.</p>";
                 currentDiv.dataset.jobUrl = "none";
             }
             return;
         }
 
+        // If the job is new, build the card's structure once.
         if (current.url !== currentJobUrl) {
-            const thumbnailHTML = current.thumbnail 
-                ? `<div class="flex-shrink-0 mb-3 mb-md-0 me-md-3"><img id="current-thumbnail-img" src="${current.thumbnail}" class="now-downloading-thumbnail" alt="Thumbnail"></div>`
-                : '<div class="flex-shrink-0 mb-3 mb-md-0 me-md-3" id="current-thumbnail-img"></div>';
-
-            const titleHTML = `<div id="current-title-text"></div>`;
-            const progress = current.progress ? current.progress.toFixed(1) : 0;
-            const progressHTML = `<div class="progress mb-2" role="progressbar" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"><div id="current-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" style="width: ${progress}%;">${progress}%</div></div>`;
-            const statusTextHTML = `<p id="current-status-text" class="mb-1 small">${current.status}</p>`;
-            const statsHTML = `<div class="d-flex justify-content-between mt-2 small text-muted"><small>Size: <span id="current-stat-size">${current.file_size || 'N/A'}</span></small><small>Speed: <span id="current-stat-speed">${current.speed || 'N/A'}</span></small><small>ETA: <span id="current-stat-eta">${current.eta || 'N/A'}</span></small></div>`;
-            const buttonsHTML = `<div class="btn-group mt-2" role="group">
-                <button id="view-log-btn" class="btn btn-info btn-sm">View Log</button>
-                <button id="stop-save-btn" class="btn btn-warning btn-sm" title="Stop download and save completed files.">Stop & Save</button>
-                <button id="cancel-btn" class="btn btn-danger btn-sm" title="Cancel download and delete all temporary files.">Cancel</button>
-            </div>`;
-
             currentDiv.innerHTML = `
                 <div class="d-flex flex-column flex-md-row">
-                    ${thumbnailHTML}
+                    <div class="flex-shrink-0 mb-3 mb-md-0 me-md-3" id="current-thumbnail-container"></div>
                     <div class="flex-grow-1" style="min-width: 0;">
-                        ${titleHTML}
-                        ${progressHTML}
-                        ${statusTextHTML}
-                        ${statsHTML}
-                        ${buttonsHTML}
+                        <div id="current-title-text" class="mb-2"></div>
+                        <div class="progress mb-2" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                            <div id="current-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" style="width: 0%;">0%</div>
+                        </div>
+                        <p id="current-status-text" class="mb-1 small"></p>
+                        <div class="d-flex justify-content-between mt-2 small text-muted">
+                            <small>Size: <span id="current-stat-size">N/A</span></small>
+                            <small>Speed: <span id="current-stat-speed">N/A</span></small>
+                            <small>ETA: <span id="current-stat-eta">N/A</span></small>
+                        </div>
+                        <div class="btn-group mt-2" role="group">
+                            <button id="view-log-btn" class="btn btn-info btn-sm">View Log</button>
+                            <button id="stop-save-btn" class="btn btn-warning btn-sm" title="Stop download and save completed files.">Stop & Save</button>
+                            <button id="cancel-btn" class="btn btn-danger btn-sm" title="Cancel download and delete all temporary files.">Cancel</button>
+                        </div>
                     </div>
                 </div>
             `;
             currentDiv.dataset.jobUrl = current.url;
             
+            // Add event listeners to the new buttons.
             document.getElementById('view-log-btn').addEventListener('click', viewLiveLog);
             document.getElementById('stop-save-btn').addEventListener('click', () => handleStopRequest('save'));
             document.getElementById('cancel-btn').addEventListener('click', () => handleStopRequest('cancel'));
         }
 
+        // --- Update individual elements ---
+        const thumbnailContainer = document.getElementById('current-thumbnail-container');
+        if (current.thumbnail && !thumbnailContainer.querySelector('img')) {
+            thumbnailContainer.innerHTML = `<img src="${current.thumbnail}" class="now-downloading-thumbnail" alt="Thumbnail">`;
+        }
+
         const titleEl = document.getElementById('current-title-text');
-        const playlistIndicator = current.playlist_count > 0 ? `<span class="ms-2 badge bg-secondary">${current.playlist_index || '0'}/${current.playlist_count}</span>` : '';
+        const playlistIndicator = current.playlist_count > 0 ? `<span class="ms-2 badge bg-secondary align-middle">${current.playlist_index || '0'}/${current.playlist_count}</span>` : '';
         const newTitleHTML = current.playlist_title 
             ? `<strong class="word-break">${current.playlist_title}</strong>${playlistIndicator}<br><small class="text-muted word-break">${current.track_title || 'Loading track...'}</small>` 
             : `<strong class="word-break">${current.title || current.url}</strong>`;
-        if (titleEl.innerHTML !== newTitleHTML) {
-            titleEl.innerHTML = newTitleHTML;
-        }
+        if (titleEl.innerHTML !== newTitleHTML) titleEl.innerHTML = newTitleHTML;
 
         const progressBar = document.getElementById('current-progress-bar');
         const progress = current.progress ? current.progress.toFixed(1) : 0;
@@ -178,105 +216,109 @@
         document.getElementById('current-stat-size').textContent = current.file_size || 'N/A';
         document.getElementById('current-stat-speed').textContent = current.speed || 'N/A';
         document.getElementById('current-stat-eta').textContent = current.eta || 'N/A';
-        
-        const thumbnailEl = document.getElementById('current-thumbnail-img');
-        if (current.thumbnail && thumbnailEl.tagName !== 'IMG') {
-            thumbnailEl.outerHTML = `<div class="flex-shrink-0 mb-3 mb-md-0 me-md-3"><img id="current-thumbnail-img" src="${current.thumbnail}" class="now-downloading-thumbnail" alt="Thumbnail"></div>`;
-        }
     }
 
+    /**
+     * Renders the queue list. A full redraw is acceptable here as the queue is usually short.
+     */
     function renderQueue(queue) {
         const queueList = document.getElementById("queue-list");
         document.getElementById("queue-controls").style.display = queue.length > 0 ? 'flex' : 'none';
         
+        // Remove any "optimistic" items before redrawing
+        queueList.querySelectorAll('.optimistic-item').forEach(el => el.remove());
+
         if (queue.length === 0) {
-            queueList.innerHTML = "<li class='list-group-item'>Queue is empty.</li>";
+            if (!queueList.querySelector('.list-group-item')) {
+                 queueList.innerHTML = "<li class='list-group-item fst-italic text-muted'>Queue is empty.</li>";
+            }
             return;
         }
         
-        // A more efficient way to update the list could be implemented here if needed,
-        // but for the queue, a full redraw is often acceptable.
-        const queueHTML = queue.map(job => 
+        queueList.innerHTML = queue.map(job => 
             `<li class="list-group-item d-flex justify-content-between align-items-center" data-job-id="${job.id}">
                 <div class="d-flex align-items-center" style="min-width: 0;">
-                    <i class="bi bi-grip-vertical queue-handle me-2"></i>
+                    <i class="bi bi-grip-vertical queue-handle me-2" title="Drag to reorder"></i>
                     <span class="word-break">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span>
                 </div>
-                <button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}"></button>
+                <button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}" aria-label="Remove from queue"></button>
             </li>`
         ).join('');
-        queueList.innerHTML = queueHTML;
     }
 
     /**
-     * --- CHANGE: This function is now fully intelligent. ---
-     * It compares the new history with the old and only adds new items,
-     * preventing the entire list from being redrawn and fixing the flickering.
+     * --- FIX: Intelligent history rendering to prevent flickering. ---
+     * This function now compares the incoming history data with what's already
+     * in the DOM. It only adds new items, updates existing ones if their status
+     * changes, and never redraws the whole list.
      */
     function renderHistory(newHistory) {
         const historyList = document.getElementById("history-list");
-        const historyForDisplay = [...newHistory].reverse();
+        document.getElementById("clear-history-btn").style.display = newHistory.length > 0 ? 'block' : 'none';
 
-        document.getElementById("clear-history-btn").style.display = historyForDisplay.length > 0 ? 'block' : 'none';
-
-        if (historyForDisplay.length === 0) {
-            historyList.innerHTML = "<li class='list-group-item'>Nothing in history.</li>";
-            globalHistoryData = [];
+        if (newHistory.length === 0) {
+            historyList.innerHTML = "<li class='list-group-item fst-italic text-muted'>History is empty.</li>";
             return;
         }
 
-        // Only add new items that are not already in the DOM
-        const existingLogIds = new Set([...historyList.children].map(li => li.dataset.logId));
-        const newItems = historyForDisplay.filter(item => !existingLogIds.has(String(item.log_id)));
+        const historyForDisplay = [...newHistory].reverse();
+        const existingLogIds = new Set([...historyList.querySelectorAll('li[data-log-id]')].map(li => li.dataset.logId));
+        const fragment = document.createDocumentFragment();
 
-        if (newItems.length > 0) {
-            const fragment = document.createDocumentFragment();
-            newItems.forEach(item => {
+        historyForDisplay.forEach(item => {
+            const logIdStr = String(item.log_id);
+            if (!existingLogIds.has(logIdStr)) {
+                // It's a new item, create and prepend it.
                 const li = document.createElement('li');
                 li.className = 'list-group-item';
-                li.dataset.logId = item.log_id;
+                li.dataset.logId = logIdStr;
                 li.dataset.status = item.status;
                 li.innerHTML = createHistoryItemHTML(item);
                 fragment.appendChild(li);
-            });
-            // Add new items to the top of the list
+            } else {
+                // The item exists, check if its status has changed.
+                const existingItem = historyList.querySelector(`li[data-log-id='${logIdStr}']`);
+                if (existingItem && existingItem.dataset.status !== item.status) {
+                    // Status has changed, so we can just redraw this single item.
+                    existingItem.dataset.status = item.status;
+                    existingItem.innerHTML = createHistoryItemHTML(item);
+                }
+            }
+        });
+
+        if (fragment.children.length > 0) {
+            // If we're adding the very first items, clear the "empty" message.
+            if (historyList.querySelector('.fst-italic')) {
+                historyList.innerHTML = '';
+            }
             historyList.prepend(fragment);
         }
-        
-        // Update the global state
-        globalHistoryData = newHistory;
     }
 
-    // Renamed from createHistoryItemElement to avoid confusion. This just returns the HTML string.
+    /**
+     * Creates the inner HTML for a single history list item.
+     * @param {object} item - The history item object from the API.
+     * @returns {string} The HTML string for the list item.
+     */
     function createHistoryItemHTML(item) {
         let badgeClass = 'bg-secondary';
-        let actionButton = `<button class="btn btn-sm btn-outline-secondary history-action-btn" data-action="requeue" title="Download Again"><i class="bi bi-arrow-clockwise"></i></button>`;
         switch(item.status) {
             case 'COMPLETED': badgeClass = 'bg-success'; break;
             case 'PARTIAL': badgeClass = 'bg-info text-dark'; break;
-            case 'STOPPED': 
-                badgeClass = 'bg-warning text-dark'; 
-                actionButton = `<button class="btn btn-sm btn-outline-success history-action-btn" data-action="requeue" title="Retry Download"><i class="bi bi-play-fill"></i></button>`;
-                break;
+            case 'STOPPED': badgeClass = 'bg-warning text-dark'; break;
             case 'CANCELLED': badgeClass = 'bg-secondary'; break;
-            case 'FAILED': case 'ERROR': badgeClass = 'bg-danger'; break;
+            case 'FAILED': case 'ERROR': case 'ABANDONED': badgeClass = 'bg-danger'; break;
         }
 
-        let errorSummaryHTML = '';
-        if (item.error_summary) {
-            const collapseId = `error-summary-${item.log_id}`;
-            const sanitizedSummary = item.error_summary.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            errorSummaryHTML = `
-                <div class="mt-2">
-                    <button class="btn btn-sm btn-outline-danger" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="false" aria-controls="${collapseId}">
-                        <i class="bi bi-exclamation-triangle-fill"></i> Show Error Summary
-                    </button>
-                </div>
-                <div class="collapse" id="${collapseId}">
-                    <pre class="card card-body mt-2 p-2 bg-body-tertiary small" style="max-height: 200px; overflow-y: auto;"><code>${sanitizedSummary}</code></pre>
-                </div>
-            `;
-        }
+        const errorSummaryHTML = item.error_summary ? `
+            <div class="mt-2">
+                <button class="btn btn-sm btn-outline-danger" type="button" data-bs-toggle="collapse" data-bs-target="#error-summary-${item.log_id}" aria-expanded="false">
+                    <i class="bi bi-exclamation-triangle-fill"></i> Show Error
+                </button>
+            </div>
+            <div class="collapse" id="error-summary-${item.log_id}">
+                <pre class="card card-body mt-2 p-2 bg-body-tertiary small" style="max-height: 200px; overflow-y: auto;"><code>${item.error_summary.replace(/</g, "&lt;")}</code></pre>
+            </div>` : '';
 
         return `
             <div class="d-flex justify-content-between align-items-center">
@@ -286,12 +328,19 @@
                     <br>
                     <small class="text-muted word-break">${item.folder ? `Folder: ${item.folder}` : `URL: ${item.url}`}</small>
                 </div>
-                <div class="btn-group ms-2">${actionButton}<button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log"><i class="bi bi-file-text"></i></button><button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete"><i class="bi bi-trash-fill"></i></button></div>
+                <div class="btn-group ms-2">
+                    <button class="btn btn-sm btn-outline-secondary history-action-btn" data-action="requeue" title="Download Again"><i class="bi bi-arrow-clockwise"></i></button>
+                    <button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log"><i class="bi bi-file-text"></i></button>
+                    <button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete"><i class="bi bi-trash-fill"></i></button>
+                </div>
             </div>
             ${errorSummaryHTML}
         `;
     }
 
+    /**
+     * Updates the UI to reflect the paused/resumed state of the queue.
+     */
     function renderPauseState(is_paused) {
         const pauseResumeBtn = document.getElementById('pause-resume-btn');
         const pausedOverlay = document.getElementById('paused-overlay');
@@ -308,31 +357,24 @@
         }
     }
 
-    function renderStatus(data) {
-        renderCurrentStatus(data.current);
-        renderQueue(data.queue);
-        renderHistory(data.history);
-        renderPauseState(data.is_paused);
-    }
-
+    /**
+     * Main function to poll the server for status and trigger all rendering updates.
+     */
     const pollStatus = async () => {
         clearTimeout(statusPollTimeout);
         try {
             const data = await apiRequest('/api/status');
-            renderStatus(data);
+            if (data) {
+                renderCurrentStatus(data.current);
+                renderQueue(data.queue);
+                renderHistory(data.history);
+                renderPauseState(data.is_paused);
+            }
         } catch (error) {
             console.error("Status poll failed:", error);
         } finally {
-            statusPollTimeout = setTimeout(pollStatus, 1500);
+            statusPollTimeout = setTimeout(pollStatus, 1500); // Poll every 1.5 seconds
         }
-    };
-
-    const requeueJob = async (job) => {
-        try {
-            await apiRequest('/queue/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(job) });
-            showToast("Job re-queued successfully.", 'Success', 'success');
-            pollStatus();
-        } catch(error) { console.error("Failed to re-queue job:", error); }
     };
 
     const viewStaticLog = async (logId) => {
@@ -340,7 +382,7 @@
             if (liveLogEventSource) liveLogEventSource.close();
             const data = await apiRequest(`/history/log/${logId}`);
             const logContentEl = document.getElementById('logModalContent');
-            logContentEl.textContent = data.log;
+            logContentEl.textContent = data.log || "Log is empty or could not be loaded.";
             if (!logModalInstance) logModalInstance = new bootstrap.Modal(document.getElementById('logModal'));
             logModalInstance.show();
             logContentEl.scrollTop = logContentEl.scrollHeight;
@@ -355,23 +397,21 @@
         logModalInstance.show();
 
         liveLogEventSource = new EventSource('/api/log/live/stream');
-        let isFirstMessage = true;
+        logContentEl.textContent = ''; // Clear immediately
+        
         liveLogEventSource.onmessage = function(event) {
-            if (isFirstMessage) {
-                logContentEl.textContent = '';
-                isFirstMessage = false;
-            }
             logContentEl.textContent += event.data + '\n';
             logContentEl.scrollTop = logContentEl.scrollHeight;
         };
         liveLogEventSource.onerror = function() {
-            logContentEl.textContent += '\n--- Connection closed by server. ---';
+            logContentEl.textContent += '\n--- Connection to log stream closed. ---';
             liveLogEventSource.close();
         };
     };
 
     // --- INITIALIZATION ---
     document.addEventListener('DOMContentLoaded', () => {
+        // --- Setup Theme ---
         const savedTheme = localStorage.getItem('downloader_theme') || 'light';
         applyTheme(savedTheme);
         document.getElementById('theme-toggle').addEventListener('click', () => {
@@ -380,44 +420,63 @@
             localStorage.setItem('downloader_theme', newTheme);
         });
 
+        // --- Setup Download Mode ---
         const savedMode = localStorage.getItem('downloader_mode') || 'clip';
         switchMode(savedMode);
         document.querySelectorAll('.mode-selector .btn').forEach(btn => btn.addEventListener('click', () => switchMode(btn.dataset.mode)));
 
-        document.getElementById('add-job-form').addEventListener('submit', async function(e) {
+        // --- Main Form Submission ---
+        const addJobForm = document.getElementById('add-job-form');
+        addJobForm.addEventListener('submit', async function(e) {
             e.preventDefault();
             const submitButton = this.querySelector('button[type="submit"]');
+            const urlText = this.querySelector('textarea[name="urls"]').value;
+            if (!urlText.trim()) {
+                showToast("URL field cannot be empty.", "Input Error", "danger");
+                return;
+            }
             submitButton.disabled = true;
+
+            // --- IMPROVEMENT: Optimistic UI update ---
+            const queueList = document.getElementById("queue-list");
+            if (queueList.querySelector('.fst-italic')) queueList.innerHTML = '';
+            const li = document.createElement('li');
+            li.className = 'list-group-item optimistic-item';
+            li.innerHTML = `<div class="d-flex align-items-center"><div class="spinner-border spinner-border-sm me-2" role="status"></div>Adding to queue...</div>`;
+            queueList.appendChild(li);
+
             try {
                 const data = await apiRequest('/queue', { method: 'POST', body: new FormData(this) });
                 showToast(data.message, 'Success', 'success');
                 this.reset();
-                handleUrlInput();
-                pollStatus();
+                handleUrlInput(); // Reset playlist options visibility
+                pollStatus(); // Manually trigger a poll to get the real data fast
             } catch(error) { 
                 console.error("Failed to add job:", error);
+                li.remove(); // Remove the optimistic item on failure
             } finally {
                 submitButton.disabled = false;
             }
         });
 
-        const urlTextarea = document.querySelector('textarea[name="urls"]');
-        urlTextarea.addEventListener('input', handleUrlInput);
+        // --- Event Listeners for UI Elements ---
+        document.querySelector('textarea[name="urls"]').addEventListener('input', handleUrlInput);
         
         document.getElementById('clear-queue-btn').addEventListener('click', () => showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => {
-            document.getElementById('queue-list').innerHTML = "<li class='list-group-item'>Queue is empty.</li>";
-            apiRequest('/queue/clear', { method: 'POST' }).catch(err => console.error(err));
+            apiRequest('/queue/clear', { method: 'POST' }).then(pollStatus).catch(err => console.error(err));
         }));
         
         document.getElementById('clear-history-btn').addEventListener('click', () => showConfirmModal('Clear History?', 'Are you sure you want to clear the entire download history?', () => {
-            document.getElementById('history-list').innerHTML = "<li class='list-group-item'>Nothing in history.</li>";
-            apiRequest('/history/clear', { method: 'POST' }).catch(err => console.error(err));
+            apiRequest('/history/clear', { method: 'POST' }).then(pollStatus).catch(err => console.error(err));
         }));
         
-        document.getElementById('pause-resume-btn').addEventListener('click', (e) => apiRequest(`/queue/${e.currentTarget.dataset.action}`, { method: 'POST' }).then(pollStatus).catch(err => console.error(err)));
+        document.getElementById('pause-resume-btn').addEventListener('click', (e) => {
+            apiRequest(`/queue/${e.currentTarget.dataset.action}`, { method: 'POST' }).then(pollStatus).catch(err => console.error(err));
+        });
         
         document.getElementById('logModal').addEventListener('hidden.bs.modal', () => { if (liveLogEventSource) { liveLogEventSource.close(); liveLogEventSource = null; } });
         
+        // --- Delegated Event Listeners for Dynamic Content ---
         document.getElementById('queue-list').addEventListener('click', (e) => {
             const deleteBtn = e.target.closest('.queue-action-btn[data-action="delete"]');
             if (deleteBtn) {
@@ -435,6 +494,7 @@
         document.getElementById('history-list').addEventListener('click', (e) => {
             const actionBtn = e.target.closest('.history-action-btn');
             if (!actionBtn) return;
+            
             const li = actionBtn.closest('.list-group-item');
             const logId = parseInt(li.dataset.logId, 10);
             const action = actionBtn.dataset.action;
@@ -450,27 +510,41 @@
                         li.style.opacity = '1';
                     });
             } else if (action === 'requeue') {
-                const historyItem = globalHistoryData.find(item => item.log_id === logId);
-                if (historyItem) requeueJob(historyItem.job_data);
+                // We need to fetch the full job data from the server's history
+                apiRequest(`/api/history/item/${logId}`) // This is a new endpoint we'll need to add
+                    .then(historyItem => {
+                        if (historyItem && historyItem.job_data) {
+                            return apiRequest('/queue/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(historyItem.job_data) });
+                        }
+                        throw new Error("Could not retrieve job data for requeue.");
+                    })
+                    .then(() => {
+                        showToast("Job re-queued successfully.", 'Success', 'success');
+                        pollStatus();
+                    })
+                    .catch(err => console.error(err));
             }
         });
 
+        // --- Initialize SortableJS for the queue ---
         Sortable.create(document.getElementById('queue-list'), {
             handle: '.queue-handle',
             animation: 150,
             ghostClass: 'sortable-ghost',
             onEnd: function (evt) {
-                const orderedIds = [...evt.to.children].map(li => li.dataset.jobId);
+                const orderedIds = [...evt.to.children].map(li => li.dataset.jobId).filter(id => id); // Filter out optimistic item
+                if (orderedIds.length === 0) return;
                 apiRequest('/queue/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order: orderedIds }) })
                 .catch(err => { 
                     console.error("Failed to reorder queue:", err);
-                    pollStatus();
+                    pollStatus(); // Re-poll to fix the visual state on error
                 });
             },
         });
 
+        // --- Initial Load ---
         pollStatus();
         checkForUpdates();
-        setInterval(checkForUpdates, 900000);
+        setInterval(checkForUpdates, 900000); // Check for updates every 15 minutes
     });
 })();

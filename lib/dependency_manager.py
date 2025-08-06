@@ -211,7 +211,6 @@ def ensure_dependencies(app_root):
     The main entry point function for dependency checking.
     It ensures yt-dlp and ffmpeg are available and returns their paths.
     """
-    print("--- [1/3] Initializing Dependency Manager ---")
     bin_dir = os.path.join(app_root, "bin")
     os.makedirs(bin_dir, exist_ok=True)
     
