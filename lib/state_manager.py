@@ -220,7 +220,7 @@ class StateManager:
                 state = json.load(f)
             
             with self._lock:
-                # --- FIX: Combine abandoned job and queue for unified processing ---
+                # --- CHANGE: Handle abandoned jobs more gracefully ---
                 queue_items = state.get("queue", [])
                 if not isinstance(queue_items, list):
                     print("WARNING: Queue in state file is not a list. Resetting.")
@@ -229,8 +229,10 @@ class StateManager:
                 abandoned_job = state.get("current_job")
                 if isinstance(abandoned_job, dict):
                     print(f"Re-queueing abandoned job: {abandoned_job.get('id')}")
-                    # By inserting at the front, we prioritize the job that was running.
-                    queue_items.insert(0, abandoned_job)
+                    # Mark the job as abandoned so the worker can handle it.
+                    abandoned_job['status'] = 'ABANDONED'
+                    # Add it to the END of the queue.
+                    queue_items.append(abandoned_job)
 
                 self.history = state.get("history", [])
                 if not isinstance(self.history, list):
@@ -238,27 +240,22 @@ class StateManager:
                     self.history = []
 
                 self.next_log_id = state.get("next_log_id", len(self.history))
-                # Start with a safe base for the next queue ID
                 self.next_queue_id = state.get("next_queue_id", 0)
                 
                 self.history_state_version = state.get("history_state_version", 0)
                 self.queue_state_version = state.get("queue_state_version", 0)
                 self.current_download_version = state.get("current_download_version", 0)
                 
-                # Process the combined list of queue items with robust ID assignment
                 loaded_ids = set()
                 max_id = self.next_queue_id
                 
-                # First, find the highest existing ID in the list to avoid any collisions
                 for job in queue_items:
                     job_id = job.get('id')
                     if job_id is not None and job_id >= max_id:
                         max_id = job_id + 1
 
-                # Now, iterate through the list, assign unique IDs where needed, and add to the queue
                 for job in queue_items:
                     job_id = job.get('id')
-                    # If the job has no ID or its ID is already used, assign a new one
                     if job_id is None or job_id in loaded_ids:
                         job['id'] = max_id
                         max_id += 1
@@ -266,9 +263,8 @@ class StateManager:
                     loaded_ids.add(job['id'])
                     self.queue.put(job)
                 
-                # Ensure the next ID is greater than any we've just processed
                 self.next_queue_id = max_id
-                # --- END FIX ---
+                # --- END CHANGE ---
                 
                 print(f"Loaded {self.queue.qsize()} items into queue and {len(self.history)} history entries.")
 

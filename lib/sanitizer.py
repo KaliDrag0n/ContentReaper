@@ -6,32 +6,33 @@ def sanitize_filename(name):
     """
     Sanitizes a string to be a safe filename or folder name component.
     - Prevents path traversal attacks (e.g., '../', '/').
-    - Normalizes unicode characters.
-    - Replaces invalid filesystem characters for Windows, macOS, and Linux.
+    - Normalizes unicode characters for consistency.
+    - Replaces characters that are illegal in Windows, macOS, and Linux filenames.
     - Removes leading/trailing whitespace and periods.
     - Ensures the name is not empty after sanitization.
     """
-    # --- FIX: Return an empty string for empty/invalid input ---
-    # This allows downstream logic to decide on a default name like "Untitled" or the video title.
     if not isinstance(name, str) or not name:
         return ""
     
-    # Normalize unicode characters to their closest ASCII representation.
-    safe_name = unicodedata.normalize('NFKC', name)
-    safe_name = safe_name.encode('ascii', 'ignore').decode('ascii')
+    # --- CHANGE: Normalize unicode characters for consistency without removing them. ---
+    # This keeps characters like 'é', 'ü', 'ñ', etc., which are valid in modern filesystems.
+    safe_name = unicodedata.normalize('NFC', name)
     
-    # --- SECURITY: Replace path separators and other invalid characters ---
-    safe_name = re.sub(r'[\\/?*:"<>|]', '-', safe_name)
+    # --- CHANGE: Replace only truly invalid filesystem characters. ---
+    # This regex targets characters illegal on Windows, which is the strictest subset.
+    # It also removes control characters (ASCII 0-31).
+    safe_name = re.sub(r'[\x00-\x1f\\/?*:"<>|]', '-', safe_name)
     
-    # Collapse consecutive whitespace characters into a single space
+    # Collapse consecutive whitespace characters into a single space.
     safe_name = re.sub(r'\s+', ' ', safe_name)
     
-    # Remove leading/trailing whitespace and periods.
+    # Remove leading/trailing whitespace and periods, which can cause issues.
     safe_name = safe_name.strip().strip('.')
     
-    # --- FIX: Only return "Untitled" if the name is empty AFTER sanitization ---
-    # This handles cases where the input was something like "..", which becomes empty.
+    # If the name is empty after all sanitization (e.g., input was just "."),
+    # return a default name.
     if not safe_name:
         return "Untitled"
         
     return safe_name
+
