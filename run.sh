@@ -13,4 +13,4 @@ echo ""
 
 # This command starts the production-ready Waitress server.
 # It binds to 0.0.0.0 to be accessible from other devices on your network.
-waitress-serve --host=0.0.0.0 --port=8080 web_tool:app
+python web_tool.py

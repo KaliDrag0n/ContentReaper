@@ -1,9 +1,11 @@
 config.json
 state.json
+state.json.bak
 cookies.txt
+change.log
+startup.log
 downloads
 logs
 __pycache__
 .temp
-change.log
 /bin

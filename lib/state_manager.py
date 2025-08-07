@@ -4,15 +4,17 @@ import queue
 import json
 import os
 import time
+import shutil
 
 class StateManager:
     """
     A thread-safe class to manage the application's state, including
     the download queue, history, and current download status.
-    It handles loading from and saving to a JSON file.
+    It handles loading from and saving to a JSON file with backup/recovery and file locking.
     """
     def __init__(self, state_file_path: str):
         self.state_file = state_file_path
+        self.lock_file = state_file_path + ".lock"
         self._lock = threading.RLock()
         
         self.queue = queue.Queue()
@@ -30,6 +32,30 @@ class StateManager:
         self.stop_mode = "CANCEL"
         self.queue_paused_event = threading.Event()
         self.queue_paused_event.set()
+
+    def _acquire_lock(self, timeout=10):
+        start_time = time.time()
+        while True:
+            try:
+                fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                return True
+            except FileExistsError:
+                if time.time() - start_time >= timeout:
+                    print(f"WARNING: Lock file {self.lock_file} has been held for over {timeout} seconds. Breaking lock.")
+                    self._release_lock()
+                    return self._acquire_lock(timeout=1) 
+                time.sleep(0.1)
+            except Exception as e:
+                print(f"ERROR: Unexpected error acquiring lock: {e}")
+                return False
+
+    def _release_lock(self):
+        try:
+            if os.path.exists(self.lock_file):
+                os.remove(self.lock_file)
+        except Exception as e:
+            print(f"ERROR: Could not release lock file: {e}")
 
     def _get_default_current_download(self) -> dict:
         """Returns a dictionary representing a clean 'current_download' state."""
@@ -181,92 +207,161 @@ class StateManager:
             return item.copy() if item else None
 
     def save_state(self):
-        """Saves the current state to a JSON file atomically."""
-        with self._lock:
-            state_to_save = {
-                "queue": list(self.queue.queue),
-                "history": self.history,
-                "current_job": self.current_download.get("job_data"),
-            }
+        """Saves the current state to a JSON file atomically with a backup."""
+        if not self._acquire_lock():
+            print("Could not acquire lock to save state. Skipping save.")
+            return
         
-        temp_file_path = self.state_file + ".tmp"
         try:
+            with self._lock:
+                state_to_save = {
+                    "queue": list(self.queue.queue),
+                    "history": self.history,
+                    "current_job": self.current_download.get("job_data"),
+                }
+            
+            temp_file_path = self.state_file + ".tmp"
+            backup_file_path = self.state_file + ".bak"
+            
+            if os.path.exists(self.state_file):
+                shutil.copy2(self.state_file, backup_file_path)
+
             with open(temp_file_path, 'w', encoding='utf-8') as f:
                 json.dump(state_to_save, f, indent=4)
+            
             os.replace(temp_file_path, self.state_file)
+
         except Exception as e:
             print(f"ERROR: Could not save state to file: {e}")
+            if os.path.exists(backup_file_path):
+                try:
+                    shutil.copy2(backup_file_path, self.state_file)
+                    print("Restored state from backup due to save error.")
+                except Exception as e_restore:
+                    print(f"FATAL: Could not restore state from backup: {e_restore}")
+            
             if os.path.exists(temp_file_path):
                 try: os.remove(temp_file_path)
                 except Exception as e_clean: print(f"ERROR: Could not clean up temp state file: {e_clean}")
+        finally:
+            self._release_lock()
 
     def load_state(self):
-        """Loads state from JSON, robustly handling old formats and corruption."""
-        if not os.path.exists(self.state_file):
-            print("State file not found. Starting with a fresh state.")
+        """Loads state from JSON, with a fallback to a backup file."""
+        if not self._acquire_lock():
+            print("Could not acquire lock to load state. Starting fresh.")
+            self._reset_state()
             return
-
-        # --- FIX: Wrap the entire loading process in a try-except block ---
+            
         try:
-            with open(self.state_file, 'r', encoding='utf-8') as f:
-                state = json.load(f)
+            backup_file_path = self.state_file + ".bak"
+            if not os.path.exists(self.state_file) and not os.path.exists(backup_file_path):
+                print("State file and backup not found. Starting with a fresh state.")
+                return
 
-            with self._lock:
-                queue_items = state.get("queue", [])
-                if not isinstance(queue_items, list):
-                    print("WARNING: Queue in state file is not a list. Resetting queue.")
-                    queue_items = []
+            loaded_successfully = False
+            if os.path.exists(self.state_file):
+                try:
+                    with open(self.state_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        if content.strip():
+                            state = json.loads(content)
+                            self._apply_state(state)
+                            loaded_successfully = True
+                            print("Successfully loaded state from main file.")
+                        else:
+                            print("WARNING: Main state file is empty. Trying backup.")
+                except (json.JSONDecodeError, OSError) as e:
+                    print(f"WARNING: Could not load main state file: {e}. Attempting to use backup.")
+
+            if not loaded_successfully and os.path.exists(backup_file_path):
+                try:
+                    with open(backup_file_path, 'r', encoding='utf-8') as f:
+                        state = json.load(f)
+                        self._apply_state(state)
+                        shutil.copy2(backup_file_path, self.state_file)
+                        print("Successfully loaded and restored state from backup file.")
+                        loaded_successfully = True
+                except (json.JSONDecodeError, OSError) as e:
+                    print(f"ERROR: Could not load backup state file: {e}. Starting fresh.")
+
+            if not loaded_successfully:
+                print("FATAL: Both state file and backup are corrupted or unreadable.")
+                corrupted_path = self.state_file + f".corrupted.{int(time.time())}.bak"
+                if os.path.exists(self.state_file):
+                    try:
+                        os.rename(self.state_file, corrupted_path)
+                        print(f"Backed up corrupted state file to {corrupted_path}")
+                    except OSError as e_rename:
+                        print(f"Could not back up corrupted state file. Error: {e_rename}")
+                self._reset_state()
+        finally:
+            self._release_lock()
+
+    def _reset_state(self):
+        """Resets the manager to a clean state."""
+        with self._lock:
+            self.history = []
+            with self.queue.mutex: self.queue.queue.clear()
+            self.next_log_id = 0
+            self.next_queue_id = 0
+
+    def _apply_state(self, state: dict):
+        """Applies a loaded state dictionary to the manager."""
+        with self._lock:
+            self.history = state.get("history", [])
+            if not isinstance(self.history, list):
+                self.history = []
+
+            abandoned_job = state.get("current_job")
+            if isinstance(abandoned_job, dict):
+                print(f"Found abandoned job: {abandoned_job.get('id')}. Moving to history.")
                 
-                abandoned_job = state.get("current_job")
-                if isinstance(abandoned_job, dict):
-                    print(f"Re-queueing abandoned job: {abandoned_job.get('id')}")
-                    abandoned_job['status'] = 'ABANDONED'
-                    queue_items.append(abandoned_job)
-
-                self.history = state.get("history", [])
-                if not isinstance(self.history, list):
-                    print("WARNING: History in state file is not a list. Resetting history.")
-                    self.history = []
-
-                max_queue_id = -1
-                for job in queue_items:
-                    job_id = job.get('id')
-                    if isinstance(job_id, int) and job_id > max_queue_id:
-                        max_queue_id = job_id
-                self.next_queue_id = max_queue_id + 1
-                
+                # Find the next available log ID
                 max_log_id = -1
                 for item in self.history:
                     log_id = item.get('log_id')
                     if isinstance(log_id, int) and log_id > max_log_id:
                         max_log_id = log_id
-                self.next_log_id = max_log_id + 1
-
-                with self.queue.mutex:
-                    self.queue.queue.clear()
-                    for job in queue_items:
-                        if not isinstance(job, dict): continue
-                        if not isinstance(job.get('id'), int):
-                            job['id'] = self.next_queue_id
-                            self.next_queue_id += 1
-                        self.queue.put(job)
                 
-                print(f"Successfully loaded {self.queue.qsize()} item(s) into queue and {len(self.history)} history entries.")
-                print(f"Next Queue ID set to {self.next_queue_id}, Next Log ID set to {self.next_log_id}.")
+                history_item = {
+                    "log_id": max_log_id + 1,
+                    "url": abandoned_job.get("url", "Unknown URL"),
+                    "title": abandoned_job.get("folder") or abandoned_job.get("url", "Unknown Title"),
+                    "folder": abandoned_job.get("folder"),
+                    "filenames": [],
+                    "job_data": abandoned_job,
+                    "status": "ABANDONED",
+                    "log_path": "No log generated.",
+                    "error_summary": "Job was interrupted by an application crash or ungraceful shutdown."
+                }
+                self.history.append(history_item)
 
-        except Exception as e:
-            print(f"FATAL ERROR loading state file: {e}")
-            print("The application will start with a fresh state.")
-            corrupted_path = self.state_file + f".corrupted.{int(time.time())}.bak"
-            try:
-                os.rename(self.state_file, corrupted_path)
-                print(f"Backed up corrupted state file to {corrupted_path}")
-            except OSError as e_rename:
-                print(f"Could not back up corrupted state file. Error: {e_rename}")
+            queue_items = state.get("queue", [])
+            if not isinstance(queue_items, list):
+                queue_items = []
             
-            # Reset state to default
-            with self._lock:
-                self.history = []
-                with self.queue.mutex: self.queue.queue.clear()
-                self.next_log_id = 0
-                self.next_queue_id = 0
+            max_queue_id = -1
+            for job in queue_items:
+                job_id = job.get('id')
+                if isinstance(job_id, int) and job_id > max_queue_id:
+                    max_queue_id = job_id
+            self.next_queue_id = max_queue_id + 1
+            
+            max_log_id = -1
+            for item in self.history:
+                log_id = item.get('log_id')
+                if isinstance(log_id, int) and log_id > max_log_id:
+                    max_log_id = log_id
+            self.next_log_id = max_log_id + 1
+
+            with self.queue.mutex:
+                self.queue.queue.clear()
+                for job in queue_items:
+                    if not isinstance(job, dict): continue
+                    if 'id' not in job or not isinstance(job.get('id'), int):
+                        job['id'] = self.next_queue_id
+                        self.next_queue_id += 1
+                    self.queue.put(job)
+            
+            print(f"Applied state: {self.queue.qsize()} item(s) in queue, {len(self.history)} history entries.")

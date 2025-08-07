@@ -9,6 +9,8 @@ import time
 import shlex
 import threading
 import queue
+import platform
+import signal
 from collections import deque
 from .sanitizer import sanitize_filename
 
@@ -26,30 +28,33 @@ def format_bytes(b):
     except (ValueError, TypeError):
         return "N/A"
 
-# --- Non-Blocking Stream Reader ---
 def _enqueue_output(stream, q):
-    """
-    Reads decoded text lines from a stream and puts them into a queue.
-    """
+    """Reads decoded text lines from a stream and puts them into a queue."""
     for line in iter(stream.readline, ''):
         q.put(line)
     stream.close()
 
 # --- Command Builder ---
 
-def _get_music_args(job, final_folder_name, is_playlist):
+def _get_music_args(job, is_playlist):
     """Builds the yt-dlp argument list for 'music' mode."""
-    album_metadata = final_folder_name if is_playlist else '%(album)s'
-    safe_album_metadata = album_metadata.replace('"', "'")
-    
-    return [
+    args = [
         '-f', 'bestaudio/best', '-x', '--audio-format', job.get("format", "mp3"),
-        '--audio-quality', job.get("quality", "0"), '--embed-metadata', '--embed-thumbnail',
-        '--ppa', f'FFmpegMetadata:-metadata album="{safe_album_metadata}"',
-        '--ppa', f'FFmpegMetadata:-metadata date="{datetime.datetime.now().year}"',
+        '--audio-quality', job.get("quality", "0"), 
+        '--embed-metadata', '--embed-thumbnail',
         '--parse-metadata', 'playlist_index:%(track_number)s',
         '--parse-metadata', 'uploader:%(artist)s'
     ]
+
+    if job.get("folder"):
+        safe_album_metadata = job.get("folder").replace('"', "'")
+        args.extend(['--metadata', f'album={safe_album_metadata}'])
+    elif is_playlist:
+        args.extend(['--parse-metadata', 'playlist_title:%(album)s'])
+    
+    args.extend(['--postprocessor-args', f'FFmpegMetadata:-metadata date="{datetime.datetime.now().year}"'])
+    
+    return args
 
 def _get_video_args(job):
     """Builds the yt-dlp argument list for 'video' mode."""
@@ -81,14 +86,13 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
     cmd = [yt_dlp_path]
     mode = job.get("mode")
     is_playlist = "playlist?list=" in job.get("url", "")
-    final_folder_name = sanitize_filename(job.get("folder")) or "Misc Downloads"
 
     cmd.extend(['--sleep-interval', '3', '--max-sleep-interval', '10'])
     cmd.extend(['--ffmpeg-location', os.path.dirname(ffmpeg_path)])
     if job.get('proxy'): cmd.extend(['--proxy', job['proxy']])
     if job.get('rate_limit'): cmd.extend(['--limit-rate', job['rate_limit']])
 
-    if mode == 'music': cmd.extend(_get_music_args(job, final_folder_name, is_playlist))
+    if mode == 'music': cmd.extend(_get_music_args(job, is_playlist))
     elif mode == 'video': cmd.extend(_get_video_args(job))
     elif mode == 'clip': cmd.extend(_get_clip_args(job))
     elif mode == 'custom': cmd.extend(shlex.split(job.get('custom_args', '')))
@@ -118,21 +122,26 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
 
 # --- Finalization and Cleanup ---
 
-def _finalize_job(job, final_status, temp_log_path, config):
+def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name):
     """Handles moving files, cleaning up, and determining the final state for a job."""
     temp_dir_path = os.path.join(config["temp_dir"], f"job_{job['id']}")
-    final_folder_name = sanitize_filename(job.get("folder")) or "Misc Downloads"
+    
+    final_folder_name = sanitize_filename(resolved_folder_name) or "Misc Downloads"
     final_dest_dir = os.path.join(config["download_dir"], final_folder_name)
     
     final_filenames = []
     error_summary = None
 
     try:
+        if not os.path.exists(temp_log_path):
+             open(temp_log_path, 'a').close()
+
         with open(temp_log_path, 'a', encoding='utf-8') as log_file:
             def log(message): log_file.write(message + '\n')
             log(f"\n--- Finalizing job with status: {final_status} ---")
             
-            if final_status in ["COMPLETED", "PARTIAL", "STOPPED"] and os.path.exists(temp_dir_path):
+            # --- FIX: Always attempt to move files, even if the job failed ---
+            if final_status in ["COMPLETED", "PARTIAL", "STOPPED", "FAILED"] and os.path.exists(temp_dir_path):
                 files_to_move = [f for f in os.listdir(temp_dir_path) if not f.endswith('.temp.txt')]
                 if files_to_move:
                     os.makedirs(final_dest_dir, exist_ok=True)
@@ -177,161 +186,214 @@ def _finalize_job(job, final_status, temp_log_path, config):
 
     return final_status, final_folder_name, final_filenames, error_summary
 
+# --- REFACTORED: Worker Sub-functions ---
+
+def _prepare_job_environment(job, config, log_dir):
+    """Creates directories and copies archive files needed for the job."""
+    temp_dir_path = os.path.join(config["temp_dir"], f"job_{job['id']}")
+    temp_log_path = os.path.join(log_dir, f"job_active_{job['id']}.log")
+    
+    os.makedirs(temp_dir_path, exist_ok=True)
+    
+    if job.get("archive"):
+        folder_name = sanitize_filename(job.get("folder")) or "Misc Downloads"
+        main_archive_file = os.path.join(config["download_dir"], folder_name, "archive.txt")
+        if os.path.exists(main_archive_file):
+            shutil.copy2(main_archive_file, os.path.join(temp_dir_path, "archive.temp.txt"))
+            
+    return temp_dir_path, temp_log_path
+
+def _process_yt_dlp_output(line, state_manager, job):
+    """
+    Parses a line of output from yt-dlp, updates the state manager,
+    and returns a resolved title if one is found.
+    """
+    line = line.strip()
+    if not line: return None
+
+    if line.startswith('{'):
+        try:
+            data = json.loads(line)
+            if data.get("status") == "downloading":
+                update = {"status": "Downloading"}
+                downloaded = data.get("downloaded_bytes")
+                total = data.get("total_bytes") or data.get("total_bytes_estimate")
+                if downloaded is not None and total is not None and total > 0:
+                    update["progress"] = (downloaded / total) * 100
+                
+                update["file_size"] = format_bytes(total)
+                speed = data.get("speed")
+                update["speed"] = f'{format_bytes(speed)}/s' if speed else "N/A"
+                eta = data.get("eta")
+                update["eta"] = time.strftime('%M:%S', time.gmtime(eta)) if eta is not None else "N/A"
+                state_manager.update_current_download(update)
+
+            elif data.get("status") == "finished":
+                state_manager.update_current_download({"status": "Processing..."})
+
+            elif '_type' in data and data['_type'] == 'video':
+                resolved_title = sanitize_filename(data.get('playlist_title') or data.get('title', 'Unknown Title'))
+                
+                update = {
+                    "status": "Starting...", "progress": 0, "thumbnail": data.get('thumbnail'),
+                    "playlist_index": data.get('playlist_index'), "playlist_count": data.get('n_entries'),
+                    "playlist_title": resolved_title if data.get('playlist_index') else None,
+                    "track_title": data.get('title'),
+                    "title": job.get("folder") or resolved_title
+                }
+                state_manager.update_current_download(update)
+                
+                if not job.get("folder"):
+                    return resolved_title
+
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+            
+    elif any(s in line for s in ("[ExtractAudio]", "[Merger]", "[Fixup")):
+        state_manager.update_current_download({"status": 'Processing...'})
+    
+    return None
+
+
+def _run_download_process(state_manager, job, cmd, temp_log_path):
+    """
+    Runs the yt-dlp subprocess, captures its output, and returns the
+    final status and the resolved folder name.
+    """
+    status = "PENDING"
+    resolved_folder_name = job.get("folder")
+    
+    creationflags = 0
+    if platform.system() == "Windows":
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+
+    process = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding='utf-8', errors='replace',
+        creationflags=creationflags
+    )
+    
+    output_q = queue.Queue()
+    reader_thread = threading.Thread(target=_enqueue_output, args=(process.stdout, output_q))
+    reader_thread.daemon = True
+    reader_thread.start()
+
+    with open(temp_log_path, 'w', encoding='utf-8') as log_file:
+        log_file.write(f"--- Job {job['id']} Started ---\n")
+        log_file.write(f"Command: {' '.join(shlex.quote(c) for c in cmd)}\n\n")
+        log_file.flush()
+
+        while process.poll() is None:
+            if state_manager.cancel_event.is_set():
+                break
+            try:
+                line = output_q.get(timeout=0.1)
+                log_file.write(line)
+                log_file.flush()
+                
+                newly_resolved_title = _process_yt_dlp_output(line, state_manager, job)
+                if not resolved_folder_name and newly_resolved_title:
+                    resolved_folder_name = newly_resolved_title
+
+            except queue.Empty:
+                continue
+        
+        while not output_q.empty():
+            line = output_q.get_nowait()
+            if line: log_file.write(line)
+
+    if state_manager.cancel_event.is_set() and process.poll() is None:
+        try:
+            if platform.system() == "Windows":
+                process.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                process.terminate()
+
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            print(f"Process {process.pid} did not terminate gracefully. Killing.")
+            process.kill()
+            process.wait()
+        except Exception as e:
+            print(f"Error during process termination: {e}")
+            process.kill()
+            process.wait()
+
+    try:
+        process.wait(timeout=5) 
+    except subprocess.TimeoutExpired:
+        print(f"ERROR: Process for job {job.get('id')} timed out after termination attempt.")
+        status = "FAILED"
+        with open(temp_log_path, 'a', encoding='utf-8') as log_file:
+            log_file.write("\n--- ERROR: Process timed out and was killed. ---\n")
+
+    if status != "FAILED":
+        if state_manager.cancel_event.is_set():
+            status = "STOPPED" if state_manager.stop_mode == "SAVE" else "CANCELLED"
+        elif process.returncode == 0:
+            status = "COMPLETED"
+        else:
+            status = "FAILED"
+            
+    return status, resolved_folder_name
+
 # --- Main Worker Thread ---
 
-def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path, ffmpeg_path):
+def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path, ffmpeg_path, stop_event):
     """The main worker loop that processes jobs from the queue."""
-    while True:
-        state_manager.queue_paused_event.wait()
-        job = state_manager.queue.get()
-        state_manager.cancel_event.clear()
-        state_manager.stop_mode = "CANCEL"
-        
-        status = "PENDING"
-        temp_dir_path = os.path.join(config["temp_dir"], f"job_{job['id']}")
-        temp_log_path = os.path.join(log_dir, f"job_active_{job['id']}.log")
-        process = None
-        
+    print("Worker thread started, waiting for application to initialize...")
+    time.sleep(2)
+    
+    while not stop_event.is_set():
+        try:
+            job = state_manager.queue.get(timeout=1)
+            if job is None:
+                break
+        except queue.Empty:
+            continue
+
         if job.get("status") == "ABANDONED":
-            _, final_folder, _, _ = _finalize_job(job, "ABANDONED", temp_log_path, config)
+            print(f"Worker found an ABANDONED job in the queue (ID: {job.get('id')}). Moving to history.")
             history_item = {
-                "url": job["url"], "title": job.get("folder") or job.get("url"), "folder": final_folder, 
+                "url": job["url"], "title": job.get("folder") or job.get("url"), "folder": job.get("folder"), 
                 "filenames": [], "job_data": job, "status": "ABANDONED",
-                "log_path": "No log generated.", "error_summary": "Job was interrupted by an application restart."
+                "log_path": "No log generated.", "error_summary": "Job was found in an abandoned state in the queue."
             }
             state_manager.add_to_history(history_item)
             state_manager.queue.task_done()
             continue
+
+        state_manager.cancel_event.clear()
+        state_manager.stop_mode = "CANCEL"
         
         state_manager.update_current_download({
             "url": job["url"], "progress": 0, "status": "Preparing...",
-            "title": job.get("folder") or job["url"], "job_data": job,
-            "log_path": temp_log_path
+            "title": job.get("folder") or job["url"], "job_data": job
         })
 
-        try:
-            os.makedirs(temp_dir_path, exist_ok=True)
-            if job.get("archive"):
-                main_archive_file = os.path.join(config["download_dir"], sanitize_filename(job.get("folder")), "archive.txt")
-                if os.path.exists(main_archive_file):
-                    shutil.copy2(main_archive_file, os.path.join(temp_dir_path, "archive.temp.txt"))
+        status = "PENDING"
+        temp_log_path = ""
+        resolved_folder_name = job.get("folder")
 
+        try:
+            temp_dir_path, temp_log_path = _prepare_job_environment(job, config, log_dir)
+            state_manager.update_current_download({"log_path": temp_log_path})
+            
             cmd = build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmpeg_path)
             
-            process = subprocess.Popen(
-                cmd, 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding='utf-8',
-                errors='replace'
-            )
-            
-            output_q = queue.Queue()
-            reader_thread = threading.Thread(target=_enqueue_output, args=(process.stdout, output_q))
-            reader_thread.daemon = True
-            reader_thread.start()
-
-            with open(temp_log_path, 'w', encoding='utf-8') as log_file:
-                log_file.write(f"--- Job {job['id']} Started ---\n")
-                log_file.write(f"Command: {' '.join(shlex.quote(c) for c in cmd)}\n\n")
-                log_file.flush()
-
-                while process.poll() is None:
-                    if state_manager.cancel_event.is_set():
-                        break
-                    try:
-                        line = output_q.get(timeout=0.1)
-                    except queue.Empty:
-                        continue
-                    
-                    line = line.strip()
-                    if not line: continue
-                    
-                    log_file.write(line + '\n')
-                    log_file.flush()
-                    
-                    if line.startswith('{'):
-                        try:
-                            data = json.loads(line)
-                            if data.get("status") == "downloading":
-                                update = {"status": "Downloading"}
-                                downloaded = data.get("downloaded_bytes")
-                                total = data.get("total_bytes") or data.get("total_bytes_estimate")
-                                if downloaded is not None and total is not None and total > 0:
-                                    update["progress"] = (downloaded / total) * 100
-                                
-                                update["file_size"] = format_bytes(total)
-                                
-                                speed = data.get("speed")
-                                update["speed"] = f'{format_bytes(speed)}/s' if speed else "N/A"
-                                
-                                eta = data.get("eta")
-                                if eta is not None:
-                                    update["eta"] = time.strftime('%M:%S', time.gmtime(eta))
-                                else:
-                                    update["eta"] = "N/A"
-                                state_manager.update_current_download(update)
-
-                            elif data.get("status") == "finished":
-                                state_manager.update_current_download({"status": "Processing..."})
-
-                            # --- FIX: Avoid mutating the original job object ---
-                            elif '_type' in data and data['_type'] == 'video':
-                                folder_title = job.get("folder")
-                                if not folder_title:
-                                    folder_title = sanitize_filename(data.get('playlist_title') or data.get('title', 'Unknown Title'))
-                                
-                                update = {
-                                    "status": "Starting...", "progress": 0, "thumbnail": data.get('thumbnail'),
-                                    "playlist_index": data.get('playlist_index'), "playlist_count": data.get('n_entries'),
-                                    "playlist_title": folder_title if data.get('playlist_index') else None,
-                                    "track_title": data.get('title'), "title": folder_title
-                                }
-                                state_manager.update_current_download(update)
-
-                        except (json.JSONDecodeError, TypeError, ValueError):
-                            pass
-                    elif any(s in line for s in ("[ExtractAudio]", "[Merger]", "[Fixup")):
-                        state_manager.update_current_download({"status": 'Processing...'})
-                
-                while not output_q.empty():
-                    line = output_q.get_nowait().strip()
-                    if line: log_file.write(line + '\n')
-
-            if state_manager.cancel_event.is_set() and process.poll() is None:
-                process.kill()
-
-            try:
-                process.wait(timeout=3600) 
-            except subprocess.TimeoutExpired:
-                print(f"ERROR: Process for job {job.get('id')} timed out. Killing process.")
-                process.kill()
-                process.wait(timeout=10)
-                status = "FAILED"
-                with open(temp_log_path, 'a', encoding='utf-8') as log_file:
-                    log_file.write("\n--- ERROR: Process timed out and was killed. ---\n")
-
-            if status != "FAILED":
-                if state_manager.cancel_event.is_set():
-                    status = "STOPPED" if state_manager.stop_mode == "SAVE" else "CANCELLED"
-                elif process.returncode == 0:
-                    status = "COMPLETED"
-                else:
-                    status = "FAILED"
+            status, resolved_folder_name = _run_download_process(state_manager, job, cmd, temp_log_path)
 
         except Exception as e:
             status = "ERROR"
             print(f"WORKER EXCEPTION for job {job.get('id')}: {e}")
-            if process and process.poll() is None:
-                process.kill()
-            try:
-                with open(temp_log_path, 'a', encoding='utf-8') as log_file:
-                    log_file.write(f"\n--- WORKER THREAD EXCEPTION ---\n{e}\n-------------------------------\n")
-            except: pass
+            if temp_log_path:
+                try:
+                    with open(temp_log_path, 'a', encoding='utf-8') as log_file:
+                        log_file.write(f"\n--- WORKER THREAD EXCEPTION ---\n{e}\n-------------------------------\n")
+                except: pass
         
         finally:
-            final_status, final_folder, final_filenames, error_summary = _finalize_job(job, status, temp_log_path, config)
+            final_status, final_folder, final_filenames, error_summary = _finalize_job(job, status, temp_log_path, config, resolved_folder_name)
             state_manager.reset_current_download()
             time.sleep(0.2)
 
@@ -345,9 +407,11 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                 print(f"ERROR: Could not move log file {temp_log_path}: {e}")
 
             history_item = {
-                "url": job["url"], "title": job.get("folder") or job.get("url"), "folder": final_folder,
+                "url": job["url"], "title": resolved_folder_name or job.get("url"), "folder": final_folder,
                 "filenames": final_filenames, "job_data": job, "status": final_status,
                 "log_path": log_path_for_history, "error_summary": error_summary
             }
             state_manager.add_to_history(history_item)
             state_manager.queue.task_done()
+    
+    print("Worker thread has gracefully exited.")

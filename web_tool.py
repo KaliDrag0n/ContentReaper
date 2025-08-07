@@ -5,6 +5,7 @@ import subprocess
 import platform
 import logging
 from logging.handlers import RotatingFileHandler
+import glob
 
 # --- Set up logging immediately to catch any startup errors ---
 log_formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]')
@@ -23,8 +24,33 @@ logger.setLevel(logging.INFO)
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
+# --- FIX: New function to kill orphaned processes from a previous crash ---
+def kill_stale_processes():
+    """Forcefully terminates any lingering yt-dlp processes."""
+    logger.info("Checking for and terminating any stale yt-dlp processes...")
+    try:
+        if platform.system() == "Windows":
+            command = ["taskkill", "/F", "/IM", "yt-dlp.exe"]
+        else: # Linux / macOS
+            command = ["pkill", "-f", "yt-dlp"]
+        
+        # We use DEVNULL to hide the output, as it can show errors if no process is found.
+        result = subprocess.run(command, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if result.returncode == 0:
+            logger.info("Successfully terminated one or more stale yt-dlp processes.")
+        else:
+            logger.info("No stale yt-dlp processes found.")
+    except FileNotFoundError:
+        # This can happen if taskkill/pkill is not in the system's PATH.
+        logger.warning("Could not find taskkill/pkill command to terminate stale processes.")
+    except Exception as e:
+        logger.error(f"An error occurred while trying to kill stale processes: {e}")
+
 # --- Main Application Block ---
 try:
+    # --- FIX: Run the cleanup at the very beginning ---
+    kill_stale_processes()
+
     logger.info("Application starting up...")
     #~ --- Dependency & Startup Logic --- ~#
     try:
@@ -96,6 +122,10 @@ try:
         "update_available": False, "latest_version": "0.0.0",
         "release_url": "", "release_notes": ""
     }
+    
+    WORKER_THREAD = None
+    STOP_EVENT = threading.Event()
+
 
     #~ --- Security & Path Helpers --- ~#
     def password_required(f):
@@ -125,6 +155,18 @@ try:
             elif not os.access(path, os.W_OK):
                 errors[key] = "Application does not have permission to write to this path."
         return errors
+        
+    def cleanup_stale_files():
+        """Removes leftover active job logs to prevent file lock issues on restart."""
+        logger.info("Cleaning up stale files from previous session...")
+        stale_logs = glob.glob(os.path.join(LOG_DIR, "job_active_*.log"))
+        for log_path in stale_logs:
+            try:
+                os.remove(log_path)
+                logger.info(f"Removed stale log file: {os.path.basename(log_path)}")
+            except OSError as e:
+                logger.error(f"Failed to remove stale log file {log_path}: {e}")
+
 
     #~ --- Update & Restart Logic --- ~#
     def trigger_update_and_restart():
@@ -151,9 +193,9 @@ try:
             logger.warning(f"Update check failed: {e}")
 
     def scheduled_update_check():
-        while True:
+        while not STOP_EVENT.is_set():
             _run_update_check()
-            time.sleep(3600)
+            STOP_EVENT.wait(3600)
 
     #~ --- Config Management --- ~#
     def save_config():
@@ -186,7 +228,7 @@ try:
 
     #~ --- App Initialization --- ~#
     def initialize_app():
-        global PASSWORD_IS_SET
+        global PASSWORD_IS_SET, WORKER_THREAD
         logger.info("--- Initializing Application ---")
         load_config()
         
@@ -205,11 +247,15 @@ try:
         for path in [CONFIG["download_dir"], CONFIG["temp_dir"], LOG_DIR]:
             os.makedirs(path, exist_ok=True)
         
-        atexit.register(state_manager.save_state)
+        cleanup_stale_files()
+        
         state_manager.load_state()
         
         threading.Thread(target=scheduled_update_check, daemon=True).start()
-        threading.Thread(target=yt_dlp_worker, args=(state_manager, CONFIG, LOG_DIR, CONF_COOKIE_FILE, YT_DLP_PATH, FFMPEG_PATH), daemon=True).start()
+        
+        WORKER_THREAD = threading.Thread(target=yt_dlp_worker, args=(state_manager, CONFIG, LOG_DIR, CONF_COOKIE_FILE, YT_DLP_PATH, FFMPEG_PATH, STOP_EVENT))
+        WORKER_THREAD.start()
+        
         logger.info("Background threads started.")
         
         logger.info("--- Application Initialized Successfully ---")
@@ -304,7 +350,6 @@ try:
             state_manager.add_to_queue(job)
         return jsonify({"message": f"Added {len(urls)} job(s) to the queue."})
 
-    # --- FIX: Add the missing /queue/continue route ---
     @app.route("/queue/continue", methods=['POST'])
     def continue_job_route():
         """Re-queues a job, typically from history."""
@@ -413,6 +458,8 @@ try:
     @app.route('/api/shutdown', methods=['POST'])
     @password_required
     def shutdown_route():
+        logger.info("Shutdown requested via API.")
+        STOP_EVENT.set()
         threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGINT)).start()
         return jsonify({"message": "Server is shutting down."})
 
@@ -539,8 +586,25 @@ try:
         try:
             initialize_app()
             from waitress import serve
+            
             logger.info("Initialization complete. Starting production server with Waitress...")
-            serve(app, host="0.0.0.0", port=8080, _quiet=True)
+            try:
+                serve(app, host="0.0.0.0", port=8080, _quiet=True)
+            except (KeyboardInterrupt, SystemExit):
+                logger.info("Shutdown signal received.")
+            finally:
+                logger.info("Server is shutting down. Signaling threads to stop.")
+                STOP_EVENT.set()
+                state_manager.queue.put(None) 
+                
+                if WORKER_THREAD:
+                    logger.info("Waiting for worker thread to finish...")
+                    WORKER_THREAD.join(timeout=15)
+                    if WORKER_THREAD.is_alive():
+                        logger.warning("Worker thread did not exit gracefully.")
+
+                logger.info("Saving final state.")
+                state_manager.save_state()
             
         except Exception as e:
             logger.critical("A critical error occurred during the server launch.", exc_info=True)

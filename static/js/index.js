@@ -1,6 +1,6 @@
 /**
  * static/js/index.js
- * * This file contains the core logic for the main dashboard page.
+ * This file contains the core logic for the main dashboard page.
  * It handles:
  * - Polling the server for status updates.
  * - Rendering the 'Now Downloading', 'Queue', and 'History' sections.
@@ -44,7 +44,7 @@
 
     const checkForUpdates = async () => {
         try {
-            const data = await window.apiRequest('/api/update_check');
+            const data = await window.apiRequest(window.API.updateCheck);
             const updateBtn = document.getElementById('update-notification-btn');
             if (data.update_available) {
                 document.getElementById('update-version-text').textContent = data.latest_version;
@@ -84,7 +84,7 @@
         document.getElementById('cancel-btn').disabled = true;
         document.getElementById('current-status-text').textContent = mode === 'save' ? 'Stopping...' : 'Cancelling...';
         
-        window.apiRequest('/stop', {
+        window.apiRequest(window.API.stop, {
             method: 'POST',
             body: JSON.stringify({ mode: mode })
         }).catch(err => {
@@ -162,28 +162,29 @@
         document.getElementById('current-stat-eta').textContent = current.eta || 'N/A';
     }
 
+    /**
+     * --- FIX: This function has been simplified to prevent "phantom" queue items. ---
+     * It now always updates the UI to match the state from the API.
+     */
     function renderQueue(queue) {
         const queueList = document.getElementById("queue-list");
         document.getElementById("queue-controls").style.display = queue.length > 0 ? 'flex' : 'none';
         
-        queueList.querySelectorAll('.optimistic-item').forEach(el => el.remove());
-
         if (queue.length === 0) {
-            if (!queueList.querySelector('.list-group-item')) {
-                 queueList.innerHTML = "<li class='list-group-item fst-italic text-muted'>Queue is empty.</li>";
-            }
-            return;
+            // If the API says the queue is empty, always show the empty message.
+            queueList.innerHTML = "<li class='list-group-item fst-italic text-muted'>Queue is empty.</li>";
+        } else {
+            // If the API provides items, render them. This overwrites the previous state.
+            queueList.innerHTML = queue.map(job => 
+                `<li class="list-group-item d-flex justify-content-between align-items-center" data-job-id="${job.id}">
+                    <div class="d-flex align-items-center" style="min-width: 0;">
+                        <i class="bi bi-grip-vertical queue-handle me-2" title="Drag to reorder"></i>
+                        <span class="word-break">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span>
+                    </div>
+                    <button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}" aria-label="Remove from queue"></button>
+                </li>`
+            ).join('');
         }
-        
-        queueList.innerHTML = queue.map(job => 
-            `<li class="list-group-item d-flex justify-content-between align-items-center" data-job-id="${job.id}">
-                <div class="d-flex align-items-center" style="min-width: 0;">
-                    <i class="bi bi-grip-vertical queue-handle me-2" title="Drag to reorder"></i>
-                    <span class="word-break">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span>
-                </div>
-                <button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}" aria-label="Remove from queue"></button>
-            </li>`
-        ).join('');
     }
 
     function renderHistory(newHistory) {
@@ -282,7 +283,7 @@
     const pollStatus = async () => {
         clearTimeout(statusPollTimeout);
         try {
-            const data = await window.apiRequest('/api/status');
+            const data = await window.apiRequest(window.API.status);
             if (data) {
                 renderCurrentStatus(data.current);
                 renderQueue(data.queue);
@@ -299,7 +300,7 @@
     const viewStaticLog = async (logId) => {
         try {
             clearInterval(liveLogPollInterval);
-            const data = await window.apiRequest(`/history/log/${logId}`);
+            const data = await window.apiRequest(window.API.historyLog(logId));
             const logContentEl = document.getElementById('logModalContent');
             logContentEl.textContent = data.log || "Log is empty or could not be loaded.";
             if (!logModalInstance) logModalInstance = new bootstrap.Modal(document.getElementById('logModal'));
@@ -317,7 +318,7 @@
 
         const fetchLogContent = async () => {
             try {
-                const data = await window.apiRequest('/api/log/live/content');
+                const data = await window.apiRequest(window.API.liveLog);
                 if (logContentEl.textContent !== data.log) {
                     logContentEl.textContent = data.log;
                     logContentEl.scrollTop = logContentEl.scrollHeight;
@@ -335,7 +336,7 @@
     // --- INITIALIZATION ---
     document.addEventListener('DOMContentLoaded', () => {
         const checkGlobals = setInterval(() => {
-            if (window.applyTheme && window.apiRequest) {
+            if (window.applyTheme && window.apiRequest && window.API) {
                 clearInterval(checkGlobals);
                 initializePage();
             }
@@ -352,7 +353,7 @@
 
             const loginBtn = document.getElementById('login-btn');
             const logoutBtn = document.getElementById('logout-btn');
-            window.apiRequest('/api/auth/status').then(status => {
+            window.apiRequest(window.API.authStatus).then(status => {
                 if (status.password_set && !status.logged_in) {
                     loginBtn.style.display = 'inline-block';
                 }
@@ -360,7 +361,6 @@
                     logoutBtn.style.display = 'inline-block';
                 }
             });
-            // --- FIX: Added event listener for the login button ---
             loginBtn.addEventListener('click', () => window.showLoginModal());
 
             const savedMode = localStorage.getItem('downloader_mode') || 'clip';
@@ -386,7 +386,7 @@
                 queueList.appendChild(li);
 
                 try {
-                    const data = await window.apiRequest('/queue', { method: 'POST', body: new FormData(this) });
+                    const data = await window.apiRequest(window.API.queue, { method: 'POST', body: new FormData(this) });
                     showToast(data.message, 'Success', 'success');
                     this.reset();
                     handleUrlInput();
@@ -402,15 +402,16 @@
             document.querySelector('textarea[name="urls"]').addEventListener('input', handleUrlInput);
             
             document.getElementById('clear-queue-btn').addEventListener('click', () => window.showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => {
-                window.apiRequest('/queue/clear', { method: 'POST' }).then(pollStatus).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
+                window.apiRequest(window.API.queueClear, { method: 'POST' }).then(pollStatus).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
             }));
             
             document.getElementById('clear-history-btn').addEventListener('click', () => window.showConfirmModal('Clear History?', 'Are you sure you want to clear the entire download history?', () => {
-                window.apiRequest('/history/clear', { method: 'POST' }).then(pollStatus).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
+                window.apiRequest(window.API.historyClear, { method: 'POST' }).then(pollStatus).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
             }));
             
             document.getElementById('pause-resume-btn').addEventListener('click', (e) => {
-                window.apiRequest(`/queue/${e.currentTarget.dataset.action}`, { method: 'POST' }).then(pollStatus).catch(err => console.error(err));
+                const endpoint = e.currentTarget.dataset.action === 'pause' ? window.API.queuePause : window.API.queueResume;
+                window.apiRequest(endpoint, { method: 'POST' }).then(pollStatus).catch(err => console.error(err));
             });
             
             document.getElementById('logModal').addEventListener('hidden.bs.modal', () => {
@@ -423,7 +424,7 @@
                 if (deleteBtn) {
                     const item = deleteBtn.closest('.list-group-item');
                     item.style.opacity = '0.5';
-                    window.apiRequest(`/queue/delete/by-id/${deleteBtn.dataset.jobId}`, {method: 'POST'})
+                    window.apiRequest(window.API.queueDelete(deleteBtn.dataset.jobId), {method: 'POST'})
                         .then(() => item.remove())
                         .catch(err => {
                             if(err.message !== "AUTH_REQUIRED") console.error(err);
@@ -444,17 +445,17 @@
                     viewStaticLog(logId);
                 } else if (action === 'delete') {
                     li.style.opacity = '0.5';
-                    window.apiRequest(`/history/delete/${logId}`, { method: 'POST' })
+                    window.apiRequest(window.API.historyDelete(logId), { method: 'POST' })
                         .then(() => li.remove())
                         .catch(err => {
                             console.error(err);
                             li.style.opacity = '1';
                         });
                 } else if (action === 'requeue') {
-                    window.apiRequest(`/api/history/item/${logId}`)
+                    window.apiRequest(window.API.historyItem(logId))
                         .then(historyItem => {
                             if (historyItem && historyItem.job_data) {
-                                return window.apiRequest('/queue/continue', { method: 'POST', body: JSON.stringify(historyItem.job_data) });
+                                return window.apiRequest(window.API.queueContinue, { method: 'POST', body: JSON.stringify(historyItem.job_data) });
                             }
                             throw new Error("Could not retrieve job data for requeue.");
                         })
@@ -473,7 +474,7 @@
                 onEnd: function (evt) {
                     const orderedIds = [...evt.to.children].map(li => li.dataset.jobId).filter(id => id);
                     if (orderedIds.length === 0) return;
-                    window.apiRequest('/queue/reorder', { method: 'POST', body: JSON.stringify({ order: orderedIds }) })
+                    window.apiRequest(window.API.queueReorder, { method: 'POST', body: JSON.stringify({ order: orderedIds }) })
                     .catch(err => { 
                         console.error("Failed to reorder queue:", err);
                         pollStatus();
@@ -483,7 +484,7 @@
 
             pollStatus();
             checkForUpdates();
-            setInterval(checkForUpdates, 900000);
+            setInterval(checkForUpdates, 900000); // 15 minutes
         }
     });
 })();
