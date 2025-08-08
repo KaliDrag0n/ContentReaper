@@ -23,7 +23,6 @@
 <div class="card mb-4">
   <div class="card-header">General Settings</div>
   <div class="card-body" id="settings-form-body">
-    {# The form no longer needs method="POST" as JS will handle submission #}
     <form id="general-settings-form">
       <div class="mb-3">
         <label for="download_dir" class="form-label">Download Directory</label>
@@ -34,6 +33,18 @@
         <label for="temp_dir" class="form-label">Temporary Directory</label>
         <input type="text" class="form-control" id="temp_dir" name="temp_dir">
         <div class="form-text">The path where temporary files will be stored during download.</div>
+      </div>
+      <div class="row">
+        <div class="col-md-8 mb-3">
+            <label for="server_host" class="form-label">Server Host IP</label>
+            <input type="text" class="form-control" id="server_host" name="server_host">
+            <div class="form-text">The IP address the server listens on. Use 0.0.0.0 to allow access from other devices on your network. Requires restart.</div>
+        </div>
+        <div class="col-md-4 mb-3">
+            <label for="server_port" class="form-label">Server Port</label>
+            <input type="number" class="form-control" id="server_port" name="server_port" min="1" max="65535">
+            <div class="form-text">The port the server runs on. Requires restart.</div>
+        </div>
       </div>
       <div class="mb-3">
         <label for="log_level" class="form-label">Log Level</label>

@@ -88,18 +88,15 @@
         const wasPreviouslyDownloading = localState.current !== null;
         const isCurrentlyDownloading = current !== null && current.url;
 
-        // If transitioning from downloading to idle
         if (wasPreviouslyDownloading && !isCurrentlyDownloading) {
             currentDiv.innerHTML = "<p class='m-0'>No active download.</p>";
             return;
         }
 
-        // If still idle, do nothing
         if (!isCurrentlyDownloading) {
             return;
         }
 
-        // If a new download has started, create the full element structure
         if (!wasPreviouslyDownloading || current.url !== localState.current.url) {
             currentDiv.innerHTML = `
                 <div class="d-flex flex-column flex-md-row">
@@ -128,7 +125,6 @@
             document.getElementById('cancel-btn').addEventListener('click', () => handleStopRequest('cancel'));
         }
 
-        // Granular updates for the existing structure
         const thumbnailContainer = document.getElementById('current-thumbnail-container');
         if (current.thumbnail && (!localState.current || current.thumbnail !== localState.current.thumbnail)) {
             thumbnailContainer.innerHTML = `<img src="${current.thumbnail}" class="now-downloading-thumbnail" alt="Thumbnail">`;
@@ -159,7 +155,6 @@
         const oldIds = new Set(localState.queue.map(j => j.id));
         const newIds = new Set(newQueue.map(j => j.id));
 
-        // Remove items that are no longer in the queue
         oldIds.forEach(id => {
             if (!newIds.has(id)) {
                 queueList.querySelector(`[data-job-id='${id}']`)?.remove();
@@ -171,7 +166,6 @@
                  queueList.innerHTML = "<li class='list-group-item fst-italic text-muted'>Queue is empty.</li>";
             }
         } else {
-            // Add or update items
             newQueue.forEach((job, index) => {
                 let li = queueList.querySelector(`[data-job-id='${job.id}']`);
                 if (!li) {
@@ -205,14 +199,12 @@
         const newHistoryMap = new Map(newHistory.map(item => [item.log_id, item]));
         const oldHistoryMap = new Map(localState.history.map(item => [item.log_id, item]));
 
-        // Remove deleted items
         oldHistoryMap.forEach((_, logId) => {
             if (!newHistoryMap.has(logId)) {
                 historyList.querySelector(`[data-log-id='${logId}']`)?.remove();
             }
         });
         
-        // Add or update items
         [...newHistory].reverse().forEach(item => {
             const existingLi = historyList.querySelector(`[data-log-id='${item.log_id}']`);
             if (!existingLi) {
@@ -223,7 +215,6 @@
                 li.innerHTML = createHistoryItemHTML(item);
                 historyList.prepend(li);
             } else if (existingLi.dataset.status !== item.status) {
-                // If only the status changed, just update the HTML
                 existingLi.innerHTML = createHistoryItemHTML(item);
                 existingLi.dataset.status = item.status;
             }
@@ -302,7 +293,6 @@
         renderQueue(newState.queue);
         renderHistory(newState.history);
         renderPauseState(newState.is_paused);
-        // Update local state cache after rendering
         localState = newState;
     }
 
@@ -386,16 +376,16 @@
         document.querySelector('textarea[name="urls"]').addEventListener('input', handleUrlInput);
         
         document.getElementById('clear-queue-btn').addEventListener('click', () => window.showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => {
-            window.apiRequest(window.API.queueClear, { method: 'POST' }).then(pollStatus).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
+            window.apiRequest(window.API.queueClear, { method: 'POST' }).then(data => renderState(data.newState)).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
         }));
         
         document.getElementById('clear-history-btn').addEventListener('click', () => window.showConfirmModal('Clear History?', 'Are you sure you want to clear the entire download history?', () => {
-            window.apiRequest(window.API.historyClear, { method: 'POST' }).then(pollStatus).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
+            window.apiRequest(window.API.historyClear, { method: 'POST' }).then(data => renderState(data.newState)).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
         }));
         
         document.getElementById('pause-resume-btn').addEventListener('click', (e) => {
             const endpoint = e.currentTarget.dataset.action === 'pause' ? window.API.queuePause : window.API.queueResume;
-            window.apiRequest(endpoint, { method: 'POST' }).then(pollStatus).catch(err => console.error(err));
+            window.apiRequest(endpoint, { method: 'POST' }).then(data => renderState(data.newState)).catch(err => console.error(err));
         });
         
         document.getElementById('logModal').addEventListener('hidden.bs.modal', () => {
@@ -409,10 +399,11 @@
                 const item = deleteBtn.closest('.list-group-item');
                 item.style.opacity = '0.5';
                 window.apiRequest(window.API.queueDelete(deleteBtn.dataset.jobId), {method: 'POST'})
-                    .then(() => item.remove())
+                    .then(data => renderState(data.newState))
                     .catch(err => {
                         if(err.message !== "AUTH_REQUIRED") console.error(err);
                         item.style.opacity = '1';
+                        pollStatus(); // Re-poll on error to fix UI
                     });
             }
         });
@@ -430,10 +421,11 @@
             } else if (action === 'delete') {
                 li.style.opacity = '0.5';
                 window.apiRequest(window.API.historyDelete(logId), { method: 'POST' })
-                    .then(() => li.remove())
+                    .then(data => renderState(data.newState))
                     .catch(err => {
                         console.error(err);
                         li.style.opacity = '1';
+                        pollStatus();
                     });
             } else if (action === 'requeue') {
                 actionBtn.disabled = true;
@@ -458,16 +450,17 @@
                 const orderedIds = [...evt.to.children].map(li => li.dataset.jobId).filter(id => id);
                 if (orderedIds.length === 0) return;
                 window.apiRequest(window.API.queueReorder, { method: 'POST', body: JSON.stringify({ order: orderedIds }) })
+                .then(data => renderState(data.newState))
                 .catch(err => { 
                     console.error("Failed to reorder queue:", err);
-                    pollStatus(); // Re-poll to correct the UI on failure
+                    pollStatus();
                 });
             },
         });
 
         pollStatus();
         checkForUpdates();
-        setInterval(checkForUpdates, 900000); // 15 minutes
+        setInterval(checkForUpdates, 900000);
     };
 
     document.addEventListener('DOMContentLoaded', () => {

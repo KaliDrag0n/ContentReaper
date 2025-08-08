@@ -17,10 +17,10 @@
             document.getElementById('download_dir').value = data.config.download_dir;
             document.getElementById('temp_dir').value = data.config.temp_dir;
             document.getElementById('log_level').value = data.config.log_level || 'INFO';
+            document.getElementById('server_host').value = data.config.server_host;
+            document.getElementById('server_port').value = data.config.server_port;
             
             const cookieTextarea = document.getElementById('cookie_content');
-            // This check is now redundant because of the logic in initializeSettingsPage,
-            // but it's good defensive programming.
             if (!cookieTextarea.disabled) {
                 cookieTextarea.value = data.cookies;
             }
@@ -40,7 +40,6 @@
         const cookieTextarea = document.getElementById('cookie_content');
         const settingsForm = document.getElementById('general-settings-form');
 
-        // Check auth status to show/hide relevant elements
         window.apiRequest(window.API.authStatus).then(status => {
             if (!status.password_set) {
                 setupAlert.style.display = 'block';
@@ -48,25 +47,22 @@
             } else {
                 setupAlert.style.display = 'none';
                 currentPasswordGroup.style.display = 'block';
-                if (!status.logged_in) {
-                    cookieTextarea.placeholder = "Login to view/edit cookies...";
-                    cookieTextarea.disabled = true;
-                } else {
-                    // ** THE FIX IS HERE **
-                    // Explicitly enable the textarea and set placeholder if logged in.
-                    cookieTextarea.disabled = false;
-                    cookieTextarea.placeholder = "Paste your Netscape format cookies here...";
-                }
             }
-            // Populate the form fields after checking auth status and setting element states
+            
+            if (status.password_set && !status.logged_in) {
+                cookieTextarea.placeholder = "Login to view/edit cookies...";
+                cookieTextarea.disabled = true;
+            } else {
+                cookieTextarea.disabled = false;
+                cookieTextarea.placeholder = "Paste your Netscape format cookies here...";
+            }
+
             populateSettings();
         });
 
-        // ** UX IMPROVEMENT **
-        // Handle the settings form submission with JavaScript for a no-reload experience.
         if (settingsForm) {
             settingsForm.addEventListener('submit', async (e) => {
-                e.preventDefault(); // Prevent default form submission
+                e.preventDefault();
                 const submitBtn = settingsForm.querySelector('button[type="submit"]');
                 const originalBtnText = submitBtn.textContent;
                 submitBtn.disabled = true;
@@ -84,7 +80,6 @@
                     window.showToast(response.message, 'Success', 'success');
 
                 } catch (error) {
-                    // Error toast is already shown by apiRequest
                     console.error("Failed to save settings:", error);
                 } finally {
                     submitBtn.disabled = false;
@@ -93,7 +88,6 @@
             });
         }
 
-        // Password form submission (remains unchanged)
         const passwordForm = document.getElementById('password-form');
         if (passwordForm) {
             passwordForm.addEventListener('submit', async (e) => {
@@ -139,7 +133,6 @@
             });
         }
 
-        // Server action buttons (remain unchanged)
         const updateBtn = document.getElementById('check-for-updates-btn');
         if(updateBtn) {
             updateBtn.addEventListener('click', async () => {
@@ -147,7 +140,8 @@
                 updateBtn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Checking...`;
                 try {
                     await window.apiRequest(window.API.forceUpdateCheck, { method: 'POST' });
-                    location.reload();
+                    window.showToast('Forced update check complete. The page will now reload.', 'Update Check', 'info');
+                    setTimeout(() => location.reload(), 2000);
                 } catch (error) {
                     if (error.message !== "AUTH_REQUIRED") {
                         window.showToast(`Could not check for updates. Error: ${error.message}`, 'Error', 'danger');
@@ -201,7 +195,6 @@
     };
 
     document.addEventListener('DOMContentLoaded', () => {
-        // Wait for shared functions from app.js and api.js to be ready
         const checkGlobals = setInterval(() => {
             if (window.applyTheme && window.apiRequest && window.API) {
                 clearInterval(checkGlobals);

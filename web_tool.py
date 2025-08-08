@@ -55,7 +55,7 @@ banner_logger.setLevel(logging.INFO)
 banner_logger.propagate = False
 
 # --- App Constants ---
-APP_VERSION = "4.3.1" # Version bump for bugfix
+APP_VERSION = "4.3.1"
 APP_NAME = "ContentReaper"
 GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
 
@@ -73,7 +73,7 @@ def print_banner():
     """Prints the stylized startup banner to the console."""
     logger.removeHandler(console_handler)
     
-    banner_logger.info("="*95   ) # https://patorjk.com/software/taag/#p=display&h=0&f=The%20Edge&t=content%20reaper
+    banner_logger.info("="*95   )
     banner_logger.info(r"""
 ▄█▄    ████▄    ▄      ▄▄▄▄▀ ▄███▄      ▄      ▄▄▄▄▀     █▄▄▄▄ ▄███▄   ██   █ ▄▄  ▄███▄   █▄▄▄▄ 
 █▀ ▀▄  █   █     █  ▀▀▀ █    █▀   ▀      █  ▀▀▀ █        █  ▄▀ █▀   ▀  █ █  █   █ █▀   ▀  █  ▄▀ 
@@ -129,10 +129,25 @@ def is_safe_path(basedir, path_to_check, allow_file=False):
     try:
         real_path_to_check = os.path.realpath(path_to_check)
     except OSError:
-        return False # Path does not exist or is invalid
-    if allow_file:
-        return real_path_to_check.startswith(real_basedir)
-    return os.path.isdir(real_path_to_check) and real_path_to_check.startswith(real_basedir)
+        return False
+    
+    if not allow_file and not os.path.isdir(real_path_to_check):
+        return False
+        
+    return real_path_to_check.startswith(real_basedir)
+
+def secure_join(base_dir, user_path):
+    user_path = user_path.replace("\\", "/").strip("/")
+    sanitized_components = [sanitizer.sanitize_filename(part) for part in user_path.split('/') if part and part not in ('.', '..')]
+    
+    if not sanitized_components:
+        return os.path.realpath(base_dir)
+
+    safe_relative_path = os.path.join(*sanitized_components)
+    full_path = os.path.join(base_dir, safe_relative_path)
+    
+    return os.path.normpath(full_path)
+
 
 # --- App Initialization and Management ---
 
@@ -142,7 +157,7 @@ def load_config():
     
     config_path = os.path.join(APP_ROOT, "config.json")
     
-    # Default configuration
+    # Default configuration now includes server host and port
     defaults = {
         "download_dir": os.path.join(APP_ROOT, "downloads"),
         "temp_dir": os.path.join(APP_ROOT, ".temp"),
@@ -161,7 +176,6 @@ def load_config():
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"Could not load config.json, using defaults. Error: {e}")
     
-    # Set logger level from config
     log_level = CONFIG.get("log_level", "INFO").upper()
     if log_level in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
         logger.setLevel(getattr(logging, log_level))
@@ -169,7 +183,6 @@ def load_config():
     else:
         logger.warning(f"Invalid log_level '{log_level}' in config.json. Defaulting to INFO.")
 
-    # Validate paths
     for key, name in [("download_dir", "Download"), ("temp_dir", "Temporary")]:
         path = CONFIG.get(key)
         if not path or not os.path.isabs(path):
@@ -186,7 +199,8 @@ def load_config():
     PASSWORD_IS_SET = bool(CONFIG.get("admin_password_hash"))
     logger.info(f"Admin password is {'set' if PASSWORD_IS_SET else 'NOT set.'}")
     
-    save_config() # Save to ensure all keys exist in the file
+    # Save config to ensure new keys (host/port) are written to the user's file
+    save_config()
 
 def save_config():
     """Saves the current configuration to config.json."""
@@ -235,7 +249,7 @@ def _run_update_check():
 def scheduled_update_check():
     while not STOP_EVENT.is_set():
         _run_update_check()
-        STOP_EVENT.wait(3600) # Check every hour
+        STOP_EVENT.wait(3600)
 
 def trigger_update_and_restart():
     logger.info("Update triggered. Saving state and restarting...")
@@ -245,12 +259,8 @@ def trigger_update_and_restart():
 # --- Application Factory ---
 
 def create_app():
-    """Creates and configures the Flask application."""
     global state_manager, WORKER_THREAD, YT_DLP_PATH, FFMPEG_PATH
-
     print_banner()
-
-    # --- Pre-startup validation and cleanup ---
     load_config()
     cleanup_stale_processes_and_files(CONFIG['temp_dir'])
     
@@ -274,7 +284,7 @@ def create_app():
     app.config['WTF_CSRF_HEADERS'] = ['X-CSRF-Token']
     csrf = CSRFProtect(app)
 
-    # --- [4/4] Loading state and starting background threads ---
+    logger.info("--- [4/4] Loading state and starting background threads ---")
     log_dir = os.path.join(APP_ROOT, "logs")
     os.makedirs(log_dir, exist_ok=True)
     
@@ -293,15 +303,10 @@ def create_app():
     WORKER_THREAD.start()
     
     logger.info("--- Application Initialized Successfully ---")
-
-    # --- Register Blueprints and Routes ---
     register_routes(app)
-
     return app
 
 def register_routes(app):
-    """Registers all Flask routes with the app instance."""
-
     @app.context_processor
     def inject_globals():
         return dict(app_name=APP_NAME, app_version=APP_VERSION)
@@ -315,7 +320,6 @@ def register_routes(app):
                 "is_paused": not state_manager.queue_paused_event.is_set()
             }
 
-    # --- Page Routes ---
     @app.route("/")
     def index_route():
         return render_template("index.html")
@@ -326,12 +330,10 @@ def register_routes(app):
 
     @app.route("/settings")
     def settings_route():
-        # This route now only serves the HTML page. Data is handled by the API.
         with state_manager._lock:
             current_update_status = update_status.copy()
         return render_template("settings.html", update_info=current_update_status)
     
-    # --- API Routes ---
     @app.route("/api/status")
     def status_poll_route():
         return jsonify(get_current_state())
@@ -399,7 +401,6 @@ def register_routes(app):
             return jsonify({"error": "Could not find original job data in history."}), 404
             
         job_to_continue = history_item["job_data"]
-        # Add the resolved folder name to ensure the archive is found correctly
         job_to_continue["resolved_folder"] = history_item.get("folder")
         
         state_manager.add_to_queue(job_to_continue)
@@ -458,13 +459,17 @@ def register_routes(app):
             if not data:
                 return jsonify({"error": "Invalid request body."}), 400
 
-            # Update config from received data
             CONFIG["download_dir"] = data.get("download_dir", CONFIG["download_dir"]).strip()
             CONFIG["temp_dir"] = data.get("temp_dir", CONFIG["temp_dir"]).strip()
             CONFIG["log_level"] = data.get("log_level", CONFIG["log_level"]).strip().upper()
+            CONFIG["server_host"] = data.get("server_host", CONFIG["server_host"]).strip()
+            try:
+                CONFIG["server_port"] = int(data.get("server_port", CONFIG["server_port"]))
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid server_port value received: {data.get('server_port')}. Retaining existing value.")
+
             save_config()
             
-            # Update cookies file
             cookie_file = os.path.join(APP_ROOT, "cookies.txt")
             try:
                 with open(cookie_file, 'w', encoding='utf-8') as f:
@@ -473,10 +478,9 @@ def register_routes(app):
                 logger.error(f"Failed to write to cookie file: {e}")
                 return jsonify({"error": "Failed to save cookie file."}), 500
             
-            logger.info("Settings saved via API. Log level change will apply on next restart.")
-            return jsonify({"message": "Settings saved successfully."})
+            logger.info("Settings saved via API. Host/port/log level changes will apply on next restart.")
+            return jsonify({"message": "Settings saved successfully. Restart required for some changes."})
 
-        # Handle GET request
         cookie_file = os.path.join(APP_ROOT, "cookies.txt")
         cookie_content = ""
         try:
@@ -503,7 +507,7 @@ def register_routes(app):
     @password_required
     def clear_queue_route():
         state_manager.clear_queue()
-        return jsonify({"message": "Queue cleared."})
+        return jsonify({"message": "Queue cleared.", "newState": get_current_state()})
 
     @app.route('/history/clear', methods=['POST'])
     @password_required
@@ -513,19 +517,20 @@ def register_routes(app):
             if is_safe_path(log_dir, path, allow_file=True):
                 try: os.remove(path)
                 except Exception as e: logger.error(f"Could not delete log file {path}: {e}")
-        return jsonify({"message": "History cleared."})
+        return jsonify({"message": "History cleared.", "newState": get_current_state()})
 
     @app.route("/api/delete_item", methods=['POST'])
     @password_required
     def delete_item_route():
-        paths = (request.get_json() or {}).get('paths', [])
-        if not paths: return jsonify({"error": "Missing path parameter."}), 400
+        paths_to_delete = (request.get_json() or {}).get('paths', [])
+        if not paths_to_delete: return jsonify({"error": "Missing 'paths' parameter."}), 400
         
-        download_dir = os.path.realpath(CONFIG.get("download_dir"))
+        base_download_dir = CONFIG.get("download_dir")
         deleted_count, errors = 0, []
-        for item_path in paths:
-            full_path = os.path.normpath(os.path.join(download_dir, item_path))
-            if not is_safe_path(download_dir, full_path, allow_file=True) or not os.path.exists(full_path):
+
+        for item_path in paths_to_delete:
+            full_path = secure_join(base_download_dir, item_path)
+            if not full_path or not is_safe_path(base_download_dir, full_path, allow_file=True) or not os.path.exists(full_path):
                 errors.append(f"Skipping invalid or non-existent path: {item_path}")
                 continue
             try:
@@ -561,7 +566,7 @@ def register_routes(app):
     @password_required
     def delete_from_queue_route(job_id):
         state_manager.delete_from_queue(job_id)
-        return jsonify({"message": "Queue item removed."})
+        return jsonify({"message": "Queue item removed.", "newState": get_current_state()})
 
     @app.route('/queue/reorder', methods=['POST'])
     @password_required
@@ -572,19 +577,19 @@ def register_routes(app):
         except (ValueError, TypeError):
             return jsonify({"error": "Invalid job IDs provided."}), 400
         state_manager.reorder_queue(ordered_ids)
-        return jsonify({"message": "Queue reordered."})
+        return jsonify({"message": "Queue reordered.", "newState": get_current_state()})
 
     @app.route('/queue/pause', methods=['POST'])
     @password_required
     def pause_queue_route():
         state_manager.pause_queue()
-        return jsonify({"message": "Queue paused."})
+        return jsonify({"message": "Queue paused.", "newState": get_current_state()})
 
     @app.route('/queue/resume', methods=['POST'])
     @password_required
     def resume_queue_route():
         state_manager.resume_queue()
-        return jsonify({"message": "Queue resumed."})
+        return jsonify({"message": "Queue resumed.", "newState": get_current_state()})
 
     @app.route('/history/delete/<int:log_id>', methods=['POST'])
     @password_required
@@ -594,7 +599,7 @@ def register_routes(app):
         if path_to_delete and is_safe_path(log_dir, path_to_delete, allow_file=True):
             try: os.remove(path_to_delete)
             except Exception as e: logger.error(f"Could not delete log file {path_to_delete}: {e}")
-        return jsonify({"message": "History item deleted."})
+        return jsonify({"message": "History item deleted.", "newState": get_current_state()})
 
     @app.route('/api/history/item/<int:log_id>')
     @password_required
@@ -633,11 +638,11 @@ def register_routes(app):
     @app.route("/api/files")
     @password_required
     def list_files_route():
-        base_download_dir = os.path.realpath(CONFIG.get("download_dir"))
+        base_download_dir = CONFIG.get("download_dir")
         req_path = request.args.get('path', '')
-        safe_req_path = os.path.normpath(os.path.join(base_download_dir, req_path))
         
-        if not is_safe_path(base_download_dir, safe_req_path):
+        safe_req_path = secure_join(base_download_dir, req_path)
+        if not safe_req_path or not is_safe_path(base_download_dir, safe_req_path):
             return jsonify({"error": "Access Denied"}), 403
         
         items = []
@@ -662,10 +667,15 @@ def register_routes(app):
     @password_required
     def download_item_route():
         paths = request.args.getlist('paths')
-        download_dir = os.path.realpath(CONFIG.get("download_dir"))
+        base_download_dir = CONFIG.get("download_dir")
         if not paths: return "Missing path parameter.", 400
         
-        safe_full_paths = [fp for p in paths if is_safe_path(download_dir, fp := os.path.normpath(os.path.join(download_dir, p)), allow_file=True) and os.path.exists(fp)]
+        safe_full_paths = []
+        for p in paths:
+            full_path = secure_join(base_download_dir, p)
+            if full_path and is_safe_path(base_download_dir, full_path, allow_file=True) and os.path.exists(full_path):
+                safe_full_paths.append(full_path)
+        
         if not safe_full_paths: return "No valid files specified or access denied.", 404
         
         if len(safe_full_paths) == 1 and os.path.isfile(safe_full_paths[0]):
@@ -690,6 +700,7 @@ def register_routes(app):
 if __name__ == "__main__":
     try:
         app = create_app()
+        # Read host and port from the loaded CONFIG dictionary
         host = CONFIG.get("server_host", "0.0.0.0")
         port = CONFIG.get("server_port", 8080)
         
