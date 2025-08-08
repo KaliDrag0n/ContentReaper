@@ -6,16 +6,15 @@ import shutil
 import requests
 import zipfile
 import stat
+import tarfile # Standard library, good to import at the top.
 
 # --- Constants ---
-# URLs for ffmpeg downloads from BtbN's builds, which are widely recommended.
+# Using a dictionary for release URLs is a clean approach.
 FFMPEG_RELEASES = {
     "win64": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
-    "linux64": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz", # Note: This is a tar.xz, requires tarfile library
+    "linux64": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz",
     "macos64": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-macos64-gpl.zip"
 }
-
-# URL for the latest yt-dlp executable.
 YT_DLP_URL_TEMPLATE = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp{ext}"
 
 
@@ -24,13 +23,13 @@ YT_DLP_URL_TEMPLATE = "https://github.com/yt-dlp/yt-dlp/releases/latest/download
 def get_platform_info():
     """
     Determines the operating system and architecture.
-    Returns a string like 'win64', 'linux64', or 'macos64'.
+    Returns a string like 'win64', 'linux64', or 'macos64', or None if unsupported.
     """
     system = platform.system().lower()
     is_64bit = sys.maxsize > 2**32
 
     if not is_64bit:
-        print("WARNING: 32-bit systems are not supported by this auto-downloader. Please install ffmpeg manually.")
+        print("WARNING: 32-bit systems are not supported by this auto-downloader. Please install ffmpeg and yt-dlp manually.")
         return None
 
     if system == 'windows':
@@ -40,11 +39,12 @@ def get_platform_info():
     elif system == 'darwin': # macOS
         return 'macos64'
     
+    print(f"WARNING: Unsupported operating system '{platform.system()}'.")
     return None
 
 def find_binary(name):
     """
-    Checks if a binary exists in the system's PATH.
+    Checks if a binary exists in the system's PATH using shutil.which.
     Returns the full path to the binary if found, otherwise None.
     """
     print(f"Searching for '{name}' in system PATH...")
@@ -58,6 +58,7 @@ def find_binary(name):
 def download_file(url, dest_path):
     """
     Downloads a file from a URL to a destination, showing progress.
+    Returns True on success, False on failure.
     """
     print(f"Downloading from {url}...")
     try:
@@ -71,12 +72,14 @@ def download_file(url, dest_path):
                     bytes_downloaded += len(chunk)
                     if total_size > 0:
                         progress = (bytes_downloaded / total_size) * 100
+                        # This progress bar implementation is effective for terminals.
                         sys.stdout.write(f"\rProgress: {progress:.1f}%")
                         sys.stdout.flush()
         print("\nDownload complete.")
         return True
     except requests.exceptions.RequestException as e:
         print(f"\nERROR: Failed to download file: {e}")
+        # Clean up partially downloaded file on error.
         if os.path.exists(dest_path):
             os.remove(dest_path)
         return False
@@ -84,6 +87,7 @@ def download_file(url, dest_path):
 def extract_archive(archive_path, dest_dir):
     """
     Extracts a zip or tar.xz archive to a destination directory.
+    Returns True on success, False on failure.
     """
     print(f"Extracting {archive_path}...")
     try:
@@ -91,8 +95,6 @@ def extract_archive(archive_path, dest_dir):
             with zipfile.ZipFile(archive_path, 'r') as zip_ref:
                 zip_ref.extractall(dest_dir)
         elif archive_path.endswith('.tar.xz'):
-            # The tarfile module is part of the standard library
-            import tarfile
             with tarfile.open(archive_path, 'r:xz') as tar_ref:
                 tar_ref.extractall(path=dest_dir)
         else:
@@ -101,17 +103,16 @@ def extract_archive(archive_path, dest_dir):
         
         print("Extraction complete.")
         return True
-    except Exception as e:
+    except (zipfile.BadZipFile, tarfile.TarError, Exception) as e:
         print(f"ERROR: Failed to extract archive: {e}")
         return False
 
 def make_executable(path):
-    """
-    Makes a file executable (important for Linux/macOS).
-    """
+    """Makes a file executable (important for Linux/macOS)."""
     try:
         st = os.stat(path)
-        os.chmod(path, st.st_mode | stat.S_IEXEC)
+        # Add execute permission for owner, group, and others.
+        os.chmod(path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         print(f"Made '{os.path.basename(path)}' executable.")
     except Exception as e:
         print(f"WARNING: Could not make file executable: {e}")
@@ -121,7 +122,7 @@ def make_executable(path):
 def ensure_yt_dlp(bin_dir, platform_info):
     """
     Ensures yt-dlp is available, downloading it if necessary.
-    Returns the path to the executable.
+    Returns the path to the executable, or None on failure.
     """
     print("\n--- Checking for yt-dlp ---")
     system_path = find_binary('yt-dlp')
@@ -148,7 +149,7 @@ def ensure_yt_dlp(bin_dir, platform_info):
 def ensure_ffmpeg(bin_dir, platform_info):
     """
     Ensures ffmpeg is available, downloading it if necessary.
-    Returns the path to the executable.
+    Returns the path to the executable, or None on failure.
     """
     print("\n--- Checking for ffmpeg ---")
     system_path = find_binary('ffmpeg')
@@ -170,40 +171,48 @@ def ensure_ffmpeg(bin_dir, platform_info):
         return None
 
     temp_archive_path = os.path.join(bin_dir, os.path.basename(url))
-    if not download_file(url, temp_archive_path):
-        return None
-
     temp_extract_dir = os.path.join(bin_dir, "ffmpeg_temp")
-    if os.path.exists(temp_extract_dir):
-        shutil.rmtree(temp_extract_dir)
-    os.makedirs(temp_extract_dir)
-
-    if not extract_archive(temp_archive_path, temp_extract_dir):
-        return None
-
-    # Find the ffmpeg executable within the extracted mess
-    found_ffmpeg = False
-    for root, _, files in os.walk(temp_extract_dir):
-        for file in files:
-            if file.lower() == f"ffmpeg{ext}":
-                shutil.move(os.path.join(root, file), bundled_path)
-                found_ffmpeg = True
-                break
-        if found_ffmpeg:
-            break
     
-    # Cleanup
-    os.remove(temp_archive_path)
-    shutil.rmtree(temp_extract_dir)
+    # --- CHANGE: Use a try...finally block to guarantee cleanup ---
+    try:
+        if not download_file(url, temp_archive_path):
+            return None
 
-    if found_ffmpeg:
-        print(f"Successfully bundled ffmpeg at: {bundled_path}")
-        if platform_info != 'win64':
-            make_executable(bundled_path)
-        return bundled_path
-    else:
-        print("ERROR: Could not find ffmpeg executable in the downloaded archive.")
-        return None
+        # Clean up old temp directory before extraction
+        if os.path.exists(temp_extract_dir):
+            shutil.rmtree(temp_extract_dir)
+        os.makedirs(temp_extract_dir)
+
+        if not extract_archive(temp_archive_path, temp_extract_dir):
+            return None
+
+        # Find the ffmpeg executable within the extracted files
+        found_ffmpeg_path = None
+        for root, _, files in os.walk(temp_extract_dir):
+            for file in files:
+                if file.lower() == f"ffmpeg{ext}":
+                    shutil.move(os.path.join(root, file), bundled_path)
+                    found_ffmpeg_path = bundled_path
+                    break
+            if found_ffmpeg_path:
+                break
+        
+        if found_ffmpeg_path:
+            print(f"Successfully bundled ffmpeg at: {found_ffmpeg_path}")
+            if platform_info != 'win64':
+                make_executable(found_ffmpeg_path)
+            return found_ffmpeg_path
+        else:
+            print("ERROR: Could not find ffmpeg executable in the downloaded archive.")
+            return None
+            
+    finally:
+        # This block will run whether the try block succeeds or fails.
+        if os.path.exists(temp_archive_path):
+            os.remove(temp_archive_path)
+        if os.path.exists(temp_extract_dir):
+            shutil.rmtree(temp_extract_dir)
+        print("Cleanup of temporary ffmpeg files complete.")
 
 
 def ensure_dependencies(app_root):
@@ -225,7 +234,7 @@ def ensure_dependencies(app_root):
     if not yt_dlp_path:
         print("\nFATAL: yt-dlp could not be found or installed. The application cannot continue.")
     if not ffmpeg_path:
-        print("\nFATAL: ffmpeg could not be found or installed. The application cannot continue.")
+        # Changed from FATAL to WARNING as some functionality may still work without ffmpeg.
+        print("\nWARNING: ffmpeg could not be found or installed. Merging video/audio and format conversions will fail.")
         
     return yt_dlp_path, ffmpeg_path
-

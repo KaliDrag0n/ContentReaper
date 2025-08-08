@@ -1,24 +1,44 @@
 /**
  * static/js/settings.js
  * Handles all logic for the settings page.
+ * Refactored to fetch its own data via API for better decoupling.
  */
 
 (function() {
     'use strict';
 
-    document.addEventListener('DOMContentLoaded', () => {
-        const checkGlobals = setInterval(() => {
-            if (window.applyTheme && window.apiRequest && window.API) {
-                clearInterval(checkGlobals);
-                initializeSettingsPage();
+    // --- CHANGE: Centralized function to populate the form fields ---
+    const populateSettings = async () => {
+        try {
+            // This new endpoint will need to be created in the backend.
+            const data = await window.apiRequest('/api/settings');
+            
+            document.getElementById('download_dir').value = data.config.download_dir;
+            document.getElementById('temp_dir').value = data.config.temp_dir;
+            
+            // The cookie content is now also fetched via the secure API.
+            const cookieTextarea = document.getElementById('cookie_content');
+            cookieTextarea.value = data.cookies;
+            if (!data.is_logged_in && data.is_password_set) {
+                cookieTextarea.placeholder = "Login to view/edit cookies...";
+                cookieTextarea.disabled = true;
+            } else {
+                cookieTextarea.disabled = false;
             }
-        }, 50);
-    });
 
-    function initializeSettingsPage() {
+        } catch (error) {
+            if (error.message !== "AUTH_REQUIRED") {
+                console.error("Failed to load settings:", error);
+                document.getElementById('settings-form-body').innerHTML = 
+                    `<div class="alert alert-danger">Could not load settings from the server. Please try refreshing the page.</div>`;
+            }
+        }
+    };
+
+    const initializeSettingsPage = () => {
+        // Common page initialization
         const savedTheme = localStorage.getItem('downloader_theme') || 'light';
         window.applyTheme(savedTheme);
-
         document.getElementById('theme-toggle').addEventListener('click', () => {
             const newTheme = document.documentElement.dataset.bsTheme === 'dark' ? 'light' : 'dark';
             window.applyTheme(newTheme);
@@ -29,37 +49,28 @@
         const currentPasswordGroup = document.getElementById('current-password-group');
         const loginBtn = document.getElementById('login-btn');
         const logoutBtn = document.getElementById('logout-btn');
-        const cookieTextarea = document.getElementById('cookie_content');
 
-        const fetchCookies = async () => {
-            try {
-                const data = await window.apiRequest(window.API.authGetCookies);
-                cookieTextarea.value = data.cookies;
-            } catch (error) {
-                console.error("Could not fetch cookies:", error.message);
-                cookieTextarea.placeholder = "Login to view/edit cookies...";
-            }
-        };
-
+        // Check auth status to show/hide relevant buttons and alerts
         window.apiRequest(window.API.authStatus).then(status => {
             if (!status.password_set) {
                 setupAlert.style.display = 'block';
                 currentPasswordGroup.style.display = 'none';
-                fetchCookies();
             } else {
                 setupAlert.style.display = 'none';
                 currentPasswordGroup.style.display = 'block';
                 if (status.logged_in) {
                     logoutBtn.style.display = 'inline-block';
-                    fetchCookies();
                 } else {
                     loginBtn.style.display = 'inline-block';
                 }
             }
+            // Populate the form fields after checking auth status
+            populateSettings();
         });
 
         loginBtn.addEventListener('click', () => window.showLoginModal());
 
+        // Password form submission
         const passwordForm = document.getElementById('password-form');
         if (passwordForm) {
             passwordForm.addEventListener('submit', async (e) => {
@@ -92,6 +103,7 @@
                     });
                     statusEl.textContent = response.message;
                     statusEl.classList.add('text-success');
+                    // Reload the page to reflect the new login state
                     setTimeout(() => location.reload(), 1500);
                 } catch (error) {
                     if (error.message !== "AUTH_REQUIRED") {
@@ -105,6 +117,7 @@
             });
         }
 
+        // Server action buttons
         const updateBtn = document.getElementById('check-for-updates-btn');
         if(updateBtn) {
             updateBtn.addEventListener('click', async () => {
@@ -112,10 +125,11 @@
                 updateBtn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Checking...`;
                 try {
                     await window.apiRequest(window.API.forceUpdateCheck, { method: 'POST' });
+                    // Reload the page to show the new update status
                     location.reload();
                 } catch (error) {
                     if (error.message !== "AUTH_REQUIRED") {
-                        alert(`Could not check for updates. Error: ${error.message}`);
+                        window.showToast(`Could not check for updates. Error: ${error.message}`, 'Error', 'danger');
                     }
                     updateBtn.disabled = false;
                     updateBtn.innerHTML = `<i class="bi bi-arrow-repeat"></i> Check for Updates`;
@@ -133,7 +147,9 @@
                         await window.apiRequest(window.API.installUpdate, { method: 'POST' });
                         document.querySelector('.container').innerHTML = `<div class="alert alert-info mt-4"><h4>Update in Progress</h4><p>The server will restart automatically. This page will become unresponsive. Please wait a minute and then refresh.</p></div>`;
                     } catch (error) {
-                         if(error.message !== "AUTH_REQUIRED") alert(`Failed to start update. Error: ${error.message}`);
+                         if(error.message !== "AUTH_REQUIRED") {
+                             window.showToast(`Failed to start update. Error: ${error.message}`, 'Error', 'danger');
+                         }
                          installUpdateBtn.disabled = false;
                          installUpdateBtn.innerHTML = `<i class="bi bi-cloud-download-fill"></i> Install Update & Restart`;
                     }
@@ -151,12 +167,24 @@
                         await window.apiRequest(window.API.shutdown, { method: 'POST' });
                         document.querySelector('.container').innerHTML = `<div class="alert alert-info mt-4">The shutdown command has been sent. You can now close this page.</div>`;
                     } catch(error) {
-                        if(error.message !== "AUTH_REQUIRED") alert(`Failed to send shutdown command. Error: ${error.message}`);
+                        if(error.message !== "AUTH_REQUIRED") {
+                            window.showToast(`Failed to send shutdown command. Error: ${error.message}`, 'Error', 'danger');
+                        }
                         shutdownBtn.disabled = false;
                         shutdownBtn.innerHTML = `<i class="bi bi-power"></i> Shutdown Server`;
                     }
                 });
             });
         }
-    }
+    };
+
+    document.addEventListener('DOMContentLoaded', () => {
+        // Wait for shared functions from app.js and api.js to be ready
+        const checkGlobals = setInterval(() => {
+            if (window.applyTheme && window.apiRequest && window.API) {
+                clearInterval(checkGlobals);
+                initializeSettingsPage();
+            }
+        }, 50);
+    });
 })();

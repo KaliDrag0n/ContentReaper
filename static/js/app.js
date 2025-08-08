@@ -1,20 +1,20 @@
 /**
  * static/js/app.js
- * Contains common JavaScript functions shared across multiple pages
- * to avoid code duplication. This includes theme management and a reusable
- * confirmation modal.
- *
- * This file is now wrapped in an IIFE to prevent polluting the global scope.
+ * Contains common JavaScript functions shared across multiple pages.
+ * This includes theme management, reusable modals, and a centralized, secure
+ * API request handler with CSRF protection.
  */
 
 (function() {
     'use strict';
 
     // --- Global variables for shared components ---
-    let confirmModalInstance = null; // Holds the Bootstrap Modal instance.
-    let onConfirmAction = () => {}; // A placeholder for the function to run on confirmation.
+    let confirmModalInstance = null;
+    let onConfirmAction = () => {};
     let loginModalInstance = null;
-    let failedRequest = null; // To store a request that failed due to auth, so we can retry it.
+    
+    let csrfToken = null;
+    let requestToRetry = null; 
 
     /**
      * Applies a color theme to the entire document.
@@ -29,14 +29,14 @@
     };
 
     /**
-     * Displays a Bootstrap confirmation modal with a dynamic title, body, and action.
+     * Displays a Bootstrap confirmation modal.
      * @param {string} title - The title for the modal header.
      * @param {string} body - The text content for the modal body.
-     * @param {function} onConfirm - The callback function to execute when the 'Confirm' button is clicked.
+     * @param {function} onConfirm - The callback to execute on confirmation.
      */
     const showConfirmModal = (title, body, onConfirm) => {
         if (!confirmModalInstance) {
-            console.error("Confirmation modal is not initialized. Make sure the modal's HTML is included on this page.");
+            console.error("Confirmation modal is not initialized.");
             return;
         }
         document.getElementById('confirmModalTitle').textContent = title;
@@ -60,11 +60,19 @@
     };
 
     /**
-     * A wrapper for the fetch API to handle common error cases, JSON parsing,
-     * and automatically triggering the authentication flow.
-     * @param {string} endpoint - The API endpoint to request.
-     * @param {object} [options={}] - Standard fetch options.
-     * @returns {Promise<any>} - A promise that resolves with the response data.
+     * Fetches the CSRF token from the backend.
+     */
+    const fetchCsrfToken = async () => {
+        try {
+            const data = await (await fetch('/api/auth/csrf-token')).json();
+            csrfToken = data.csrf_token;
+        } catch (error) {
+            console.error('Could not fetch CSRF token. State-changing actions may fail.', error);
+        }
+    };
+
+    /**
+     * A secure wrapper for the fetch API.
      */
     async function apiRequest(endpoint, options = {}) {
         const fetchOptions = {
@@ -74,26 +82,39 @@
                 ...(options.headers || {}),
             },
         };
+
+        const method = (options.method || 'GET').toUpperCase();
+        if (method !== 'GET' && method !== 'HEAD' && csrfToken) {
+            fetchOptions.headers['X-CSRF-Token'] = csrfToken;
+        }
+
         if (options.body instanceof FormData || options.body instanceof URLSearchParams) {
             delete fetchOptions.headers['Content-Type'];
         }
 
         try {
             const res = await fetch(endpoint, fetchOptions);
+
             if (res.status === 401) {
-                failedRequest = { endpoint, options };
+                requestToRetry = { endpoint, options };
                 showLoginModal();
                 throw new Error("AUTH_REQUIRED");
             }
+
             if (!res.ok) {
-                const errorData = await res.json().catch(() => ({ message: `Request failed with status: ${res.status}` }));
-                throw new Error(errorData.message || 'An unknown error occurred.');
+                const errorData = await res.json().catch(() => ({ 
+                    message: `Request failed with status: ${res.status}` 
+                }));
+                throw new Error(errorData.message || 'An unknown API error occurred.');
             }
+
             if (res.status === 204) return null;
+            
             if (res.headers.get("Content-Type")?.includes("application/json")) {
                 return res.json();
             }
             return res.text();
+
         } catch (error) {
             if (error.message !== "AUTH_REQUIRED") {
                 const toastEl = document.getElementById('actionToast');
@@ -101,7 +122,7 @@
                      const toastTitle = document.getElementById('toastTitle');
                      const toastBody = document.getElementById('toastBody');
                      toastTitle.textContent = 'API Error';
-                     toastBody.textContent = error.message;
+                     toastBody.textContent = `Operation failed: ${error.message}`;
                      toastEl.className = 'toast text-white bg-danger';
                      new bootstrap.Toast(toastEl).show();
                 }
@@ -114,13 +135,13 @@
      * Initializes shared components when the DOM is fully loaded.
      */
     document.addEventListener('DOMContentLoaded', () => {
-        // Expose necessary functions to the global window object
         window.applyTheme = applyTheme;
         window.showConfirmModal = showConfirmModal;
         window.showLoginModal = showLoginModal;
         window.apiRequest = apiRequest;
 
-        // Confirmation Modal Logic
+        fetchCsrfToken();
+
         const confirmModalEl = document.getElementById('confirmModal');
         if (confirmModalEl) {
             confirmModalInstance = new bootstrap.Modal(confirmModalEl);
@@ -130,7 +151,6 @@
             });
         }
 
-        // Login Modal Logic
         const loginForm = document.getElementById('login-form');
         if (loginForm) {
             loginForm.addEventListener('submit', async (e) => {
@@ -145,25 +165,25 @@
                         method: 'POST',
                         body: JSON.stringify({ password: password })
                     });
+                    
                     loginModalInstance.hide();
                     passwordInput.value = '';
-                    if (failedRequest) {
-                        const { endpoint, options } = failedRequest;
-                        failedRequest = null;
-                        // Retry the original request
+
+                    if (requestToRetry) {
+                        const { endpoint, options } = requestToRetry;
+                        requestToRetry = null;
                         await apiRequest(endpoint, options);
                     }
-                    // Reload to reflect logged-in state
-                    location.reload();
                 } catch (err) {
                     if (err.message !== "AUTH_REQUIRED") {
                         errorEl.textContent = err.message || "An unknown error occurred.";
                     }
+                } finally {
+                    location.reload();
                 }
             });
         }
 
-        // Logout Button Logic
         const logoutBtn = document.getElementById('logout-btn');
         if(logoutBtn) {
             logoutBtn.addEventListener('click', async () => {

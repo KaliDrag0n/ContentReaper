@@ -1,11 +1,8 @@
 /**
  * static/js/index.js
  * This file contains the core logic for the main dashboard page.
- * It handles:
- * - Polling the server for status updates.
- * - Rendering the 'Now Downloading', 'Queue', and 'History' sections.
- * - Handling all user interactions like adding, deleting, and reordering jobs.
- * - Displaying notifications and modals.
+ * It has been refactored to use a local state cache and intelligent DOM diffing
+ * for more efficient and stable UI updates.
  */
 (function() {
     'use strict';
@@ -16,6 +13,13 @@
     let urlInputTimeout;
     let liveLogPollInterval = null;
 
+    let localState = {
+        current: null, // Initialize as null
+        queue: [],
+        history: [],
+        is_paused: false
+    };
+
     // --- CORE UTILITY FUNCTIONS ---
 
     const showToast = (message, title = 'Notification', type = 'success') => {
@@ -23,7 +27,7 @@
         if (!toastEl) return;
         document.getElementById('toastTitle').textContent = title;
         document.getElementById('toastBody').textContent = message;
-        toastEl.className = 'toast text-white'; // Reset classes
+        toastEl.className = 'toast text-white';
         toastEl.classList.add(type === 'danger' ? 'bg-danger' : (type === 'info' ? 'bg-info' : 'bg-success'));
         if (!toastInstance) toastInstance = new bootstrap.Toast(toastEl);
         toastInstance.show();
@@ -51,10 +55,8 @@
                 const notesContent = document.getElementById('update-notes-content');
                 notesContent.textContent = data.release_notes;
                 notesContent.innerHTML = notesContent.innerHTML.replace(/\r\n/g, '<br>');
-                
                 document.getElementById('update-release-link').href = data.release_url;
                 updateBtn.style.display = 'block';
-
                 updateBtn.onclick = () => {
                     if (!updateModalInstance) updateModalInstance = new bootstrap.Modal(document.getElementById('updateModal'));
                     updateModalInstance.show();
@@ -73,7 +75,6 @@
             const urlTextarea = document.querySelector('textarea[name="urls"]');
             const urls = (urlTextarea.value.match(/(https?:\/\/[^\s"]+|www\.[^\s"]+)/g) || []).join('\n');
             urlTextarea.value = urls;
-
             const isPlaylist = urls.includes('playlist?list=');
             document.getElementById('playlist-range-options').style.display = isPlaylist ? 'flex' : 'none';
         }, 400);
@@ -83,32 +84,31 @@
         document.getElementById('stop-save-btn').disabled = true;
         document.getElementById('cancel-btn').disabled = true;
         document.getElementById('current-status-text').textContent = mode === 'save' ? 'Stopping...' : 'Cancelling...';
-        
         window.apiRequest(window.API.stop, {
             method: 'POST',
             body: JSON.stringify({ mode: mode })
         }).catch(err => {
-            if (err.message !== "AUTH_REQUIRED") {
-                 console.error("Stop request failed", err)
-            }
+            if (err.message !== "AUTH_REQUIRED") console.error("Stop request failed", err);
         });
     };
 
-    // --- RENDERING LOGIC ---
+    // --- REFACTORED RENDERING LOGIC ---
 
     function renderCurrentStatus(current) {
         const currentDiv = document.getElementById("current-status");
-        const currentJobUrl = currentDiv.dataset.jobUrl;
+        const wasPreviouslyDownloading = localState.current !== null;
+        const isCurrentlyDownloading = current !== null && current.url;
 
-        if (!current || !current.url) {
-            if (currentJobUrl !== "none") {
-                currentDiv.innerHTML = "<p class='m-0'>No active download.</p>";
-                currentDiv.dataset.jobUrl = "none";
-            }
+        if (wasPreviouslyDownloading && !isCurrentlyDownloading) {
+            currentDiv.innerHTML = "<p class='m-0'>No active download.</p>";
             return;
         }
 
-        if (current.url !== currentJobUrl) {
+        if (!isCurrentlyDownloading) {
+            return;
+        }
+
+        if (!wasPreviouslyDownloading || current.url !== localState.current.url) {
             currentDiv.innerHTML = `
                 <div class="d-flex flex-column flex-md-row">
                     <div class="flex-shrink-0 mb-3 mb-md-0 me-md-3" id="current-thumbnail-container"></div>
@@ -131,8 +131,6 @@
                     </div>
                 </div>
             `;
-            currentDiv.dataset.jobUrl = current.url;
-            
             document.getElementById('view-log-btn').addEventListener('click', viewLiveLog);
             document.getElementById('stop-save-btn').addEventListener('click', () => handleStopRequest('save'));
             document.getElementById('cancel-btn').addEventListener('click', () => handleStopRequest('cancel'));
@@ -154,36 +152,49 @@
         const progress = current.progress ? current.progress.toFixed(1) : 0;
         progressBar.style.width = `${progress}%`;
         progressBar.textContent = `${progress}%`;
-        progressBar.setAttribute('aria-valuenow', progress);
-
+        
         document.getElementById('current-status-text').textContent = current.status;
         document.getElementById('current-stat-size').textContent = current.file_size || 'N/A';
         document.getElementById('current-stat-speed').textContent = current.speed || 'N/A';
         document.getElementById('current-stat-eta').textContent = current.eta || 'N/A';
     }
 
-    /**
-     * --- FIX: This function has been simplified to prevent "phantom" queue items. ---
-     * It now always updates the UI to match the state from the API.
-     */
-    function renderQueue(queue) {
+    function renderQueue(newQueue) {
         const queueList = document.getElementById("queue-list");
-        document.getElementById("queue-controls").style.display = queue.length > 0 ? 'flex' : 'none';
-        
-        if (queue.length === 0) {
-            // If the API says the queue is empty, always show the empty message.
-            queueList.innerHTML = "<li class='list-group-item fst-italic text-muted'>Queue is empty.</li>";
+        document.getElementById("queue-controls").style.display = newQueue.length > 0 ? 'flex' : 'none';
+
+        const oldIds = localState.queue.map(j => j.id);
+        const newIds = newQueue.map(j => j.id);
+
+        oldIds.forEach(id => {
+            if (!newIds.includes(id)) {
+                queueList.querySelector(`[data-job-id='${id}']`)?.remove();
+            }
+        });
+
+        if (newQueue.length === 0) {
+            if (queueList.children.length > 0 && !queueList.querySelector('.fst-italic')) {
+                 queueList.innerHTML = "<li class='list-group-item fst-italic text-muted'>Queue is empty.</li>";
+            }
         } else {
-            // If the API provides items, render them. This overwrites the previous state.
-            queueList.innerHTML = queue.map(job => 
-                `<li class="list-group-item d-flex justify-content-between align-items-center" data-job-id="${job.id}">
-                    <div class="d-flex align-items-center" style="min-width: 0;">
-                        <i class="bi bi-grip-vertical queue-handle me-2" title="Drag to reorder"></i>
-                        <span class="word-break">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span>
-                    </div>
-                    <button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}" aria-label="Remove from queue"></button>
-                </li>`
-            ).join('');
+            newQueue.forEach((job, index) => {
+                let li = queueList.querySelector(`[data-job-id='${job.id}']`);
+                if (!li) {
+                    li = document.createElement('li');
+                    li.className = 'list-group-item d-flex justify-content-between align-items-center';
+                    li.dataset.jobId = job.id;
+                    li.innerHTML = `
+                        <div class="d-flex align-items-center" style="min-width: 0;">
+                            <i class="bi bi-grip-vertical queue-handle me-2" title="Drag to reorder"></i>
+                            <span class="word-break">${job.folder ? `<strong>${job.folder}</strong>: ` : ''}${job.url}</span>
+                        </div>
+                        <button class="btn-close queue-action-btn" data-action="delete" data-job-id="${job.id}" aria-label="Remove from queue"></button>
+                    `;
+                    const nextSibling = queueList.children[index];
+                    queueList.insertBefore(li, nextSibling);
+                }
+            });
+            queueList.querySelector('.fst-italic')?.remove();
         }
     }
 
@@ -191,38 +202,36 @@
         const historyList = document.getElementById("history-list");
         document.getElementById("clear-history-btn").style.display = newHistory.length > 0 ? 'block' : 'none';
 
-        if (newHistory.length === 0) {
+        if (newHistory.length === 0 && localState.history.length > 0) {
             historyList.innerHTML = "<li class='list-group-item fst-italic text-muted'>History is empty.</li>";
             return;
         }
 
-        const historyForDisplay = [...newHistory].reverse();
-        const existingLogIds = new Set([...historyList.querySelectorAll('li[data-log-id]')].map(li => li.dataset.logId));
-        const fragment = document.createDocumentFragment();
+        const newHistoryMap = new Map(newHistory.map(item => [item.log_id, item]));
+        const oldHistoryMap = new Map(localState.history.map(item => [item.log_id, item]));
 
-        historyForDisplay.forEach(item => {
-            const logIdStr = String(item.log_id);
-            if (!existingLogIds.has(logIdStr)) {
+        oldHistoryMap.forEach((_, logId) => {
+            if (!newHistoryMap.has(logId)) {
+                historyList.querySelector(`[data-log-id='${logId}']`)?.remove();
+            }
+        });
+        
+        [...newHistory].reverse().forEach(item => {
+            const existingLi = historyList.querySelector(`[data-log-id='${item.log_id}']`);
+            if (!existingLi) {
                 const li = document.createElement('li');
                 li.className = 'list-group-item';
-                li.dataset.logId = logIdStr;
-                li.dataset.status = item.status;
+                li.dataset.logId = item.log_id;
                 li.innerHTML = createHistoryItemHTML(item);
-                fragment.appendChild(li);
-            } else {
-                const existingItem = historyList.querySelector(`li[data-log-id='${logIdStr}']`);
-                if (existingItem && existingItem.dataset.status !== item.status) {
-                    existingItem.dataset.status = item.status;
-                    existingItem.innerHTML = createHistoryItemHTML(item);
-                }
+                historyList.prepend(li);
+            } else if (existingLi.dataset.status !== item.status) {
+                existingLi.innerHTML = createHistoryItemHTML(item);
+                existingLi.dataset.status = item.status;
             }
         });
 
-        if (fragment.children.length > 0) {
-            if (historyList.querySelector('.fst-italic')) {
-                historyList.innerHTML = '';
-            }
-            historyList.prepend(fragment);
+        if (newHistory.length > 0) {
+            historyList.querySelector('.fst-italic')?.remove();
         }
     }
 
@@ -234,6 +243,13 @@
             case 'STOPPED': badgeClass = 'bg-warning text-dark'; break;
             case 'CANCELLED': badgeClass = 'bg-secondary'; break;
             case 'FAILED': case 'ERROR': case 'ABANDONED': badgeClass = 'bg-danger'; break;
+        }
+
+        let requeueButtonHTML = '';
+        if (item.status === 'STOPPED' || item.status === 'PARTIAL') {
+            requeueButtonHTML = `<button class="btn btn-sm btn-outline-success history-action-btn" data-action="requeue" title="Continue Download"><i class="bi bi-play-fill"></i></button>`;
+        } else {
+            requeueButtonHTML = `<button class="btn btn-sm btn-outline-secondary history-action-btn" data-action="requeue" title="Download Again"><i class="bi bi-arrow-clockwise"></i></button>`;
         }
 
         const errorSummaryHTML = item.error_summary ? `
@@ -255,7 +271,7 @@
                     <small class="text-muted word-break">${item.folder ? `Folder: ${item.folder}` : `URL: ${item.url}`}</small>
                 </div>
                 <div class="btn-group ms-2">
-                    <button class="btn btn-sm btn-outline-secondary history-action-btn" data-action="requeue" title="Download Again"><i class="bi bi-arrow-clockwise"></i></button>
+                    ${requeueButtonHTML}
                     <button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log"><i class="bi bi-file-text"></i></button>
                     <button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete"><i class="bi bi-trash-fill"></i></button>
                 </div>
@@ -265,6 +281,7 @@
     }
 
     function renderPauseState(is_paused) {
+        if (localState.is_paused === is_paused) return;
         const pauseResumeBtn = document.getElementById('pause-resume-btn');
         const pausedOverlay = document.getElementById('paused-overlay');
         if (is_paused) {
@@ -279,19 +296,23 @@
             pausedOverlay.style.display = 'none';
         }
     }
+    
+    function renderState(state) {
+        if (!state) return;
+        renderCurrentStatus(state.current);
+        renderQueue(state.queue);
+        renderHistory(state.history);
+        renderPauseState(state.is_paused);
+        localState = state;
+    }
 
     const pollStatus = async () => {
         clearTimeout(statusPollTimeout);
         try {
             const data = await window.apiRequest(window.API.status);
-            if (data) {
-                renderCurrentStatus(data.current);
-                renderQueue(data.queue);
-                renderHistory(data.history);
-                renderPauseState(data.is_paused);
-            }
+            renderState(data);
         } catch (error) {
-            console.error("Status poll failed:", error);
+            if (error.message !== "AUTH_REQUIRED") console.error("Status poll failed:", error);
         } finally {
             statusPollTimeout = setTimeout(pollStatus, 1500);
         }
@@ -328,7 +349,6 @@
                 clearInterval(liveLogPollInterval);
             }
         };
-
         liveLogPollInterval = setInterval(fetchLogContent, 2000);
         fetchLogContent();
     };
@@ -354,12 +374,8 @@
             const loginBtn = document.getElementById('login-btn');
             const logoutBtn = document.getElementById('logout-btn');
             window.apiRequest(window.API.authStatus).then(status => {
-                if (status.password_set && !status.logged_in) {
-                    loginBtn.style.display = 'inline-block';
-                }
-                if (status.logged_in) {
-                    logoutBtn.style.display = 'inline-block';
-                }
+                if (status.password_set && !status.logged_in) loginBtn.style.display = 'inline-block';
+                if (status.logged_in) logoutBtn.style.display = 'inline-block';
             });
             loginBtn.addEventListener('click', () => window.showLoginModal());
 
@@ -378,22 +394,14 @@
                 }
                 submitButton.disabled = true;
 
-                const queueList = document.getElementById("queue-list");
-                if (queueList.querySelector('.fst-italic')) queueList.innerHTML = '';
-                const li = document.createElement('li');
-                li.className = 'list-group-item optimistic-item';
-                li.innerHTML = `<div class="d-flex align-items-center"><div class="spinner-border spinner-border-sm me-2" role="status"></div>Adding to queue...</div>`;
-                queueList.appendChild(li);
-
                 try {
                     const data = await window.apiRequest(window.API.queue, { method: 'POST', body: new FormData(this) });
                     showToast(data.message, 'Success', 'success');
                     this.reset();
                     handleUrlInput();
-                    pollStatus();
+                    renderState(data.newState);
                 } catch(error) { 
-                    console.error("Failed to add job:", error);
-                    li.remove();
+                    if (error.message !== "AUTH_REQUIRED") console.error("Failed to add job:", error);
                 } finally {
                     submitButton.disabled = false;
                 }
@@ -455,13 +463,18 @@
                     window.apiRequest(window.API.historyItem(logId))
                         .then(historyItem => {
                             if (historyItem && historyItem.job_data) {
-                                return window.apiRequest(window.API.queueContinue, { method: 'POST', body: JSON.stringify(historyItem.job_data) });
+                                // --- CHANGE: Send the resolved folder name back to the server ---
+                                const jobToContinue = {
+                                    ...historyItem.job_data,
+                                    resolved_folder: historyItem.folder 
+                                };
+                                return window.apiRequest(window.API.queueContinue, { method: 'POST', body: JSON.stringify(jobToContinue) });
                             }
                             throw new Error("Could not retrieve job data for requeue.");
                         })
-                        .then(() => {
-                            showToast("Job re-queued successfully.", 'Success', 'success');
-                            pollStatus();
+                        .then((data) => {
+                            showToast(data.message, 'Success', 'success');
+                            renderState(data.newState);
                         })
                         .catch(err => console.error(err));
                 }

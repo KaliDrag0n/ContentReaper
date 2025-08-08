@@ -5,9 +5,11 @@
  */
 
 const API_ENDPOINTS = {
+    csrfToken: '/api/auth/csrf-token',
+
     // Status and Control
     status: '/api/status',
-    stop: '/stop',
+    stop: '/api/stop',
 
     // Queue Management
     queue: '/queue',
@@ -48,5 +50,5 @@ const API_ENDPOINTS = {
     shutdown: '/api/shutdown',
 };
 
-// Expose the endpoints to the global scope to be accessible by other scripts
+// Expose the endpoints to the global scope to be accessible by other scripts.
 window.API = API_ENDPOINTS;
