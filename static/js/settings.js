@@ -1,29 +1,28 @@
 /**
  * static/js/settings.js
  * Handles all logic for the settings page.
- * Refactored to fetch its own data via API for better decoupling.
+ * Fetches its own data via API for better decoupling and provides a smoother UX.
  */
 
 (function() {
     'use strict';
 
-    // --- CHANGE: Centralized function to populate the form fields ---
+    /**
+     * Populates the settings form with data fetched from the API.
+     */
     const populateSettings = async () => {
         try {
-            // This new endpoint will need to be created in the backend.
-            const data = await window.apiRequest('/api/settings');
+            const data = await window.apiRequest(window.API.settings);
             
             document.getElementById('download_dir').value = data.config.download_dir;
             document.getElementById('temp_dir').value = data.config.temp_dir;
+            document.getElementById('log_level').value = data.config.log_level || 'INFO';
             
-            // The cookie content is now also fetched via the secure API.
             const cookieTextarea = document.getElementById('cookie_content');
-            cookieTextarea.value = data.cookies;
-            if (!data.is_logged_in && data.is_password_set) {
-                cookieTextarea.placeholder = "Login to view/edit cookies...";
-                cookieTextarea.disabled = true;
-            } else {
-                cookieTextarea.disabled = false;
+            // This check is now redundant because of the logic in initializeSettingsPage,
+            // but it's good defensive programming.
+            if (!cookieTextarea.disabled) {
+                cookieTextarea.value = data.cookies;
             }
 
         } catch (error) {
@@ -36,21 +35,12 @@
     };
 
     const initializeSettingsPage = () => {
-        // Common page initialization
-        const savedTheme = localStorage.getItem('downloader_theme') || 'light';
-        window.applyTheme(savedTheme);
-        document.getElementById('theme-toggle').addEventListener('click', () => {
-            const newTheme = document.documentElement.dataset.bsTheme === 'dark' ? 'light' : 'dark';
-            window.applyTheme(newTheme);
-            localStorage.setItem('downloader_theme', newTheme);
-        });
-
         const setupAlert = document.getElementById('setup-alert');
         const currentPasswordGroup = document.getElementById('current-password-group');
-        const loginBtn = document.getElementById('login-btn');
-        const logoutBtn = document.getElementById('logout-btn');
+        const cookieTextarea = document.getElementById('cookie_content');
+        const settingsForm = document.getElementById('general-settings-form');
 
-        // Check auth status to show/hide relevant buttons and alerts
+        // Check auth status to show/hide relevant elements
         window.apiRequest(window.API.authStatus).then(status => {
             if (!status.password_set) {
                 setupAlert.style.display = 'block';
@@ -58,19 +48,52 @@
             } else {
                 setupAlert.style.display = 'none';
                 currentPasswordGroup.style.display = 'block';
-                if (status.logged_in) {
-                    logoutBtn.style.display = 'inline-block';
+                if (!status.logged_in) {
+                    cookieTextarea.placeholder = "Login to view/edit cookies...";
+                    cookieTextarea.disabled = true;
                 } else {
-                    loginBtn.style.display = 'inline-block';
+                    // ** THE FIX IS HERE **
+                    // Explicitly enable the textarea and set placeholder if logged in.
+                    cookieTextarea.disabled = false;
+                    cookieTextarea.placeholder = "Paste your Netscape format cookies here...";
                 }
             }
-            // Populate the form fields after checking auth status
+            // Populate the form fields after checking auth status and setting element states
             populateSettings();
         });
 
-        loginBtn.addEventListener('click', () => window.showLoginModal());
+        // ** UX IMPROVEMENT **
+        // Handle the settings form submission with JavaScript for a no-reload experience.
+        if (settingsForm) {
+            settingsForm.addEventListener('submit', async (e) => {
+                e.preventDefault(); // Prevent default form submission
+                const submitBtn = settingsForm.querySelector('button[type="submit"]');
+                const originalBtnText = submitBtn.textContent;
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Saving...`;
 
-        // Password form submission
+                try {
+                    const formData = new FormData(settingsForm);
+                    const settingsData = Object.fromEntries(formData.entries());
+
+                    const response = await window.apiRequest(window.API.settings, {
+                        method: 'POST',
+                        body: JSON.stringify(settingsData)
+                    });
+
+                    window.showToast(response.message, 'Success', 'success');
+
+                } catch (error) {
+                    // Error toast is already shown by apiRequest
+                    console.error("Failed to save settings:", error);
+                } finally {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = originalBtnText;
+                }
+            });
+        }
+
+        // Password form submission (remains unchanged)
         const passwordForm = document.getElementById('password-form');
         if (passwordForm) {
             passwordForm.addEventListener('submit', async (e) => {
@@ -103,7 +126,6 @@
                     });
                     statusEl.textContent = response.message;
                     statusEl.classList.add('text-success');
-                    // Reload the page to reflect the new login state
                     setTimeout(() => location.reload(), 1500);
                 } catch (error) {
                     if (error.message !== "AUTH_REQUIRED") {
@@ -117,7 +139,7 @@
             });
         }
 
-        // Server action buttons
+        // Server action buttons (remain unchanged)
         const updateBtn = document.getElementById('check-for-updates-btn');
         if(updateBtn) {
             updateBtn.addEventListener('click', async () => {
@@ -125,12 +147,12 @@
                 updateBtn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Checking...`;
                 try {
                     await window.apiRequest(window.API.forceUpdateCheck, { method: 'POST' });
-                    // Reload the page to show the new update status
                     location.reload();
                 } catch (error) {
                     if (error.message !== "AUTH_REQUIRED") {
                         window.showToast(`Could not check for updates. Error: ${error.message}`, 'Error', 'danger');
                     }
+                } finally {
                     updateBtn.disabled = false;
                     updateBtn.innerHTML = `<i class="bi bi-arrow-repeat"></i> Check for Updates`;
                 }

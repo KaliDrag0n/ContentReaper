@@ -1,36 +1,25 @@
 /**
  * static/js/index.js
  * This file contains the core logic for the main dashboard page.
- * It has been refactored to use a local state cache and intelligent DOM diffing
+ * It uses a local state cache and intelligent DOM diffing
  * for more efficient and stable UI updates.
  */
 (function() {
     'use strict';
 
-    // --- GLOBAL STATE & CACHED ELEMENTS ---
-    let logModalInstance, toastInstance, updateModalInstance;
+    // --- STATE & CACHED ELEMENTS ---
+    let logModalInstance, updateModalInstance;
     let statusPollTimeout;
     let urlInputTimeout;
     let liveLogPollInterval = null;
+    let sortableInstance = null;
 
+    // Local cache of the server state to compare against for efficient updates
     let localState = {
-        current: null, // Initialize as null
+        current: null,
         queue: [],
         history: [],
-        is_paused: false
-    };
-
-    // --- CORE UTILITY FUNCTIONS ---
-
-    const showToast = (message, title = 'Notification', type = 'success') => {
-        const toastEl = document.getElementById('actionToast');
-        if (!toastEl) return;
-        document.getElementById('toastTitle').textContent = title;
-        document.getElementById('toastBody').textContent = message;
-        toastEl.className = 'toast text-white';
-        toastEl.classList.add(type === 'danger' ? 'bg-danger' : (type === 'info' ? 'bg-info' : 'bg-success'));
-        if (!toastInstance) toastInstance = new bootstrap.Toast(toastEl);
-        toastInstance.show();
+        is_paused: false,
     };
 
     // --- UI MODE LOGIC ---
@@ -99,15 +88,18 @@
         const wasPreviouslyDownloading = localState.current !== null;
         const isCurrentlyDownloading = current !== null && current.url;
 
+        // If transitioning from downloading to idle
         if (wasPreviouslyDownloading && !isCurrentlyDownloading) {
             currentDiv.innerHTML = "<p class='m-0'>No active download.</p>";
             return;
         }
 
+        // If still idle, do nothing
         if (!isCurrentlyDownloading) {
             return;
         }
 
+        // If a new download has started, create the full element structure
         if (!wasPreviouslyDownloading || current.url !== localState.current.url) {
             currentDiv.innerHTML = `
                 <div class="d-flex flex-column flex-md-row">
@@ -136,8 +128,9 @@
             document.getElementById('cancel-btn').addEventListener('click', () => handleStopRequest('cancel'));
         }
 
+        // Granular updates for the existing structure
         const thumbnailContainer = document.getElementById('current-thumbnail-container');
-        if (current.thumbnail && !thumbnailContainer.querySelector('img')) {
+        if (current.thumbnail && (!localState.current || current.thumbnail !== localState.current.thumbnail)) {
             thumbnailContainer.innerHTML = `<img src="${current.thumbnail}" class="now-downloading-thumbnail" alt="Thumbnail">`;
         }
 
@@ -163,20 +156,22 @@
         const queueList = document.getElementById("queue-list");
         document.getElementById("queue-controls").style.display = newQueue.length > 0 ? 'flex' : 'none';
 
-        const oldIds = localState.queue.map(j => j.id);
-        const newIds = newQueue.map(j => j.id);
+        const oldIds = new Set(localState.queue.map(j => j.id));
+        const newIds = new Set(newQueue.map(j => j.id));
 
+        // Remove items that are no longer in the queue
         oldIds.forEach(id => {
-            if (!newIds.includes(id)) {
+            if (!newIds.has(id)) {
                 queueList.querySelector(`[data-job-id='${id}']`)?.remove();
             }
         });
 
         if (newQueue.length === 0) {
-            if (queueList.children.length > 0 && !queueList.querySelector('.fst-italic')) {
+            if (!queueList.querySelector('.fst-italic')) {
                  queueList.innerHTML = "<li class='list-group-item fst-italic text-muted'>Queue is empty.</li>";
             }
         } else {
+            // Add or update items
             newQueue.forEach((job, index) => {
                 let li = queueList.querySelector(`[data-job-id='${job.id}']`);
                 if (!li) {
@@ -210,21 +205,25 @@
         const newHistoryMap = new Map(newHistory.map(item => [item.log_id, item]));
         const oldHistoryMap = new Map(localState.history.map(item => [item.log_id, item]));
 
+        // Remove deleted items
         oldHistoryMap.forEach((_, logId) => {
             if (!newHistoryMap.has(logId)) {
                 historyList.querySelector(`[data-log-id='${logId}']`)?.remove();
             }
         });
         
+        // Add or update items
         [...newHistory].reverse().forEach(item => {
             const existingLi = historyList.querySelector(`[data-log-id='${item.log_id}']`);
             if (!existingLi) {
                 const li = document.createElement('li');
                 li.className = 'list-group-item';
                 li.dataset.logId = item.log_id;
+                li.dataset.status = item.status;
                 li.innerHTML = createHistoryItemHTML(item);
                 historyList.prepend(li);
             } else if (existingLi.dataset.status !== item.status) {
+                // If only the status changed, just update the HTML
                 existingLi.innerHTML = createHistoryItemHTML(item);
                 existingLi.dataset.status = item.status;
             }
@@ -297,13 +296,14 @@
         }
     }
     
-    function renderState(state) {
-        if (!state) return;
-        renderCurrentStatus(state.current);
-        renderQueue(state.queue);
-        renderHistory(state.history);
-        renderPauseState(state.is_paused);
-        localState = state;
+    function renderState(newState) {
+        if (!newState) return;
+        renderCurrentStatus(newState.current);
+        renderQueue(newState.queue);
+        renderHistory(newState.history);
+        renderPauseState(newState.is_paused);
+        // Update local state cache after rendering
+        localState = newState;
     }
 
     const pollStatus = async () => {
@@ -354,6 +354,122 @@
     };
 
     // --- INITIALIZATION ---
+    const initializePage = () => {
+        const savedMode = localStorage.getItem('downloader_mode') || 'clip';
+        switchMode(savedMode);
+        document.querySelectorAll('.mode-selector .btn').forEach(btn => btn.addEventListener('click', () => switchMode(btn.dataset.mode)));
+
+        const addJobForm = document.getElementById('add-job-form');
+        addJobForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const submitButton = this.querySelector('button[type="submit"]');
+            const urlText = this.querySelector('textarea[name="urls"]').value;
+            if (!urlText.trim()) {
+                window.showToast("URL field cannot be empty.", "Input Error", "danger");
+                return;
+            }
+            submitButton.disabled = true;
+
+            try {
+                const data = await window.apiRequest(window.API.queue, { method: 'POST', body: new FormData(this) });
+                window.showToast(data.message, 'Success', 'success');
+                this.reset();
+                handleUrlInput();
+                renderState(data.newState);
+            } catch(error) { 
+                if (error.message !== "AUTH_REQUIRED") console.error("Failed to add job:", error);
+            } finally {
+                submitButton.disabled = false;
+            }
+        });
+
+        document.querySelector('textarea[name="urls"]').addEventListener('input', handleUrlInput);
+        
+        document.getElementById('clear-queue-btn').addEventListener('click', () => window.showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => {
+            window.apiRequest(window.API.queueClear, { method: 'POST' }).then(pollStatus).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
+        }));
+        
+        document.getElementById('clear-history-btn').addEventListener('click', () => window.showConfirmModal('Clear History?', 'Are you sure you want to clear the entire download history?', () => {
+            window.apiRequest(window.API.historyClear, { method: 'POST' }).then(pollStatus).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
+        }));
+        
+        document.getElementById('pause-resume-btn').addEventListener('click', (e) => {
+            const endpoint = e.currentTarget.dataset.action === 'pause' ? window.API.queuePause : window.API.queueResume;
+            window.apiRequest(endpoint, { method: 'POST' }).then(pollStatus).catch(err => console.error(err));
+        });
+        
+        document.getElementById('logModal').addEventListener('hidden.bs.modal', () => {
+            clearInterval(liveLogPollInterval);
+            liveLogPollInterval = null;
+        });
+        
+        document.getElementById('queue-list').addEventListener('click', (e) => {
+            const deleteBtn = e.target.closest('.queue-action-btn[data-action="delete"]');
+            if (deleteBtn) {
+                const item = deleteBtn.closest('.list-group-item');
+                item.style.opacity = '0.5';
+                window.apiRequest(window.API.queueDelete(deleteBtn.dataset.jobId), {method: 'POST'})
+                    .then(() => item.remove())
+                    .catch(err => {
+                        if(err.message !== "AUTH_REQUIRED") console.error(err);
+                        item.style.opacity = '1';
+                    });
+            }
+        });
+
+        document.getElementById('history-list').addEventListener('click', (e) => {
+            const actionBtn = e.target.closest('.history-action-btn');
+            if (!actionBtn) return;
+            
+            const li = actionBtn.closest('.list-group-item');
+            const logId = parseInt(li.dataset.logId, 10);
+            const action = actionBtn.dataset.action;
+
+            if (action === 'log') {
+                viewStaticLog(logId);
+            } else if (action === 'delete') {
+                li.style.opacity = '0.5';
+                window.apiRequest(window.API.historyDelete(logId), { method: 'POST' })
+                    .then(() => li.remove())
+                    .catch(err => {
+                        console.error(err);
+                        li.style.opacity = '1';
+                    });
+            } else if (action === 'requeue') {
+                actionBtn.disabled = true;
+                window.apiRequest(window.API.queueContinue, { 
+                    method: 'POST', 
+                    body: JSON.stringify({ log_id: logId }) 
+                })
+                .then((data) => {
+                    window.showToast(data.message, 'Success', 'success');
+                    renderState(data.newState);
+                })
+                .catch(err => console.error(err))
+                .finally(() => actionBtn.disabled = false);
+            }
+        });
+
+        sortableInstance = Sortable.create(document.getElementById('queue-list'), {
+            handle: '.queue-handle',
+            animation: 150,
+            ghostClass: 'sortable-ghost',
+            onEnd: function (evt) {
+                const orderedIds = [...evt.to.children].map(li => li.dataset.jobId).filter(id => id);
+                if (orderedIds.length === 0) return;
+                window.apiRequest(window.API.queueReorder, { method: 'POST', body: JSON.stringify({ order: orderedIds }) })
+                .catch(err => { 
+                    console.error("Failed to reorder queue:", err);
+                    pollStatus(); // Re-poll to correct the UI on failure
+                });
+            },
+        });
+
+        pollStatus();
+        checkForUpdates();
+        setInterval(checkForUpdates, 900000); // 15 minutes
+    };
+
     document.addEventListener('DOMContentLoaded', () => {
         const checkGlobals = setInterval(() => {
             if (window.applyTheme && window.apiRequest && window.API) {
@@ -361,143 +477,5 @@
                 initializePage();
             }
         }, 50);
-
-        function initializePage() {
-            const savedTheme = localStorage.getItem('downloader_theme') || 'light';
-            window.applyTheme(savedTheme);
-            document.getElementById('theme-toggle').addEventListener('click', () => {
-                const newTheme = document.documentElement.dataset.bsTheme === 'dark' ? 'light' : 'dark';
-                window.applyTheme(newTheme);
-                localStorage.setItem('downloader_theme', newTheme);
-            });
-
-            const loginBtn = document.getElementById('login-btn');
-            const logoutBtn = document.getElementById('logout-btn');
-            window.apiRequest(window.API.authStatus).then(status => {
-                if (status.password_set && !status.logged_in) loginBtn.style.display = 'inline-block';
-                if (status.logged_in) logoutBtn.style.display = 'inline-block';
-            });
-            loginBtn.addEventListener('click', () => window.showLoginModal());
-
-            const savedMode = localStorage.getItem('downloader_mode') || 'clip';
-            switchMode(savedMode);
-            document.querySelectorAll('.mode-selector .btn').forEach(btn => btn.addEventListener('click', () => switchMode(btn.dataset.mode)));
-
-            const addJobForm = document.getElementById('add-job-form');
-            addJobForm.addEventListener('submit', async function(e) {
-                e.preventDefault();
-                const submitButton = this.querySelector('button[type="submit"]');
-                const urlText = this.querySelector('textarea[name="urls"]').value;
-                if (!urlText.trim()) {
-                    showToast("URL field cannot be empty.", "Input Error", "danger");
-                    return;
-                }
-                submitButton.disabled = true;
-
-                try {
-                    const data = await window.apiRequest(window.API.queue, { method: 'POST', body: new FormData(this) });
-                    showToast(data.message, 'Success', 'success');
-                    this.reset();
-                    handleUrlInput();
-                    renderState(data.newState);
-                } catch(error) { 
-                    if (error.message !== "AUTH_REQUIRED") console.error("Failed to add job:", error);
-                } finally {
-                    submitButton.disabled = false;
-                }
-            });
-
-            document.querySelector('textarea[name="urls"]').addEventListener('input', handleUrlInput);
-            
-            document.getElementById('clear-queue-btn').addEventListener('click', () => window.showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => {
-                window.apiRequest(window.API.queueClear, { method: 'POST' }).then(pollStatus).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
-            }));
-            
-            document.getElementById('clear-history-btn').addEventListener('click', () => window.showConfirmModal('Clear History?', 'Are you sure you want to clear the entire download history?', () => {
-                window.apiRequest(window.API.historyClear, { method: 'POST' }).then(pollStatus).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
-            }));
-            
-            document.getElementById('pause-resume-btn').addEventListener('click', (e) => {
-                const endpoint = e.currentTarget.dataset.action === 'pause' ? window.API.queuePause : window.API.queueResume;
-                window.apiRequest(endpoint, { method: 'POST' }).then(pollStatus).catch(err => console.error(err));
-            });
-            
-            document.getElementById('logModal').addEventListener('hidden.bs.modal', () => {
-                clearInterval(liveLogPollInterval);
-                liveLogPollInterval = null;
-            });
-            
-            document.getElementById('queue-list').addEventListener('click', (e) => {
-                const deleteBtn = e.target.closest('.queue-action-btn[data-action="delete"]');
-                if (deleteBtn) {
-                    const item = deleteBtn.closest('.list-group-item');
-                    item.style.opacity = '0.5';
-                    window.apiRequest(window.API.queueDelete(deleteBtn.dataset.jobId), {method: 'POST'})
-                        .then(() => item.remove())
-                        .catch(err => {
-                            if(err.message !== "AUTH_REQUIRED") console.error(err);
-                            item.style.opacity = '1';
-                        });
-                }
-            });
-
-            document.getElementById('history-list').addEventListener('click', (e) => {
-                const actionBtn = e.target.closest('.history-action-btn');
-                if (!actionBtn) return;
-                
-                const li = actionBtn.closest('.list-group-item');
-                const logId = parseInt(li.dataset.logId, 10);
-                const action = actionBtn.dataset.action;
-
-                if (action === 'log') {
-                    viewStaticLog(logId);
-                } else if (action === 'delete') {
-                    li.style.opacity = '0.5';
-                    window.apiRequest(window.API.historyDelete(logId), { method: 'POST' })
-                        .then(() => li.remove())
-                        .catch(err => {
-                            console.error(err);
-                            li.style.opacity = '1';
-                        });
-                } else if (action === 'requeue') {
-                    window.apiRequest(window.API.historyItem(logId))
-                        .then(historyItem => {
-                            if (historyItem && historyItem.job_data) {
-                                // --- CHANGE: Send the resolved folder name back to the server ---
-                                const jobToContinue = {
-                                    ...historyItem.job_data,
-                                    resolved_folder: historyItem.folder 
-                                };
-                                return window.apiRequest(window.API.queueContinue, { method: 'POST', body: JSON.stringify(jobToContinue) });
-                            }
-                            throw new Error("Could not retrieve job data for requeue.");
-                        })
-                        .then((data) => {
-                            showToast(data.message, 'Success', 'success');
-                            renderState(data.newState);
-                        })
-                        .catch(err => console.error(err));
-                }
-            });
-
-            Sortable.create(document.getElementById('queue-list'), {
-                handle: '.queue-handle',
-                animation: 150,
-                ghostClass: 'sortable-ghost',
-                onEnd: function (evt) {
-                    const orderedIds = [...evt.to.children].map(li => li.dataset.jobId).filter(id => id);
-                    if (orderedIds.length === 0) return;
-                    window.apiRequest(window.API.queueReorder, { method: 'POST', body: JSON.stringify({ order: orderedIds }) })
-                    .catch(err => { 
-                        console.error("Failed to reorder queue:", err);
-                        pollStatus();
-                    });
-                },
-            });
-
-            pollStatus();
-            checkForUpdates();
-            setInterval(checkForUpdates, 900000); // 15 minutes
-        }
     });
 })();

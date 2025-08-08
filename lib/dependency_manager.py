@@ -6,10 +6,9 @@ import shutil
 import requests
 import zipfile
 import stat
-import tarfile # Standard library, good to import at the top.
+import tarfile
 
 # --- Constants ---
-# Using a dictionary for release URLs is a clean approach.
 FFMPEG_RELEASES = {
     "win64": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
     "linux64": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz",
@@ -72,14 +71,12 @@ def download_file(url, dest_path):
                     bytes_downloaded += len(chunk)
                     if total_size > 0:
                         progress = (bytes_downloaded / total_size) * 100
-                        # This progress bar implementation is effective for terminals.
                         sys.stdout.write(f"\rProgress: {progress:.1f}%")
                         sys.stdout.flush()
         print("\nDownload complete.")
         return True
     except requests.exceptions.RequestException as e:
         print(f"\nERROR: Failed to download file: {e}")
-        # Clean up partially downloaded file on error.
         if os.path.exists(dest_path):
             os.remove(dest_path)
         return False
@@ -111,7 +108,6 @@ def make_executable(path):
     """Makes a file executable (important for Linux/macOS)."""
     try:
         st = os.stat(path)
-        # Add execute permission for owner, group, and others.
         os.chmod(path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         print(f"Made '{os.path.basename(path)}' executable.")
     except Exception as e:
@@ -173,12 +169,10 @@ def ensure_ffmpeg(bin_dir, platform_info):
     temp_archive_path = os.path.join(bin_dir, os.path.basename(url))
     temp_extract_dir = os.path.join(bin_dir, "ffmpeg_temp")
     
-    # --- CHANGE: Use a try...finally block to guarantee cleanup ---
     try:
         if not download_file(url, temp_archive_path):
             return None
 
-        # Clean up old temp directory before extraction
         if os.path.exists(temp_extract_dir):
             shutil.rmtree(temp_extract_dir)
         os.makedirs(temp_extract_dir)
@@ -186,7 +180,6 @@ def ensure_ffmpeg(bin_dir, platform_info):
         if not extract_archive(temp_archive_path, temp_extract_dir):
             return None
 
-        # Find the ffmpeg executable within the extracted files
         found_ffmpeg_path = None
         for root, _, files in os.walk(temp_extract_dir):
             for file in files:
@@ -207,7 +200,6 @@ def ensure_ffmpeg(bin_dir, platform_info):
             return None
             
     finally:
-        # This block will run whether the try block succeeds or fails.
         if os.path.exists(temp_archive_path):
             os.remove(temp_archive_path)
         if os.path.exists(temp_extract_dir):
@@ -234,7 +226,6 @@ def ensure_dependencies(app_root):
     if not yt_dlp_path:
         print("\nFATAL: yt-dlp could not be found or installed. The application cannot continue.")
     if not ffmpeg_path:
-        # Changed from FATAL to WARNING as some functionality may still work without ffmpeg.
         print("\nWARNING: ffmpeg could not be found or installed. Merging video/audio and format conversions will fail.")
         
     return yt_dlp_path, ffmpeg_path

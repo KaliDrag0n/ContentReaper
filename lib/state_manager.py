@@ -17,40 +17,46 @@ class StateManager:
         self.lock_file = state_file_path + ".lock"
         self._lock = threading.RLock()
         
+        # Core state data
         self.queue = queue.Queue()
         self.history = []
         self.current_download = self._get_default_current_download()
         
-        self.next_log_id = 0
-        self.next_queue_id = 0
-        
+        # State versioning for efficient frontend updates
         self.history_state_version = 0
         self.queue_state_version = 0
         self.current_download_version = 0
         
+        # Worker control events
         self.cancel_event = threading.Event()
-        self.stop_mode = "CANCEL"
+        self.stop_mode = "CANCEL" # "CANCEL" or "SAVE"
         self.queue_paused_event = threading.Event()
-        self.queue_paused_event.set()
+        self.queue_paused_event.set() # Set by default (not paused)
 
     def _acquire_lock(self, timeout=10):
+        """Acquires an exclusive lock file, with a timeout."""
         start_time = time.time()
-        while True:
+        while time.time() - start_time < timeout:
             try:
+                # Attempt to create the file exclusively
                 fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.close(fd)
                 return True
             except FileExistsError:
-                if time.time() - start_time >= timeout:
-                    print(f"WARNING: Lock file {self.lock_file} has been held for over {timeout} seconds. Breaking lock.")
-                    self._release_lock()
-                    return self._acquire_lock(timeout=1) 
+                # If the lock exists, wait a bit before retrying
                 time.sleep(0.1)
             except Exception as e:
                 print(f"ERROR: Unexpected error acquiring lock: {e}")
                 return False
+        
+        # If timeout is reached, break the lock
+        print(f"WARNING: Lock file {self.lock_file} has been held for over {timeout} seconds. Breaking lock.")
+        self._release_lock()
+        # Try to acquire it one more time immediately after breaking
+        return self._acquire_lock(timeout=1)
 
     def _release_lock(self):
+        """Releases the lock file."""
         try:
             if os.path.exists(self.lock_file):
                 os.remove(self.lock_file)
@@ -67,34 +73,39 @@ class StateManager:
         }
 
     def reset_current_download(self):
-        """Resets the current download state to its default and notifies listeners."""
+        """Resets the current download state to its default and increments the version."""
         with self._lock:
             self.current_download = self._get_default_current_download()
             self.current_download_version += 1
 
     def update_current_download(self, data: dict):
-        """Updates the current download state with new data and notifies listeners."""
+        """Updates the current download state with new data and increments the version."""
         with self._lock:
             self.current_download.update(data)
             self.current_download_version += 1
 
     def pause_queue(self):
-        """Pauses the download worker thread."""
+        """Pauses the download worker thread by clearing the event."""
         with self._lock:
             self.queue_paused_event.clear()
-            self.current_download_version += 1
+            self.current_download_version += 1 # To update UI state
 
     def resume_queue(self):
-        """Resumes the download worker thread."""
+        """Resumes the download worker thread by setting the event."""
         with self._lock:
             self.queue_paused_event.set()
-            self.current_download_version += 1
+            self.current_download_version += 1 # To update UI state
 
     def add_to_queue(self, job_data: dict) -> int:
         """Adds a new job to the queue with a unique ID."""
         with self._lock:
-            new_id = self.next_queue_id
-            self.next_queue_id += 1
+            # Find the highest existing ID to ensure the new one is unique
+            max_id = -1
+            for item in list(self.queue.queue):
+                if item.get('id', -1) > max_id:
+                    max_id = item.get('id')
+            
+            new_id = max_id + 1
             job_data['id'] = new_id
             self.queue.put(job_data)
             self.queue_state_version += 1
@@ -126,7 +137,7 @@ class StateManager:
                     for job in updated_queue:
                         self.queue.put(job)
                 self.queue_state_version += 1
-        self.save_state()
+                self.save_state()
 
     def reorder_queue(self, ordered_ids: list[int]):
         """Reorders the queue based on a new list of job IDs."""
@@ -134,8 +145,10 @@ class StateManager:
             items = list(self.queue.queue)
             item_map = {item['id']: item for item in items}
             
+            # Create the new queue order based on the provided list
             new_queue_items = [item_map[job_id] for job_id in ordered_ids if job_id in item_map]
             
+            # Append any items that were in the original queue but not in the reorder list
             existing_ids_in_order = set(ordered_ids)
             for item in items:
                 if item['id'] not in existing_ids_in_order:
@@ -148,12 +161,15 @@ class StateManager:
             self.queue_state_version += 1
         self.save_state()
 
-    # --- CHANGE: Added 'save' parameter to prevent redundant saves during startup ---
     def add_to_history(self, history_item: dict, save: bool = True) -> int:
         """Adds a completed job to the history with a unique ID."""
         with self._lock:
-            new_id = self.next_log_id
-            self.next_log_id += 1
+            max_log_id = -1
+            for item in self.history:
+                if item.get('log_id', -1) > max_log_id:
+                    max_log_id = item.get('log_id')
+            
+            new_id = max_log_id + 1
             history_item['log_id'] = new_id
             self.history.append(history_item)
             self.history_state_version += 1
@@ -168,14 +184,16 @@ class StateManager:
                 if item.get("log_id") == log_id:
                     item.update(data_to_update)
                     self.history_state_version += 1
+                    self.save_state()
                     break
-        self.save_state()
 
     def get_history_summary(self) -> list:
         """Returns a summary of the history, omitting sensitive/large data."""
         with self._lock:
+            # Create a deep copy to avoid modifying the original history items
             history_summary = [h.copy() for h in self.history]
             for item in history_summary:
+                # Remove fields not needed for the summary view
                 item.pop("log_path", None)
         return history_summary
 
@@ -224,22 +242,27 @@ class StateManager:
                 state_to_save = {
                     "queue": list(self.queue.queue),
                     "history": self.history,
+                    # Save the job data of the currently running task
                     "current_job": self.current_download.get("job_data"),
                 }
             
             temp_file_path = self.state_file + ".tmp"
             backup_file_path = self.state_file + ".bak"
             
+            # Create a backup of the last known good state before writing
             if os.path.exists(self.state_file):
                 shutil.copy2(self.state_file, backup_file_path)
 
+            # Write to a temporary file first
             with open(temp_file_path, 'w', encoding='utf-8') as f:
                 json.dump(state_to_save, f, indent=4)
             
+            # Atomically replace the old state file with the new one
             os.replace(temp_file_path, self.state_file)
 
         except Exception as e:
             print(f"ERROR: Could not save state to file: {e}")
+            # If saving fails, try to restore from the backup
             if os.path.exists(backup_file_path):
                 try:
                     shutil.copy2(backup_file_path, self.state_file)
@@ -257,7 +280,7 @@ class StateManager:
         """Loads state from JSON, with a fallback to a backup file."""
         if not self._acquire_lock():
             print("Could not acquire lock to load state. Starting fresh.")
-            self._reset_state()
+            self._reset_state_to_defaults()
             return
             
         try:
@@ -273,7 +296,7 @@ class StateManager:
                         content = f.read()
                         if content.strip():
                             state = json.loads(content)
-                            self._apply_state(state)
+                            self._apply_loaded_state(state)
                             loaded_successfully = True
                             print("Successfully loaded state from main file.")
                         else:
@@ -285,7 +308,8 @@ class StateManager:
                 try:
                     with open(backup_file_path, 'r', encoding='utf-8') as f:
                         state = json.load(f)
-                        self._apply_state(state)
+                        self._apply_loaded_state(state)
+                        # Restore the main file from the working backup
                         shutil.copy2(backup_file_path, self.state_file)
                         print("Successfully loaded and restored state from backup file.")
                         loaded_successfully = True
@@ -301,41 +325,24 @@ class StateManager:
                         print(f"Backed up corrupted state file to {corrupted_path}")
                     except OSError as e_rename:
                         print(f"Could not back up corrupted state file. Error: {e_rename}")
-                self._reset_state()
+                self._reset_state_to_defaults()
         finally:
             self._release_lock()
 
-    def _reset_state(self):
-        """Resets the manager to a clean state."""
+    def _reset_state_to_defaults(self):
+        """Resets the manager to a clean, empty state."""
         with self._lock:
             self.history = []
             with self.queue.mutex: self.queue.queue.clear()
-            self.next_log_id = 0
-            self.next_queue_id = 0
 
-    def _apply_state(self, state: dict):
+    def _apply_loaded_state(self, state: dict):
         """Applies a loaded state dictionary to the manager."""
         with self._lock:
             # Load history and queue first, with validation
             self.history = [item for item in state.get("history", []) if isinstance(item, dict)]
             queue_items = [job for job in state.get("queue", []) if isinstance(job, dict)]
             
-            # --- CHANGE: Calculate next IDs at the beginning, before any modifications ---
-            max_log_id = -1
-            for item in self.history:
-                log_id = item.get('log_id')
-                if isinstance(log_id, int) and log_id > max_log_id:
-                    max_log_id = log_id
-            self.next_log_id = max_log_id + 1
-
-            max_queue_id = -1
-            for job in queue_items:
-                job_id = job.get('id')
-                if isinstance(job_id, int) and job_id > max_queue_id:
-                    max_queue_id = job_id
-            self.next_queue_id = max_queue_id + 1
-
-            # --- CHANGE: Use the centralized add_to_history method for abandoned jobs ---
+            # Handle abandoned job from the previous session
             abandoned_job = state.get("current_job")
             if isinstance(abandoned_job, dict):
                 print(f"Found abandoned job: {abandoned_job.get('id', 'N/A')}. Moving to history.")
@@ -343,7 +350,9 @@ class StateManager:
                     "url": abandoned_job.get("url", "Unknown URL"),
                     "title": abandoned_job.get("folder") or abandoned_job.get("url", "Unknown Title"),
                     "folder": abandoned_job.get("folder"),
-                    "filenames": [], "job_data": abandoned_job, "status": "ABANDONED",
+                    "filenames": [],
+                    "job_data": abandoned_job,
+                    "status": "ABANDONED",
                     "log_path": "No log generated.",
                     "error_summary": "Job was interrupted by an application crash or ungraceful shutdown."
                 }
@@ -354,12 +363,19 @@ class StateManager:
             # Rebuild the queue from the validated and cleaned items
             with self.queue.mutex:
                 self.queue.queue.clear()
+                # Ensure all jobs have unique IDs
                 processed_ids = set()
+                max_id = -1
                 for job in queue_items:
                     job_id = job.get('id')
                     if not isinstance(job_id, int) or job_id in processed_ids:
-                        job['id'] = self.next_queue_id
-                        self.next_queue_id += 1
+                        # Assign a new ID if it's missing, invalid, or a duplicate
+                        new_id = max_id + 1
+                        job['id'] = new_id
+                        max_id = new_id
+                    else:
+                        if job_id > max_id:
+                            max_id = job_id
                     
                     self.queue.put(job)
                     processed_ids.add(job['id'])
