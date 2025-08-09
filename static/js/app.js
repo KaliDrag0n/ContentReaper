@@ -76,6 +76,9 @@
         }
         const errorEl = document.getElementById('login-error');
         if(errorEl) errorEl.textContent = '';
+        
+        document.dispatchEvent(new CustomEvent('login-modal-shown'));
+        
         loginModalInstance.show();
     };
 
@@ -84,7 +87,6 @@
      */
     const fetchCsrfToken = async () => {
         try {
-            // No options needed for a simple GET request
             const res = await fetch(window.API.csrfToken);
             if (!res.ok) throw new Error('CSRF fetch failed');
             const data = await res.json();
@@ -109,15 +111,13 @@
             },
         };
 
-        // Automatically set Content-Type for non-FormData POST/PUT requests
         const method = (options.method || 'GET').toUpperCase();
         if (options.body && !(options.body instanceof FormData)) {
             fetchOptions.headers['Content-Type'] = 'application/json';
         }
 
-        // Add CSRF token to non-GET requests
         if (method !== 'GET' && method !== 'HEAD') {
-            if (!csrfToken) await fetchCsrfToken(); // Ensure token exists
+            if (!csrfToken) await fetchCsrfToken();
             if (csrfToken) fetchOptions.headers['X-CSRF-Token'] = csrfToken;
         }
 
@@ -127,11 +127,9 @@
             if (res.status === 401) { // Unauthorized
                 requestToRetry = { endpoint, options };
                 showLoginModal();
-                // Throw a specific error to prevent generic error handling
                 throw new Error("AUTH_REQUIRED");
             }
 
-            // Get error message from JSON body if available
             if (!res.ok) {
                 const errorData = await res.json().catch(() => ({ 
                     error: `Request failed with status: ${res.status}` 
@@ -139,9 +137,8 @@
                 throw new Error(errorData.error || 'An unknown API error occurred.');
             }
 
-            if (res.status === 204) return null; // No Content
+            if (res.status === 204) return null;
             
-            // Handle different content types
             const contentType = res.headers.get("Content-Type");
             if (contentType?.includes("application/json")) {
                 return res.json();
@@ -149,27 +146,34 @@
             return res.text();
 
         } catch (error) {
-            // Only show toast for non-auth errors
             if (error.message !== "AUTH_REQUIRED") {
                 showToast(error.message, 'API Error', 'danger');
             }
-            // Re-throw the error to be caught by the calling function
             throw error;
         }
     }
 
     /**
+     * Updates the main login/logout buttons based on authentication status.
+     * @param {boolean} isLoggedIn - Whether the user is currently logged in.
+     */
+    const updateAuthUI = (isLoggedIn) => {
+        const loginBtn = document.getElementById('login-btn');
+        const logoutBtn = document.getElementById('logout-btn');
+        if (loginBtn) loginBtn.style.display = isLoggedIn ? 'none' : 'inline-block';
+        if (logoutBtn) logoutBtn.style.display = isLoggedIn ? 'inline-block' : 'none';
+    };
+
+    /**
      * Initializes shared components when the DOM is fully loaded.
      */
     const initializeSharedComponents = () => {
-        // Expose shared functions to the global window object
         window.applyTheme = applyTheme;
         window.showConfirmModal = showConfirmModal;
         window.showLoginModal = showLoginModal;
         window.apiRequest = apiRequest;
         window.showToast = showToast;
 
-        // Initialize theme toggle
         const themeToggle = document.getElementById('theme-toggle');
         if (themeToggle) {
             themeToggle.addEventListener('click', () => {
@@ -179,7 +183,6 @@
             });
         }
 
-        // Initialize confirmation modal
         const confirmModalEl = document.getElementById('confirmModal');
         if (confirmModalEl) {
             confirmModalInstance = new bootstrap.Modal(confirmModalEl);
@@ -189,7 +192,6 @@
             });
         }
 
-        // Initialize login form
         const loginForm = document.getElementById('login-form');
         if (loginForm) {
             loginForm.addEventListener('submit', async (e) => {
@@ -207,16 +209,23 @@
                     
                     if (loginModalInstance) loginModalInstance.hide();
                     passwordInput.value = '';
+                    updateAuthUI(true);
 
-                    // If a request was held pending login, retry it now.
+                    document.dispatchEvent(new CustomEvent('auth-changed', { detail: { loggedIn: true } }));
+
                     if (requestToRetry) {
                         const { endpoint, options } = requestToRetry;
                         requestToRetry = null;
-                        // Using location.reload() is simpler and ensures the page state is correct after re-authentication.
-                        // For a more seamless experience, you could re-trigger the original function instead.
-                        location.reload(); 
-                    } else {
-                        location.reload();
+                        
+                        // --- CHANGE: Show success toast after retried request completes ---
+                        apiRequest(endpoint, options)
+                            .then(data => {
+                                // If the server sends back a message, show it as a success toast.
+                                if (data && data.message) {
+                                    window.showToast(data.message, 'Success', 'success');
+                                }
+                            })
+                            .catch(() => {}); // Errors are already handled by apiRequest
                     }
                 } catch (err) {
                     if (err.message !== "AUTH_REQUIRED") {
@@ -226,27 +235,27 @@
             });
         }
 
-        // Initialize logout button
         const logoutBtn = document.getElementById('logout-btn');
         if(logoutBtn) {
             logoutBtn.addEventListener('click', async () => {
                 try {
                     await apiRequest(window.API.authLogout, { method: 'POST' });
-                    location.reload();
+                    updateAuthUI(false);
+                    document.dispatchEvent(new CustomEvent('auth-changed', { detail: { loggedIn: false } }));
                 } catch(err) { /* apiRequest handles showing the error toast */ }
             });
         }
 
-        // Initial check for authentication status to show correct buttons
         apiRequest(window.API.authStatus).then(status => {
             const loginBtn = document.getElementById('login-btn');
-            const logoutBtn = document.getElementById('logout-btn');
-            if (status.password_set && !status.logged_in && loginBtn) loginBtn.style.display = 'inline-block';
-            if (status.logged_in && logoutBtn) logoutBtn.style.display = 'inline-block';
-        }).catch(() => { /* Initial auth check failure is not critical */ });
+            if (status.password_set && !status.logged_in && loginBtn) {
+                 updateAuthUI(false);
+            } else {
+                 updateAuthUI(status.logged_in);
+            }
+        }).catch(() => {});
     };
 
-    // --- Wait for DOM and API definitions before initializing ---
     document.addEventListener('DOMContentLoaded', () => {
         const checkGlobals = setInterval(() => {
             if (window.API) {

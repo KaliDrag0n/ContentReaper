@@ -1,6 +1,8 @@
 config.json
 state.json
 state.json.bak
+scythes.json
+scythes.json.bak
 cookies.txt
 change.log
 startup.log

@@ -83,7 +83,7 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
     is_playlist = "playlist?list=" in job.get("url", "")
     
     # Basic settings
-    cmd.extend(['--sleep-interval', '3', '--max-sleep-interval', '10'])
+    cmd.extend(['--sleep-interval', '5', '--max-sleep-interval', '15'])
     cmd.extend(['--ffmpeg-location', os.path.dirname(ffmpeg_path)])
     
     # Optional settings
@@ -114,7 +114,8 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
     if os.path.exists(cookie_file_path) and os.path.getsize(cookie_file_path) > 0:
         cmd.extend(['--cookies', cookie_file_path])
     if job.get("archive"):
-        cmd.extend(['--download-archive', os.path.join(temp_dir_path, "archive.temp.txt")])
+        # --- CHANGE: Add --force-download-archive to ensure skipping ---
+        cmd.extend(['--download-archive', os.path.join(temp_dir_path, "archive.temp.txt"), '--force-download-archive'])
         
     cmd.append(job["url"])
     return cmd
@@ -138,7 +139,6 @@ def _generate_error_summary(log_path):
         
     if not error_lines:
         return "No specific errors found in log. The process may have been terminated unexpectedly."
-    # Return the last 10 error/warning lines for brevity
     return "\n".join(error_lines[-10:])
 
 
@@ -152,14 +152,13 @@ def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name
 
     try:
         if not os.path.exists(temp_log_path):
-             open(temp_log_path, 'a').close() # Create empty log if it doesn't exist
+             open(temp_log_path, 'a').close()
 
         with open(temp_log_path, 'a', encoding='utf-8') as log_file:
             def log(message): log_file.write(message + '\n')
             log(f"\n--- Finalizing job with status: {final_status} ---")
             
             if os.path.exists(temp_dir_path):
-                # Determine the expected file extension based on the job mode
                 target_ext = None
                 mode = job.get('mode')
                 if mode == 'music': target_ext = job.get('format', 'mp3')
@@ -170,9 +169,8 @@ def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name
                 files_to_move = []
 
                 if target_ext:
-                    # If we know the extension, only move those files
                     files_to_move = [f for f in files_in_temp if f.endswith(f'.{target_ext}')]
-                else: # For custom mode, move everything that isn't a temp file
+                else:
                     files_to_move = [f for f in files_in_temp if not f.endswith('.temp.txt')]
 
                 if files_to_move:
@@ -188,18 +186,19 @@ def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name
                         except Exception as e:
                             log(f"ERROR: Could not move file {f}: {e}")
             
-            # --- CHANGE: Always move the archive file to preserve progress ---
             temp_archive_path = os.path.join(temp_dir_path, "archive.temp.txt")
             if os.path.exists(temp_archive_path):
-                final_archive_path = os.path.join(final_dest_dir, "archive.txt")
-                try:
-                    os.makedirs(final_dest_dir, exist_ok=True)
-                    shutil.move(temp_archive_path, final_archive_path)
-                    log(f"Moved archive file to: {final_archive_path}")
-                except Exception as e:
-                    log(f"ERROR: Could not move archive file: {e}")
+                if final_status in ["COMPLETED", "PARTIAL", "STOPPED"]:
+                    final_archive_path = os.path.join(final_dest_dir, "archive.txt")
+                    try:
+                        os.makedirs(final_dest_dir, exist_ok=True)
+                        shutil.move(temp_archive_path, final_archive_path)
+                        log(f"Updated main archive file at: {final_archive_path}")
+                    except Exception as e:
+                        log(f"ERROR: Could not move and update archive file: {e}")
+                else:
+                    log(f"Job status is '{final_status}'. Discarding temporary archive to preserve the original.")
 
-            # If the job failed but some files were moved, mark it as PARTIAL
             if final_status == "FAILED" and final_filenames:
                 final_status = "PARTIAL"
                 log("Status updated to PARTIAL due to partial success.")
@@ -211,7 +210,6 @@ def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name
         print(f"ERROR during job finalization: {e}")
         error_summary = f"A critical error occurred during job finalization: {e}"
     
-    # Cleanup the temporary job directory
     if os.path.exists(temp_dir_path):
         try:
             shutil.rmtree(temp_dir_path)
@@ -229,7 +227,6 @@ def _prepare_job_environment(job, config, log_dir):
     os.makedirs(temp_dir_path, exist_ok=True)
     
     if job.get("archive"):
-        # Use the resolved folder name if available (for continuing downloads)
         folder_name = sanitize_filename(job.get("resolved_folder") or job.get("folder")) or "Misc Downloads"
         main_archive_file = os.path.join(config["download_dir"], folder_name, "archive.txt")
         if os.path.exists(main_archive_file):
@@ -248,7 +245,7 @@ def _process_yt_dlp_output(line, state_manager, job):
     line = line.strip()
     if not line: return None
     
-    if line.startswith('{'): # It's a JSON progress or info line
+    if line.startswith('{'):
         try:
             data = json.loads(line)
             if data.get("status") == "downloading":
@@ -265,7 +262,7 @@ def _process_yt_dlp_output(line, state_manager, job):
                 state_manager.update_current_download(update)
             elif data.get("status") == "finished":
                 state_manager.update_current_download({"status": "Processing..."})
-            elif data.get('_type') == 'video': # It's an info JSON for a video
+            elif data.get('_type') == 'video':
                 resolved_title = sanitize_filename(data.get('playlist_title') or data.get('title', 'Unknown Title'))
                 update = {
                     "status": "Starting...", "progress": 0, "thumbnail": data.get('thumbnail'),
@@ -275,11 +272,10 @@ def _process_yt_dlp_output(line, state_manager, job):
                     "title": job.get("folder") or resolved_title
                 }
                 state_manager.update_current_download(update)
-                # If the user didn't specify a folder, we use the resolved title
                 if not job.get("folder"):
                     return resolved_title
         except (json.JSONDecodeError, TypeError, ValueError):
-            pass # Ignore lines that are not valid JSON
+            pass
             
     elif any(s in line for s in ("[ExtractAudio]", "[Merger]", "[Fixup")):
         state_manager.update_current_download({"status": 'Processing...'})
@@ -295,7 +291,6 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
     status = "PENDING"
     resolved_folder_name = job.get("folder")
     
-    # Use CREATE_NEW_PROCESS_GROUP on Windows to allow sending CTRL_BREAK
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if platform.system() == "Windows" else 0
     
     process = subprocess.Popen(
@@ -304,7 +299,6 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
         creationflags=creationflags, bufsize=1
     )
     
-    # Use a thread to read from the process output without blocking
     output_q = queue.Queue()
     reader_thread = threading.Thread(target=_enqueue_output, args=(process.stdout, output_q), daemon=True)
     reader_thread.start()
@@ -327,12 +321,10 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
             except queue.Empty:
                 continue
         
-        # Ensure all remaining output is drained from the queue
         while not output_q.empty():
             line = output_q.get_nowait()
             if line: log_file.write(line)
 
-    # Handle cancellation
     if state_manager.cancel_event.is_set() and process.poll() is None:
         try:
             if platform.system() == "Windows":
@@ -349,7 +341,6 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
             process.kill()
             process.wait()
 
-    # Determine final status
     if state_manager.cancel_event.is_set():
         status = "STOPPED" if state_manager.stop_mode == "SAVE" else "CANCELLED"
     elif process.returncode == 0:
@@ -365,11 +356,11 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
     """The main worker loop that processes jobs from the queue."""
     print("Worker thread started.")
     while not stop_event.is_set():
-        state_manager.queue_paused_event.wait() # This will block if the queue is paused
+        state_manager.queue_paused_event.wait()
         
         try:
             job = state_manager.queue.get(timeout=1)
-            if job is None: # Sentinel value to exit
+            if job is None:
                 break
         except queue.Empty:
             continue
@@ -407,8 +398,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
             
             state_manager.reset_current_download()
             
-            # Move the temporary log to its final destination
-            log_id_for_file = state_manager.add_to_history({}, save=False) # Get next ID without saving
+            log_id_for_file = state_manager.add_to_history({}, save=False)
             final_log_path = os.path.join(log_dir, f"job_{log_id_for_file}.log")
             log_path_for_history = "LOG_SAVE_ERROR"
             try:
@@ -418,7 +408,6 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
             except Exception as e:
                 print(f"ERROR: Could not move log file {temp_log_path}: {e}")
             
-            # Create the final history item
             history_item = {
                 "log_id": log_id_for_file,
                 "url": job["url"],
@@ -431,7 +420,6 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                 "error_summary": error_summary
             }
             
-            # Update the placeholder history item with the real data
             state_manager.update_history_item(log_id_for_file, history_item)
             
             state_manager.queue.task_done()

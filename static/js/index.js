@@ -8,29 +8,41 @@
     'use strict';
 
     // --- STATE & CACHED ELEMENTS ---
-    let logModalInstance, updateModalInstance;
+    let logModalInstance, updateModalInstance, scytheModalInstance;
     let statusPollTimeout;
     let urlInputTimeout;
     let liveLogPollInterval = null;
     let sortableInstance = null;
+    let scytheModalWasVisible = false;
 
-    // Local cache of the server state to compare against for efficient updates
     let localState = {
         current: null,
         queue: [],
         history: [],
+        scythes: [],
         is_paused: false,
     };
 
     // --- UI MODE LOGIC ---
 
-    const switchMode = (mode) => {
-        document.querySelectorAll('.mode-selector .btn').forEach(b => b.classList.remove('active'));
-        document.querySelector(`.mode-selector .btn[data-mode="${mode}"]`).classList.add('active');
-        document.querySelectorAll('.mode-options').forEach(el => el.style.display = 'none');
-        document.getElementById(`${mode}-options`).style.display = 'block';
-        document.getElementById('download_mode_input').value = mode;
-        localStorage.setItem('downloader_mode', mode);
+    const switchMode = (mode, containerId = '') => {
+        const container = containerId ? document.getElementById(containerId) : document;
+        if (!container) return;
+        
+        container.querySelectorAll('.mode-selector .btn').forEach(b => b.classList.remove('active'));
+        const activeButton = container.querySelector(`.mode-selector .btn[data-mode="${mode}"]`);
+        if (activeButton) activeButton.classList.add('active');
+        
+        container.querySelectorAll('.mode-options').forEach(el => el.style.display = 'none');
+        const optionsEl = container.querySelector(`[data-options-for="${mode}"]`);
+        if(optionsEl) optionsEl.style.display = 'block';
+        
+        const inputEl = container.querySelector('input[name="download_mode"]');
+        if(inputEl) inputEl.value = mode;
+
+        if (!containerId) {
+            localStorage.setItem('downloader_mode', mode);
+        }
     };
 
     // --- API-DRIVEN FEATURES ---
@@ -58,14 +70,17 @@
         }
     };
 
-    const handleUrlInput = () => {
+    const handleUrlInput = (inputElement) => {
         clearTimeout(urlInputTimeout);
         urlInputTimeout = setTimeout(() => {
-            const urlTextarea = document.querySelector('textarea[name="urls"]');
-            const urls = (urlTextarea.value.match(/(https?:\/\/[^\s"]+|www\.[^\s"]+)/g) || []).join('\n');
-            urlTextarea.value = urls;
+            const urls = (inputElement.value.match(/(https?:\/\/[^\s"]+|www\.[^\s"]+)/g) || []).join('\n');
+            inputElement.value = urls;
             const isPlaylist = urls.includes('playlist?list=');
-            document.getElementById('playlist-range-options').style.display = isPlaylist ? 'flex' : 'none';
+            const container = inputElement.closest('form');
+            const playlistOptions = container.querySelector('.playlist-range-options');
+            if (playlistOptions) {
+                playlistOptions.style.display = isPlaylist ? 'flex' : 'none';
+            }
         }, 400);
     };
     
@@ -81,7 +96,7 @@
         });
     };
 
-    // --- REFACTORED RENDERING LOGIC ---
+    // --- RENDERING LOGIC ---
 
     function renderCurrentStatus(current) {
         const currentDiv = document.getElementById("current-status");
@@ -191,8 +206,10 @@
         const historyList = document.getElementById("history-list");
         document.getElementById("clear-history-btn").style.display = newHistory.length > 0 ? 'block' : 'none';
 
-        if (newHistory.length === 0 && localState.history.length > 0) {
-            historyList.innerHTML = "<li class='list-group-item fst-italic text-muted'>History is empty.</li>";
+        if (newHistory.length === 0) {
+            if (localState.history.length > 0 || !historyList.querySelector('.fst-italic')) {
+                historyList.innerHTML = "<li class='list-group-item fst-italic text-muted'>History is empty.</li>";
+            }
             return;
         }
 
@@ -220,9 +237,7 @@
             }
         });
 
-        if (newHistory.length > 0) {
-            historyList.querySelector('.fst-italic')?.remove();
-        }
+        historyList.querySelector('.fst-italic')?.remove();
     }
 
     function createHistoryItemHTML(item) {
@@ -235,22 +250,15 @@
             case 'FAILED': case 'ERROR': case 'ABANDONED': badgeClass = 'bg-danger'; break;
         }
 
-        let requeueButtonHTML = '';
-        if (item.status === 'STOPPED' || item.status === 'PARTIAL') {
-            requeueButtonHTML = `<button class="btn btn-sm btn-outline-success history-action-btn" data-action="requeue" title="Continue Download"><i class="bi bi-play-fill"></i></button>`;
-        } else {
-            requeueButtonHTML = `<button class="btn btn-sm btn-outline-secondary history-action-btn" data-action="requeue" title="Download Again"><i class="bi bi-arrow-clockwise"></i></button>`;
-        }
+        const requeueButtonIcon = (item.status === 'STOPPED' || item.status === 'PARTIAL') 
+            ? 'bi-play-fill' 
+            : 'bi-arrow-clockwise';
+        
+        const requeueButtonTitle = (item.status === 'STOPPED' || item.status === 'PARTIAL')
+            ? 'Continue Download'
+            : 'Download Again';
 
-        const errorSummaryHTML = item.error_summary ? `
-            <div class="mt-2">
-                <button class="btn btn-sm btn-outline-danger" type="button" data-bs-toggle="collapse" data-bs-target="#error-summary-${item.log_id}" aria-expanded="false">
-                    <i class="bi bi-exclamation-triangle-fill"></i> Show Error
-                </button>
-            </div>
-            <div class="collapse" id="error-summary-${item.log_id}">
-                <pre class="card card-body mt-2 p-2 bg-body-tertiary small" style="max-height: 200px; overflow-y: auto;"><code>${item.error_summary.replace(/</g, "&lt;")}</code></pre>
-            </div>` : '';
+        const sanitizedError = item.error_summary ? item.error_summary.replace(/</g, "&lt;").replace(/>/g, "&gt;") : '';
 
         return `
             <div class="d-flex justify-content-between align-items-center">
@@ -261,12 +269,86 @@
                     <small class="text-muted word-break">${item.folder ? `Folder: ${item.folder}` : `URL: ${item.url}`}</small>
                 </div>
                 <div class="btn-group ms-2">
-                    ${requeueButtonHTML}
-                    <button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log"><i class="bi bi-file-text"></i></button>
-                    <button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete"><i class="bi bi-trash-fill"></i></button>
+                    <button class="btn btn-sm btn-outline-primary history-action-btn" data-action="scythe" title="Add to Scythes">
+                        <i class="bi bi-plus-lg"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-success history-action-btn" data-action="requeue" title="${requeueButtonTitle}">
+                        <i class="bi ${requeueButtonIcon}"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log">
+                        <i class="bi bi-file-text"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete">
+                        <i class="bi bi-trash-fill"></i>
+                    </button>
                 </div>
             </div>
-            ${errorSummaryHTML}
+            ${item.error_summary ? `
+            <div class="mt-2">
+                <button class="btn btn-sm btn-outline-danger" type="button" data-bs-toggle="collapse" data-bs-target="#error-summary-${item.log_id}" aria-expanded="false">
+                    <i class="bi bi-exclamation-triangle-fill"></i> Show Error
+                </button>
+            </div>
+            <div class="collapse" id="error-summary-${item.log_id}">
+                <pre class="card card-body mt-2 p-2 bg-body-tertiary small" style="max-height: 200px; overflow-y: auto;"><code>${sanitizedError}</code></pre>
+            </div>` : ''}
+        `;
+    }
+
+    function renderScythes(newScythes) {
+        const scythesList = document.getElementById("scythes-list");
+        
+        if (newScythes.length === 0) {
+            if (localState.scythes.length > 0 || !scythesList.querySelector('.fst-italic')) {
+                scythesList.innerHTML = "<li class='list-group-item fst-italic text-muted'>No Scythes saved yet.</li>";
+            }
+            return;
+        }
+
+        const newScythesMap = new Map(newScythes.map(item => [item.id, item]));
+        const oldScythesMap = new Map(localState.scythes.map(item => [item.id, item]));
+
+        oldScythesMap.forEach((_, scytheId) => {
+            if (!newScythesMap.has(scytheId)) {
+                scythesList.querySelector(`[data-scythe-id='${scytheId}']`)?.remove();
+            }
+        });
+
+        newScythes.forEach(scythe => {
+            let li = scythesList.querySelector(`[data-scythe-id='${scythe.id}']`);
+            if (!li) {
+                li = document.createElement('li');
+                li.className = 'list-group-item';
+                li.dataset.scytheId = scythe.id;
+                scythesList.appendChild(li);
+            }
+            li.innerHTML = createScytheItemHTML(scythe);
+        });
+
+        scythesList.querySelector('.fst-italic')?.remove();
+    }
+
+    function createScytheItemHTML(scythe) {
+        const jobData = scythe.job_data || {};
+        return `
+            <div class="d-flex justify-content-between align-items-center">
+                <div class="flex-grow-1" style="min-width: 0;">
+                    <strong class="word-break">${scythe.name || "Untitled Scythe"}</strong>
+                    <br>
+                    <small class="text-muted word-break">${jobData.url || "No URL"}</small>
+                </div>
+                <div class="btn-group ms-2">
+                    <button class="btn btn-sm btn-success scythe-action-btn" data-action="reap" title="Reap Now">
+                        <i class="bi bi-scissors scythe-icon"></i>
+                    </button>
+                    <button class="btn btn-sm btn-secondary scythe-action-btn" data-action="edit" title="Edit">
+                        <i class="bi bi-pencil-fill"></i>
+                    </button>
+                    <button class="btn btn-sm btn-danger scythe-action-btn" data-action="delete" title="Delete">
+                        <i class="bi bi-trash-fill"></i>
+                    </button>
+                </div>
+            </div>
         `;
     }
 
@@ -292,6 +374,7 @@
         renderCurrentStatus(newState.current);
         renderQueue(newState.queue);
         renderHistory(newState.history);
+        renderScythes(newState.scythes);
         renderPauseState(newState.is_paused);
         localState = newState;
     }
@@ -311,13 +394,17 @@
     const viewStaticLog = async (logId) => {
         try {
             clearInterval(liveLogPollInterval);
-            const data = await window.apiRequest(window.API.historyLog(logId));
+            const data = await window.apiRequest(window.API.historyItem(logId, true));
+            
             const logContentEl = document.getElementById('logModalContent');
-            logContentEl.textContent = data.log || "Log is empty or could not be loaded.";
+            logContentEl.textContent = data.log_content || "Log is empty or could not be loaded.";
+            
             if (!logModalInstance) logModalInstance = new bootstrap.Modal(document.getElementById('logModal'));
             logModalInstance.show();
             logContentEl.scrollTop = logContentEl.scrollHeight;
-        } catch (error) { console.error("Could not fetch log:", error); }
+        } catch (error) { 
+            console.error("Could not fetch log:", error); 
+        }
     };
 
     const viewLiveLog = () => {
@@ -343,11 +430,87 @@
         fetchLogContent();
     };
 
+    // --- Scythe Editor Logic ---
+    const openScytheEditor = (scythe = null) => {
+        const modalEl = document.getElementById('scytheEditorModal');
+        if (!scytheModalInstance) {
+            scytheModalInstance = new bootstrap.Modal(modalEl);
+        }
+
+        const form = document.getElementById('scythe-editor-form');
+        form.reset();
+
+        const titleEl = document.getElementById('scytheEditorTitle');
+        const idInput = document.getElementById('scythe-editor-id');
+        const nameInput = document.getElementById('scythe-editor-name');
+        const urlInput = document.getElementById('scythe-editor-url');
+        const archiveInput = document.getElementById('scythe-editor-use-archive');
+
+        const optionsContainer = document.getElementById('scythe-editor-options-container');
+        const mainForm = document.getElementById('add-job-form');
+        optionsContainer.innerHTML = `
+            <div class="row text-center mode-selector mb-4 g-2">
+              <div class="col"><button type="button" class="btn btn-outline-primary" data-mode="music"><i class="bi bi-music-note-beamed"></i> Music</button></div>
+              <div class="col"><button type="button" class="btn btn-outline-primary" data-mode="video"><i class="bi bi-film"></i> Video</button></div>
+              <div class="col"><button type="button" class="btn btn-outline-primary" data-mode="clip"><i class="bi bi-scissors"></i> Clip</button></div>
+              <div class="col"><button type="button" class="btn btn-outline-primary" data-mode="custom"><i class="bi bi-terminal"></i> Custom</button></div>
+            </div>
+            <input type="hidden" name="download_mode">
+            <div data-options-for="music" class="mode-options">${mainForm.querySelector('[data-options-for="music"]').innerHTML}</div>
+            <div data-options-for="video" class="mode-options">${mainForm.querySelector('[data-options-for="video"]').innerHTML}</div>
+            <div data-options-for="clip" class="mode-options">${mainForm.querySelector('[data-options-for="clip"]').innerHTML}</div>
+            <div data-options-for="custom" class="mode-options">${mainForm.querySelector('[data-options-for="custom"]').innerHTML}</div>
+            <div class="row mb-3 playlist-range-options" style="display: none;">${mainForm.querySelector('.playlist-range-options').innerHTML}</div>
+        `;
+        
+        optionsContainer.querySelectorAll('.mode-selector .btn').forEach(btn => {
+            btn.addEventListener('click', () => switchMode(btn.dataset.mode, 'scythe-editor-options-container'));
+        });
+        urlInput.addEventListener('input', (e) => handleUrlInput(e.target));
+
+        if (scythe) { // Editing existing Scythe
+            titleEl.textContent = 'Edit Scythe';
+            idInput.value = scythe.id;
+            nameInput.value = scythe.name;
+            
+            const jobData = scythe.job_data || {};
+            urlInput.value = jobData.url || '';
+            archiveInput.checked = jobData.archive || false;
+
+            const mode = jobData.mode || 'clip';
+            switchMode(mode, 'scythe-editor-options-container');
+            
+            const folderInput = form.querySelector(`[data-options-for="${mode}"] [name="${mode}_foldername"]`);
+            if (folderInput) {
+                folderInput.value = jobData.folder || '';
+            }
+
+            Object.keys(jobData).forEach(key => {
+                const input = form.querySelector(`[name="${key}"]`);
+                if (input && key !== 'folder') {
+                    if (input.type === 'checkbox') {
+                        input.checked = !!jobData[key];
+                    } else {
+                        input.value = jobData[key];
+                    }
+                }
+            });
+
+        } else { // Creating new Scythe
+            titleEl.textContent = 'New Scythe';
+            idInput.value = '';
+            switchMode('clip', 'scythe-editor-options-container');
+        }
+        
+        handleUrlInput(urlInput);
+        scytheModalInstance.show();
+    };
+
     // --- INITIALIZATION ---
     const initializePage = () => {
         const savedMode = localStorage.getItem('downloader_mode') || 'clip';
         switchMode(savedMode);
-        document.querySelectorAll('.mode-selector .btn').forEach(btn => btn.addEventListener('click', () => switchMode(btn.dataset.mode)));
+        document.querySelectorAll('#add-job-form .mode-selector .btn').forEach(btn => btn.addEventListener('click', () => switchMode(btn.dataset.mode)));
 
         const addJobForm = document.getElementById('add-job-form');
         addJobForm.addEventListener('submit', async function(e) {
@@ -364,7 +527,8 @@
                 const data = await window.apiRequest(window.API.queue, { method: 'POST', body: new FormData(this) });
                 window.showToast(data.message, 'Success', 'success');
                 this.reset();
-                handleUrlInput();
+                switchMode(savedMode);
+                handleUrlInput(this.querySelector('textarea[name="urls"]'));
                 renderState(data.newState);
             } catch(error) { 
                 if (error.message !== "AUTH_REQUIRED") console.error("Failed to add job:", error);
@@ -373,7 +537,7 @@
             }
         });
 
-        document.querySelector('textarea[name="urls"]').addEventListener('input', handleUrlInput);
+        document.querySelector('textarea[name="urls"]').addEventListener('input', (e) => handleUrlInput(e.target));
         
         document.getElementById('clear-queue-btn').addEventListener('click', () => window.showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => {
             window.apiRequest(window.API.queueClear, { method: 'POST' }).then(data => renderState(data.newState)).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
@@ -403,7 +567,7 @@
                     .catch(err => {
                         if(err.message !== "AUTH_REQUIRED") console.error(err);
                         item.style.opacity = '1';
-                        pollStatus(); // Re-poll on error to fix UI
+                        pollStatus();
                     });
             }
         });
@@ -439,8 +603,123 @@
                 })
                 .catch(err => console.error(err))
                 .finally(() => actionBtn.disabled = false);
+            } else if (action === 'scythe') {
+                actionBtn.disabled = true;
+                window.apiRequest(window.API.scythes, {
+                    method: 'POST',
+                    body: JSON.stringify({ log_id: logId })
+                })
+                .then((data) => {
+                    window.showToast(data.message, 'Scythe Created', 'success');
+                    renderState(data.newState);
+                })
+                .catch(err => { /* apiRequest already shows a toast */ })
+                .finally(() => {
+                    actionBtn.disabled = false;
+                });
             }
         });
+
+        document.getElementById('scythes-list').addEventListener('click', (e) => {
+            const actionBtn = e.target.closest('.scythe-action-btn');
+            if (!actionBtn) return;
+
+            const li = actionBtn.closest('.list-group-item');
+            const scytheId = parseInt(li.dataset.scytheId, 10);
+            const action = actionBtn.dataset.action;
+            const scythe = localState.scythes.find(s => s.id === scytheId);
+
+            if (action === 'delete') {
+                window.showConfirmModal('Delete Scythe?', 'Are you sure you want to permanently delete this Scythe?', () => {
+                    li.style.opacity = '0.5';
+                    window.apiRequest(window.API.deleteScythe(scytheId), { method: 'DELETE' })
+                        .then(data => {
+                            window.showToast(data.message, 'Success', 'success');
+                            renderState(data.newState);
+                        })
+                        .catch(err => { li.style.opacity = '1'; });
+                });
+            } else if (action === 'edit') {
+                if (scythe) openScytheEditor(scythe);
+            } else if (action === 'reap') {
+                actionBtn.disabled = true;
+                 window.apiRequest(window.API.reapScythe(scytheId), { method: 'POST' })
+                    .then(data => {
+                        window.showToast(data.message, 'Success', 'success');
+                        renderState(data.newState);
+                    })
+                    .catch(err => console.error(err))
+                    .finally(() => actionBtn.disabled = false);
+            }
+        });
+
+        document.getElementById('new-scythe-btn').addEventListener('click', () => openScytheEditor(null));
+
+        document.getElementById('scythe-editor-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const id = this.querySelector('#scythe-editor-id').value;
+            const name = this.querySelector('#scythe-editor-name').value;
+            const url = this.querySelector('#scythe-editor-url').value;
+            
+            const formData = new FormData(this);
+            const rawData = Object.fromEntries(formData.entries());
+            const mode = rawData.download_mode;
+            
+            const jobData = {
+                url: url,
+                mode: mode,
+                folder: rawData[`${mode}_foldername`] || '',
+                archive: !!rawData.use_archive,
+                playlist_start: rawData.playlist_start || null,
+                playlist_end: rawData.playlist_end || null,
+            };
+
+            if (mode === 'music') {
+                jobData.format = rawData.music_audio_format;
+                jobData.quality = rawData.music_audio_quality;
+            } else if (mode === 'video') {
+                jobData.quality = rawData.video_quality;
+                jobData.format = rawData.video_format;
+                jobData.embed_subs = !!rawData.video_embed_subs;
+                jobData.codec = rawData.video_codec_preference;
+            } else if (mode === 'clip') {
+                jobData.format = rawData.clip_format;
+            } else if (mode === 'custom') {
+                jobData.custom_args = rawData.custom_args;
+            }
+            
+            const payload = { name: name, job_data: jobData };
+            
+            const endpoint = id ? window.API.updateScythe(id) : window.API.scythes;
+            const method = id ? 'PUT' : 'POST';
+
+            try {
+                const data = await window.apiRequest(endpoint, {
+                    method: method,
+                    body: JSON.stringify(payload)
+                });
+                // --- CHANGE: Added success toast ---
+                window.showToast(data.message, 'Success', 'success');
+                renderState(data.newState);
+                scytheModalInstance.hide();
+            } catch(err) { /* apiRequest shows toast on error */ }
+        });
+
+        document.addEventListener('login-modal-shown', () => {
+            if (scytheModalInstance && scytheModalInstance._isShown) {
+                scytheModalWasVisible = true;
+                scytheModalInstance.hide();
+            }
+        });
+        
+        const loginModalEl = document.getElementById('loginModal');
+        if (loginModalEl) {
+            loginModalEl.addEventListener('hidden.bs.modal', () => {
+                if (scytheModalWasVisible) {
+                    scytheModalWasVisible = false;
+                }
+            });
+        }
 
         sortableInstance = Sortable.create(document.getElementById('queue-list'), {
             handle: '.queue-handle',

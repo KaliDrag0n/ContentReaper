@@ -34,32 +34,54 @@
         }
     };
 
-    const initializeSettingsPage = () => {
+    /**
+     * Updates the UI elements on the settings page based on auth status.
+     * @param {boolean} isLoggedIn - Whether the user is currently logged in.
+     * @param {boolean} isPasswordSet - Whether a password is set on the server.
+     */
+    const handleAuthChange = (isLoggedIn, isPasswordSet) => {
+        const cookieTextarea = document.getElementById('cookie_content');
         const setupAlert = document.getElementById('setup-alert');
         const currentPasswordGroup = document.getElementById('current-password-group');
-        const cookieTextarea = document.getElementById('cookie_content');
-        const settingsForm = document.getElementById('general-settings-form');
 
+        if (!isPasswordSet) {
+            setupAlert.style.display = 'block';
+            currentPasswordGroup.style.display = 'none';
+        } else {
+            setupAlert.style.display = 'none';
+            currentPasswordGroup.style.display = 'block';
+        }
+
+        if (isPasswordSet && !isLoggedIn) {
+            cookieTextarea.placeholder = "Login to view/edit cookies...";
+            cookieTextarea.disabled = true;
+            cookieTextarea.value = ''; // Clear cookies if logged out
+        } else {
+            cookieTextarea.disabled = false;
+            cookieTextarea.placeholder = "Paste your Netscape format cookies here...";
+            // If the user just logged in or the page is loading,
+            // we should re-populate the settings to fetch the now-accessible cookie content.
+            if (isLoggedIn || !isPasswordSet) {
+                populateSettings();
+            }
+        }
+    };
+
+    const initializeSettingsPage = () => {
+        // Initial auth state check
         window.apiRequest(window.API.authStatus).then(status => {
-            if (!status.password_set) {
-                setupAlert.style.display = 'block';
-                currentPasswordGroup.style.display = 'none';
-            } else {
-                setupAlert.style.display = 'none';
-                currentPasswordGroup.style.display = 'block';
-            }
-            
-            if (status.password_set && !status.logged_in) {
-                cookieTextarea.placeholder = "Login to view/edit cookies...";
-                cookieTextarea.disabled = true;
-            } else {
-                cookieTextarea.disabled = false;
-                cookieTextarea.placeholder = "Paste your Netscape format cookies here...";
-            }
-
-            populateSettings();
+            handleAuthChange(status.logged_in, status.password_set);
         });
 
+        // Listen for auth changes from the login modal or logout button
+        document.addEventListener('auth-changed', () => {
+            // We need to re-check the full auth status to know if a password is set
+            window.apiRequest(window.API.authStatus).then(status => {
+                handleAuthChange(status.logged_in, status.password_set);
+            });
+        });
+
+        const settingsForm = document.getElementById('general-settings-form');
         if (settingsForm) {
             settingsForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
@@ -120,7 +142,8 @@
                     });
                     statusEl.textContent = response.message;
                     statusEl.classList.add('text-success');
-                    setTimeout(() => location.reload(), 1500);
+                    // Let the auth-changed event handle the UI update instead of reloading
+                    document.dispatchEvent(new CustomEvent('auth-changed', { detail: { loggedIn: true } }));
                 } catch (error) {
                     if (error.message !== "AUTH_REQUIRED") {
                         statusEl.textContent = `Error: ${error.message}`;

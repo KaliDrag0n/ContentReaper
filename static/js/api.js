@@ -29,8 +29,13 @@ const API_ENDPOINTS = {
     // History Management
     historyClear: '/history/clear',
     historyDelete: (logId) => `/history/delete/${logId}`,
-    historyItem: (logId) => `/api/history/item/${logId}`,
-    historyLog: (logId) => `/history/log/${logId}`,
+    historyItem: (logId, includeLog = false) => `/api/history/item/${logId}${includeLog ? '?include_log=true' : ''}`,
+
+    // Scythes Management
+    scythes: '/api/scythes',
+    updateScythe: (scytheId) => `/api/scythes/${scytheId}`,
+    deleteScythe: (scytheId) => `/api/scythes/${scytheId}`,
+    reapScythe: (scytheId) => `/api/scythes/${scytheId}/reap`,
 
     // File Management
     files: (path) => `/api/files?path=${encodeURIComponent(path)}`,

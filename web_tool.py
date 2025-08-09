@@ -22,7 +22,10 @@ APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 # --- Custom logging filter to create relative paths ---
 class RelativePathFilter(logging.Filter):
     def filter(self, record):
-        record.relativepath = os.path.relpath(record.pathname, APP_ROOT)
+        try:
+            record.relativepath = os.path.relpath(record.pathname, APP_ROOT)
+        except ValueError:
+            record.relativepath = record.pathname
         return True
 
 # --- Set up logging immediately ---
@@ -61,6 +64,7 @@ GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
 
 # --- Global Variables (will be initialized in create_app) ---
 state_manager = None
+scythe_manager = None # NEW
 update_status = {"update_available": False, "latest_version": "0.0.0", "release_url": "", "release_notes": ""}
 WORKER_THREAD = None
 STOP_EVENT = threading.Event()
@@ -100,7 +104,7 @@ try:
     import flask, waitress, requests
     from werkzeug.security import generate_password_hash, check_password_hash
     from flask_wtf.csrf import CSRFProtect, generate_csrf
-    from lib import dependency_manager as dm, state_manager as sm, worker, sanitizer
+    from lib import dependency_manager as dm, state_manager as sm, worker, sanitizer, scythe_manager as scm # NEW
     from flask import Flask, request, render_template, jsonify, redirect, url_for, Response, send_file, session
     from functools import wraps
 except ImportError:
@@ -157,7 +161,6 @@ def load_config():
     
     config_path = os.path.join(APP_ROOT, "config.json")
     
-    # Default configuration now includes server host and port
     defaults = {
         "download_dir": os.path.join(APP_ROOT, "downloads"),
         "temp_dir": os.path.join(APP_ROOT, ".temp"),
@@ -199,7 +202,6 @@ def load_config():
     PASSWORD_IS_SET = bool(CONFIG.get("admin_password_hash"))
     logger.info(f"Admin password is {'set' if PASSWORD_IS_SET else 'NOT set.'}")
     
-    # Save config to ensure new keys (host/port) are written to the user's file
     save_config()
 
 def save_config():
@@ -259,7 +261,7 @@ def trigger_update_and_restart():
 # --- Application Factory ---
 
 def create_app():
-    global state_manager, WORKER_THREAD, YT_DLP_PATH, FFMPEG_PATH
+    global state_manager, scythe_manager, WORKER_THREAD, YT_DLP_PATH, FFMPEG_PATH
     print_banner()
     load_config()
     cleanup_stale_processes_and_files(CONFIG['temp_dir'])
@@ -291,6 +293,10 @@ def create_app():
     state_file = os.path.join(APP_ROOT, "state.json")
     state_manager = sm.StateManager(state_file)
     
+    # NEW: Initialize the separate ScytheManager
+    scythes_file = os.path.join(APP_ROOT, "scythes.json")
+    scythe_manager = scm.ScytheManager(scythes_file)
+    
     for log_path in glob.glob(os.path.join(log_dir, "job_active_*.log")):
         try: os.remove(log_path)
         except OSError as e: logger.error(f"Failed to remove stale active log file {log_path}: {e}")
@@ -306,19 +312,79 @@ def create_app():
     register_routes(app)
     return app
 
+def _parse_music_options(form_data):
+    return {"format": form_data.get("music_audio_format"), "quality": form_data.get("music_audio_quality")}
+
+def _parse_video_options(form_data):
+    return {
+        "quality": form_data.get("video_quality"), 
+        "format": form_data.get("video_format"), 
+        "embed_subs": form_data.get("video_embed_subs") == "on", 
+        "codec": form_data.get("video_codec_preference")
+    }
+
+def _parse_clip_options(form_data):
+    return {"format": form_data.get("clip_format")}
+
+def _parse_custom_options(form_data):
+    return {"custom_args": form_data.get("custom_args")}
+
+def _parse_job_data(form_data):
+    """Parses form data to create a job dictionary using a modular approach."""
+    mode = form_data.get("download_mode")
+    if not mode:
+        raise ValueError("Download mode not specified.")
+
+    job_base = {
+        "mode": mode,
+        "folder": form_data.get(f"{mode}_foldername", "").strip(),
+        "archive": form_data.get("use_archive") == "yes",
+        "proxy": form_data.get("proxy", "").strip(),
+        "rate_limit": form_data.get("rate_limit", "").strip()
+    }
+    try:
+        p_start = form_data.get("playlist_start", "").strip()
+        p_end = form_data.get("playlist_end", "").strip()
+        job_base["playlist_start"] = int(p_start) if p_start else None
+        job_base["playlist_end"] = int(p_end) if p_end else None
+    except ValueError:
+        raise ValueError("Playlist start/end must be a number.")
+    
+    mode_parsers = {
+        'music': _parse_music_options,
+        'video': _parse_video_options,
+        'clip': _parse_clip_options,
+        'custom': _parse_custom_options
+    }
+    
+    parser = mode_parsers.get(mode)
+    if parser:
+        job_base.update(parser(form_data))
+    else:
+        logger.warning(f"Unknown download mode '{mode}' encountered.")
+
+    return job_base
+
 def register_routes(app):
     @app.context_processor
     def inject_globals():
         return dict(app_name=APP_NAME, app_version=APP_VERSION)
 
     def get_current_state():
+        # Now combines state from two different managers
         with state_manager._lock:
-            return {
+            state = {
                 "queue": state_manager.get_queue_list(),
                 "current": state_manager.current_download if state_manager.current_download.get("url") else None,
                 "history": state_manager.get_history_summary(),
                 "is_paused": not state_manager.queue_paused_event.is_set()
             }
+        state["scythes"] = scythe_manager.get_all()
+        return state
+
+    @app.route('/favicon.ico')
+    def favicon():
+        return '', 204
 
     @app.route("/")
     def index_route():
@@ -342,33 +408,6 @@ def register_routes(app):
     def update_check_route():
         with state_manager._lock:
             return jsonify(update_status)
-
-    def _parse_job_data(form_data):
-        mode = form_data.get("download_mode")
-        if not mode: raise ValueError("Download mode not specified.")
-        job_base = {
-            "mode": mode,
-            "folder": form_data.get(f"{mode}_foldername", "").strip(),
-            "archive": form_data.get("use_archive") == "yes",
-            "proxy": form_data.get("proxy", "").strip(),
-            "rate_limit": form_data.get("rate_limit", "").strip()
-        }
-        try:
-            p_start = form_data.get("playlist_start", "").strip()
-            p_end = form_data.get("playlist_end", "").strip()
-            job_base["playlist_start"] = int(p_start) if p_start else None
-            job_base["playlist_end"] = int(p_end) if p_end else None
-        except ValueError: raise ValueError("Playlist start/end must be a number.")
-        
-        if mode == 'music':
-            job_base.update({"format": form_data.get("music_audio_format"), "quality": form_data.get("music_audio_quality")})
-        elif mode == 'video':
-            job_base.update({"quality": form_data.get("video_quality"), "format": form_data.get("video_format"), "embed_subs": form_data.get("video_embed_subs") == "on", "codec": form_data.get("video_codec_preference")})
-        elif mode == 'clip':
-            job_base.update({"format": form_data.get("clip_format")})
-        elif mode == 'custom':
-            job_base.update({"custom_args": form_data.get("custom_args")})
-        return job_base
 
     @app.route("/queue", methods=["POST"])
     def add_to_queue_route():
@@ -605,24 +644,26 @@ def register_routes(app):
     @password_required
     def get_history_item_route(log_id):
         item = state_manager.get_history_item_by_log_id(log_id)
-        return jsonify(item) if item else (jsonify({"error": "History item not found."}), 404)
+        if not item:
+            return jsonify({"error": "History item not found."}), 404
+        
+        if request.args.get('include_log') == 'true':
+            log_dir = os.path.join(APP_ROOT, "logs")
+            log_path = item.get("log_path")
+            log_content = "Log not found on disk or could not be read."
+            
+            if log_path and log_path != "LOG_SAVE_ERROR" and is_safe_path(log_dir, log_path, allow_file=True):
+                try:
+                    with open(log_path, 'r', encoding='utf-8') as f:
+                        log_content = f.read()
+                except Exception as e:
+                    log_content = f"ERROR: Could not read log file. Reason: {e}"
+            elif log_path == "LOG_SAVE_ERROR":
+                log_content = "There was an error saving the log file for this job."
+            
+            item['log_content'] = log_content
 
-    @app.route('/history/log/<int:log_id>')
-    @password_required
-    def history_log_route(log_id):
-        item = state_manager.get_history_item_by_log_id(log_id)
-        if not item: return jsonify({"log": "Log not found for the given ID."}), 404
-        
-        log_dir = os.path.join(APP_ROOT, "logs")
-        log_path = item.get("log_path")
-        log_content = "Log not found on disk or could not be read."
-        
-        if log_path and log_path != "LOG_SAVE_ERROR" and is_safe_path(log_dir, log_path, allow_file=True):
-            try:
-                with open(log_path, 'r', encoding='utf-8') as f: log_content = f.read()
-            except Exception as e: log_content = f"ERROR: Could not read log file. Reason: {e}"
-        elif log_path == "LOG_SAVE_ERROR": log_content = "There was an error saving the log file for this job."
-        return jsonify({"log": log_content})
+        return jsonify(item)
 
     @app.route('/api/log/live/content')
     def live_log_content_route():
@@ -634,6 +675,70 @@ def register_routes(app):
                 with open(log_path, 'r', encoding='utf-8') as f: log_content = f.read()
             except Exception as e: log_content = f"ERROR: Could not read live log file. Reason: {e}"
         return jsonify({"log": log_content})
+
+    # --- Scythes API Routes (Now using ScytheManager) ---
+    @app.route('/api/scythes', methods=['POST'])
+    @password_required
+    def add_scythe_route():
+        data = request.get_json()
+        if not data: return jsonify({"error": "Invalid request."}), 400
+
+        if log_id := data.get("log_id"):
+            history_item = state_manager.get_history_item_by_log_id(log_id)
+            if not history_item or "job_data" not in history_item:
+                return jsonify({"error": "Could not find original job data in history."}), 404
+            
+            job_url = history_item["job_data"].get("url")
+            for scythe in scythe_manager.get_all():
+                if scythe.get("job_data", {}).get("url") == job_url:
+                    return jsonify({"error": "A Scythe for this URL already exists."}), 409
+
+            scythe_data = {
+                "name": history_item.get("title", "Untitled Scythe"),
+                "job_data": history_item["job_data"]
+            }
+            scythe_data["job_data"]["resolved_folder"] = history_item.get("folder")
+            
+            scythe_manager.add(scythe_data)
+            return jsonify({"message": f"Added Scythe: {scythe_data['name']}", "newState": get_current_state()}), 201
+
+        elif (job_data := data.get("job_data")) and (name := data.get("name")):
+            scythe_data = {"name": name, "job_data": job_data}
+            scythe_manager.add(scythe_data)
+            return jsonify({"message": f"Created Scythe: {name}", "newState": get_current_state()}), 201
+        
+        return jsonify({"error": "Invalid payload for creating a Scythe."}), 400
+
+    @app.route('/api/scythes/<int:scythe_id>', methods=['PUT'])
+    @password_required
+    def update_scythe_route(scythe_id):
+        data = request.get_json()
+        if not data or not data.get("name") or not data.get("job_data"):
+            return jsonify({"error": "Invalid payload for updating a Scythe."}), 400
+        
+        if scythe_manager.update(scythe_id, data):
+            return jsonify({"message": "Scythe updated.", "newState": get_current_state()})
+        return jsonify({"error": "Scythe not found."}), 404
+
+    @app.route('/api/scythes/<int:scythe_id>', methods=['DELETE'])
+    @password_required
+    def delete_scythe_route(scythe_id):
+        if scythe_manager.delete(scythe_id):
+            return jsonify({"message": "Scythe deleted.", "newState": get_current_state()})
+        return jsonify({"error": "Scythe not found."}), 404
+
+    @app.route('/api/scythes/<int:scythe_id>/reap', methods=['POST'])
+    @password_required
+    def reap_scythe_route(scythe_id):
+        scythe = scythe_manager.get_by_id(scythe_id)
+        if not scythe or not scythe.get("job_data"):
+            return jsonify({"error": "Scythe not found or is invalid."}), 404
+        
+        job_to_reap = scythe["job_data"]
+        job_to_reap["resolved_folder"] = job_to_reap.get("folder")
+
+        state_manager.add_to_queue(job_to_reap)
+        return jsonify({"message": f"Added '{scythe.get('name')}' to queue.", "newState": get_current_state()})
 
     @app.route("/api/files")
     @password_required
@@ -700,7 +805,6 @@ def register_routes(app):
 if __name__ == "__main__":
     try:
         app = create_app()
-        # Read host and port from the loaded CONFIG dictionary
         host = CONFIG.get("server_host", "0.0.0.0")
         port = CONFIG.get("server_port", 8080)
         

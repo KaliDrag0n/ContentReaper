@@ -128,7 +128,7 @@
         const title = names.length > 1 ? `Delete ${names.length} items?` : `Delete "${names[0]}"?`;
         window.showConfirmModal(title, 'Are you sure you want to permanently delete the selected item(s)? This cannot be undone.', async () => {
             try {
-                await window.apiRequest(window.API.deleteItem, { 
+                const response = await window.apiRequest(window.API.deleteItem, { 
                     method: 'POST', 
                     body: JSON.stringify({ paths: paths }) 
                 });
@@ -136,10 +136,12 @@
                 paths.forEach(path => {
                     document.querySelector(`.file-item[data-path="${path}"]`)?.remove();
                 });
+                window.showToast(response.message, 'Success', 'success');
                 updateSelectionActions();
             } catch (error) {
+                // CHANGE: Show a toast notification on failure instead of just logging to console.
                 if (error.message !== "AUTH_REQUIRED") {
-                    console.error("Delete failed:", error);
+                    window.showToast(error.message, 'Delete Failed', 'danger');
                 }
             }
         });
