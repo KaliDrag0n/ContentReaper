@@ -43,7 +43,6 @@
     body {
         transition: background-color 0.2s linear, color 0.2s linear;
     }
-    /* CHANGE: Added styles for the preloading effect. */
     main {
         opacity: 0;
         transition: opacity 0.3s ease-in-out;
@@ -157,6 +156,12 @@
             <li class="nav-item perm-admin">
                 <a class="nav-link {% if request.endpoint == 'settings_route' %}active{% endif %}" href="{{ url_for('settings_route') }}">
                     <i class="bi bi-gear-fill d-none d-sm-inline"></i> Settings
+                </a>
+            </li>
+            {# CHANGE: Add new "Logs" tab, visible only to admins. #}
+            <li class="nav-item perm-admin">
+                <a class="nav-link {% if request.endpoint == 'logs_route' %}active{% endif %}" href="{{ url_for('logs_route') }}">
+                    <i class="bi bi-file-text-fill d-none d-sm-inline"></i> Logs
                 </a>
             </li>
         </ul>

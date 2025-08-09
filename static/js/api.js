@@ -54,6 +54,9 @@ const API_ENDPOINTS = {
     
     // Logging
     liveLog: '/api/log/live/content',
+    // CHANGE: Add new endpoints for the log viewer.
+    listLogs: '/api/logs',
+    getLogContent: (filename) => `/api/logs/${filename}`,
 };
 
 // Expose the endpoints to the global scope to be accessible by other scripts.

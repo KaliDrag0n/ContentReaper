@@ -122,7 +122,6 @@ except ImportError:
         logger.critical(f"Failed to install dependencies. Please run 'pip install -r requirements.txt' manually. Error: {e}")
         sys.exit(1)
 
-# CHANGE: New function to handle one-time migration of legacy data files.
 def migrate_legacy_data():
     """
     Checks for data files in the root directory and moves them to the new
@@ -369,7 +368,6 @@ def trigger_update_and_restart():
 def create_app():
     global state_manager, scythe_manager, user_manager, scheduler, WORKER_THREAD, SCHEDULER_THREAD, YT_DLP_PATH, FFMPEG_PATH
     
-    # CHANGE: Run migration before anything else.
     migrate_legacy_data()
     
     print_banner()
@@ -523,6 +521,12 @@ def register_routes(app):
             current_update_status = update_status.copy()
         return render_template("settings.html", update_info=current_update_status)
     
+    # CHANGE: Add new route for the log viewer page.
+    @app.route("/logs")
+    @page_permission_required('admin')
+    def logs_route():
+        return render_template("logs.html")
+
     @app.route("/api/status")
     def status_poll_route():
         return jsonify(get_current_state())
@@ -982,6 +986,52 @@ def register_routes(app):
                     zip_file.write(full_path, arcname=os.path.basename(full_path))
         zip_buffer.seek(0)
         return send_file(zip_buffer, as_attachment=True, download_name=zip_name, mimetype='application/zip')
+
+    # CHANGE: Add API endpoints for the log viewer.
+    @app.route('/api/logs', methods=['GET'])
+    @permission_required('admin')
+    def list_logs_route():
+        log_dir = os.path.join(DATA_DIR, "logs")
+        logs = []
+        
+        # Add main startup log
+        startup_log = os.path.join(DATA_DIR, 'startup.log')
+        if os.path.exists(startup_log):
+            logs.append({"filename": "startup.log", "display_name": "Application Log (startup.log)"})
+
+        # Add job logs
+        job_logs = sorted(glob.glob(os.path.join(log_dir, "job_*.log")), reverse=True)
+        for log_path in job_logs:
+            filename = os.path.basename(log_path)
+            logs.append({"filename": f"logs/{filename}", "display_name": f"Job Log ({filename})"})
+            
+        return jsonify(logs)
+
+    @app.route('/api/logs/<path:filename>', methods=['GET'])
+    @permission_required('admin')
+    def get_log_content_route(filename):
+        # Prevent path traversal
+        if '..' in filename or filename.startswith('/'):
+            return jsonify({"error": "Invalid filename."}), 400
+            
+        full_path = os.path.join(DATA_DIR, filename)
+        
+        if not is_safe_path(DATA_DIR, full_path, allow_file=True):
+            return jsonify({"error": "Access denied."}), 403
+            
+        try:
+            with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
+                # Read last 1MB for performance
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - (1024 * 1024)), os.SEEK_SET)
+                content = f.read()
+            return jsonify({"content": content})
+        except FileNotFoundError:
+            return jsonify({"error": "Log file not found."}), 404
+        except Exception as e:
+            logger.error(f"Error reading log file {filename}: {e}")
+            return jsonify({"error": "Could not read log file."}), 500
 
 if __name__ == "__main__":
     try:
