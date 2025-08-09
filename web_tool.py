@@ -18,6 +18,8 @@ import secrets
 
 # --- Define APP_ROOT early for use in logger setup ---
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(APP_ROOT, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
 
 # --- Custom logging filter to create relative paths ---
 class RelativePathFilter(logging.Filter):
@@ -33,7 +35,7 @@ console_log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - [in %(r
 file_log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - [in %(pathname)s:%(lineno)d] :: %(message)s')
 simple_formatter = logging.Formatter('%(message)s')
 
-log_file = os.path.join(APP_ROOT, 'startup.log')
+log_file = os.path.join(DATA_DIR, 'startup.log')
 
 file_handler = RotatingFileHandler(log_file, maxBytes=1*1024*1024, backupCount=2)
 file_handler.setFormatter(file_log_formatter)
@@ -66,7 +68,6 @@ GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
 state_manager = None
 scythe_manager = None
 user_manager = None
-# CHANGE: Added scheduler and its thread
 scheduler = None
 SCHEDULER_THREAD = None
 update_status = {"update_available": False, "latest_version": "0.0.0", "release_url": "", "release_notes": ""}
@@ -120,6 +121,50 @@ except ImportError:
     except subprocess.CalledProcessError as e:
         logger.critical(f"Failed to install dependencies. Please run 'pip install -r requirements.txt' manually. Error: {e}")
         sys.exit(1)
+
+# CHANGE: New function to handle one-time migration of legacy data files.
+def migrate_legacy_data():
+    """
+    Checks for data files in the root directory and moves them to the new
+    'data' subdirectory for better organization and security.
+    """
+    legacy_files = [
+        "config.json", "state.json", "scythes.json", "users.json", "cookies.txt",
+        "state.json.bak", "scythes.json.bak", "users.json.bak"
+    ]
+    legacy_dirs = ["logs"]
+    migrated = False
+
+    for filename in legacy_files:
+        old_path = os.path.join(APP_ROOT, filename)
+        new_path = os.path.join(DATA_DIR, filename)
+        if os.path.exists(old_path):
+            if not os.path.exists(new_path):
+                try:
+                    shutil.move(old_path, new_path)
+                    logger.info(f"Migrated legacy file '{filename}' to data directory.")
+                    migrated = True
+                except Exception as e:
+                    logger.error(f"Failed to migrate '{filename}': {e}")
+            else:
+                logger.warning(f"Legacy file '{filename}' found, but destination already exists. Skipping migration for this file.")
+
+    for dirname in legacy_dirs:
+        old_path = os.path.join(APP_ROOT, dirname)
+        new_path = os.path.join(DATA_DIR, dirname)
+        if os.path.isdir(old_path):
+            if not os.path.isdir(new_path):
+                try:
+                    shutil.move(old_path, new_path)
+                    logger.info(f"Migrated legacy directory '{dirname}' to data directory.")
+                    migrated = True
+                except Exception as e:
+                    logger.error(f"Failed to migrate '{dirname}': {e}")
+            else:
+                logger.warning(f"Legacy directory '{dirname}' found, but destination already exists. Skipping migration.")
+    
+    if migrated:
+        logger.info("Data migration complete.")
 
 # --- Role-based Security System ---
 def permission_required(permission):
@@ -196,7 +241,7 @@ def load_config():
     """Loads configuration, migrates old format, sets defaults, and validates."""
     global CONFIG
     
-    config_path = os.path.join(APP_ROOT, "config.json")
+    config_path = os.path.join(DATA_DIR, "config.json")
     
     defaults = {
         "download_dir": os.path.join(APP_ROOT, "downloads"),
@@ -267,7 +312,7 @@ def load_config():
 
 def save_config():
     """Saves the current configuration to config.json."""
-    config_path = os.path.join(APP_ROOT, "config.json")
+    config_path = os.path.join(DATA_DIR, "config.json")
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(CONFIG, f, indent=4)
@@ -323,9 +368,13 @@ def trigger_update_and_restart():
 
 def create_app():
     global state_manager, scythe_manager, user_manager, scheduler, WORKER_THREAD, SCHEDULER_THREAD, YT_DLP_PATH, FFMPEG_PATH
+    
+    # CHANGE: Run migration before anything else.
+    migrate_legacy_data()
+    
     print_banner()
     
-    users_file = os.path.join(APP_ROOT, "users.json")
+    users_file = os.path.join(DATA_DIR, "users.json")
     user_manager = um.UserManager(users_file)
 
     load_config()
@@ -352,13 +401,13 @@ def create_app():
     csrf = CSRFProtect(app)
 
     logger.info("--- [4/4] Loading state and starting background threads ---")
-    log_dir = os.path.join(APP_ROOT, "logs")
+    log_dir = os.path.join(DATA_DIR, "logs")
     os.makedirs(log_dir, exist_ok=True)
     
-    state_file = os.path.join(APP_ROOT, "state.json")
+    state_file = os.path.join(DATA_DIR, "state.json")
     state_manager = sm.StateManager(state_file)
     
-    scythes_file = os.path.join(APP_ROOT, "scythes.json")
+    scythes_file = os.path.join(DATA_DIR, "scythes.json")
     scythe_manager = scm.ScytheManager(scythes_file)
     
     for log_path in glob.glob(os.path.join(log_dir, "job_active_*.log")):
@@ -368,11 +417,10 @@ def create_app():
     state_manager.load_state()
     threading.Thread(target=scheduled_update_check, daemon=True).start()
     
-    cookie_file = os.path.join(APP_ROOT, "cookies.txt")
+    cookie_file = os.path.join(DATA_DIR, "cookies.txt")
     WORKER_THREAD = threading.Thread(target=worker.yt_dlp_worker, args=(state_manager, CONFIG, log_dir, cookie_file, YT_DLP_PATH, FFMPEG_PATH, STOP_EVENT))
     WORKER_THREAD.start()
     
-    # CHANGE: Initialize and start the scheduler thread.
     scheduler = sched.Scheduler(scythe_manager, state_manager)
     SCHEDULER_THREAD = threading.Thread(target=scheduler.run_pending)
     SCHEDULER_THREAD.start()
@@ -410,7 +458,6 @@ def _parse_job_data(form_data):
         "archive": form_data.get("use_archive") == "yes",
         "proxy": form_data.get("proxy", "").strip(),
         "rate_limit": form_data.get("rate_limit", "").strip(),
-        # CHANGE: Add post-processing options.
         "embed_lyrics": form_data.get("embed_lyrics") == "on",
         "split_chapters": form_data.get("split_chapters") == "on"
     }
@@ -606,7 +653,7 @@ def register_routes(app):
 
             save_config()
             
-            cookie_file = os.path.join(APP_ROOT, "cookies.txt")
+            cookie_file = os.path.join(DATA_DIR, "cookies.txt")
             try:
                 with open(cookie_file, 'w', encoding='utf-8') as f:
                     f.write(data.get("cookie_content", ""))
@@ -617,7 +664,7 @@ def register_routes(app):
             logger.info("Settings saved via API. Host/port/log level changes will apply on next restart.")
             return jsonify({"message": "Settings saved successfully. Restart required for some changes."})
 
-        cookie_file = os.path.join(APP_ROOT, "cookies.txt")
+        cookie_file = os.path.join(DATA_DIR, "cookies.txt")
         cookie_content = ""
         try:
             if os.path.exists(cookie_file):
@@ -683,7 +730,7 @@ def register_routes(app):
     @app.route('/history/clear', methods=['POST'])
     @permission_required('admin')
     def clear_history_route():
-        log_dir = os.path.join(APP_ROOT, "logs")
+        log_dir = os.path.join(DATA_DIR, "logs")
         for path in state_manager.clear_history():
             if is_safe_path(log_dir, path, allow_file=True):
                 try: os.remove(path)
@@ -765,7 +812,7 @@ def register_routes(app):
     @app.route('/history/delete/<int:log_id>', methods=['POST'])
     @permission_required('admin')
     def delete_from_history_route(log_id):
-        log_dir = os.path.join(APP_ROOT, "logs")
+        log_dir = os.path.join(DATA_DIR, "logs")
         path_to_delete = state_manager.delete_from_history(log_id)
         if path_to_delete and is_safe_path(log_dir, path_to_delete, allow_file=True):
             try: os.remove(path_to_delete)
@@ -779,7 +826,7 @@ def register_routes(app):
             return jsonify({"error": "History item not found."}), 404
         
         if request.args.get('include_log') == 'true':
-            log_dir = os.path.join(APP_ROOT, "logs")
+            log_dir = os.path.join(DATA_DIR, "logs")
             log_path = item.get("log_path")
             log_content = "Log not found on disk or could not be read."
             
@@ -798,7 +845,7 @@ def register_routes(app):
 
     @app.route('/api/log/live/content')
     def live_log_content_route():
-        log_dir = os.path.join(APP_ROOT, "logs")
+        log_dir = os.path.join(DATA_DIR, "logs")
         log_path = state_manager.current_download.get("log_path")
         log_content = "No active download or log path is not available."
         if log_path and is_safe_path(log_dir, log_path, allow_file=True):
@@ -835,7 +882,7 @@ def register_routes(app):
             scythe_data = {"name": name, "job_data": job_data, "schedule": data.get("schedule")}
             result, message = scythe_manager.add(scythe_data)
             if result:
-                scheduler._load_and_schedule_jobs() # Reload scheduler
+                scheduler._load_and_schedule_jobs()
                 return jsonify({"message": message, "newState": get_current_state()}), 201
             else:
                 return jsonify({"error": message}), 409
@@ -850,7 +897,7 @@ def register_routes(app):
             return jsonify({"error": "Invalid payload for updating a Scythe."}), 400
         
         if scythe_manager.update(scythe_id, data):
-            scheduler._load_and_schedule_jobs() # Reload scheduler
+            scheduler._load_and_schedule_jobs()
             return jsonify({"message": "Scythe updated.", "newState": get_current_state()})
         return jsonify({"error": "Scythe not found."}), 404
 
@@ -858,7 +905,7 @@ def register_routes(app):
     @permission_required('can_manage_scythes')
     def delete_scythe_route(scythe_id):
         if scythe_manager.delete(scythe_id):
-            scheduler._load_and_schedule_jobs() # Reload scheduler
+            scheduler._load_and_schedule_jobs()
             return jsonify({"message": "Scythe deleted.", "newState": get_current_state()})
         return jsonify({"error": "Scythe not found."}), 404
 

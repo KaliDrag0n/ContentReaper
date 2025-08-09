@@ -241,6 +241,16 @@
     }
 
     function createHistoryItemHTML(item) {
+        // CHANGE: Handle the new "INFO" status for scheduler notifications.
+        if (item.status === 'INFO') {
+            return `
+                <div class="d-flex align-items-center text-muted">
+                    <i class="bi bi-info-circle-fill me-2"></i>
+                    <small>${item.title}</small>
+                </div>
+            `;
+        }
+
         let badgeClass = 'bg-secondary';
         switch(item.status) {
             case 'COMPLETED': badgeClass = 'bg-success'; break;
@@ -454,7 +464,6 @@
         const scheduleOptionsContainer = document.getElementById('schedule-options-container');
         const scheduleInterval = document.getElementById('schedule-interval');
         const scheduleWeeklyOptions = document.getElementById('schedule-options-weekly');
-        const scheduleWeekday = document.getElementById('schedule-weekday');
         const scheduleTime = document.getElementById('schedule-time');
 
         const optionsContainer = document.getElementById('scythe-editor-options-container');
@@ -492,17 +501,21 @@
             const scheduleData = scythe.schedule || {};
             scheduleEnabled.checked = scheduleData.enabled || false;
             scheduleInterval.value = scheduleData.interval || 'daily';
-            scheduleWeekday.value = scheduleData.weekday || '0';
             scheduleTime.value = scheduleData.time || '03:00';
+
+            // CHANGE: Handle multiple weekdays
+            form.querySelectorAll('.weekday-selector .form-check-input').forEach(cb => {
+                cb.checked = (scheduleData.weekdays || []).includes(parseInt(cb.value, 10));
+            });
 
             const mode = jobData.mode || 'clip';
             switchMode(mode, 'scythe-editor-options-container');
             
-            const folderInput = form.querySelector(`[data-options-for="${mode}"] [name="${mode}_foldername"]`);
+            const folderInput = optionsContainer.querySelector(`[data-options-for="${mode}"] [name="${mode}_foldername"]`);
             if (folderInput) folderInput.value = jobData.folder || '';
 
             Object.keys(jobData).forEach(key => {
-                const input = form.querySelector(`[name="${key}"]`);
+                const input = optionsContainer.querySelector(`[name="${key}"]`);
                 if (input && key !== 'folder') {
                     if (input.type === 'checkbox') input.checked = !!jobData[key];
                     else input.value = jobData[key];
@@ -677,7 +690,6 @@
             e.preventDefault();
             const submitBtn = this.querySelector('button[type="submit"]');
             
-            // CHANGE: Wrapped entire function in try/finally to ensure button is re-enabled.
             try {
                 submitBtn.disabled = true;
                 submitBtn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Saving...`;
@@ -686,7 +698,6 @@
                 const name = this.querySelector('#scythe-editor-name').value;
                 const url = this.querySelector('#scythe-editor-url').value;
                 
-                // CHANGE: Reworked data collection to be direct and robust, fixing the save bug.
                 const optionsContainer = this.querySelector('#scythe-editor-options-container');
                 const mode = optionsContainer.querySelector('input[name="download_mode"]').value;
                 const modeOptions = optionsContainer.querySelector(`[data-options-for="${mode}"]`);
@@ -716,10 +727,14 @@
                     jobData.custom_args = modeOptions.querySelector('[name="custom_args"]')?.value;
                 }
                 
+                // CHANGE: Collect multiple weekdays from checkboxes.
+                const weekdays = Array.from(this.querySelectorAll('.weekday-selector .form-check-input:checked'))
+                                      .map(cb => parseInt(cb.value, 10));
+
                 const schedule = {
                     enabled: this.querySelector('#schedule-enabled').checked,
                     interval: this.querySelector('#schedule-interval').value,
-                    weekday: parseInt(this.querySelector('#schedule-weekday').value, 10),
+                    weekdays: weekdays,
                     time: this.querySelector('#schedule-time').value
                 };
                 
@@ -737,7 +752,6 @@
                 scytheModalInstance.hide();
 
             } catch(err) {
-                // apiRequest already shows a toast for failures.
             } finally {
                 submitBtn.disabled = false;
                 submitBtn.innerHTML = 'Save Scythe';

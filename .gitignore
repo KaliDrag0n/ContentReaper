@@ -1,15 +1,13 @@
-config.json
-state.json
-state.json.bak
-scythes.json
-scythes.json.bak
-users.json
-users.json.bak
-cookies.txt
-change.log
-startup.log
-downloads
-logs
-__pycache__
-.temp
-/bin
+# Python
+__pycache__/
+*.pyc
+
+# Local data and configuration
+/data/
+
+# Local dependencies
+/bin/
+
+# User-generated content
+/downloads/
+/.temp/

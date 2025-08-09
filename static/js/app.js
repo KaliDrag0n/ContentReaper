@@ -100,7 +100,6 @@
         try {
             const res = await fetch(endpoint, fetchOptions);
 
-            // CHANGE: Trigger login modal for both 401 (Unauthorized) and 403 (Forbidden).
             if (res.status === 401 || res.status === 403) {
                 requestToRetry = { endpoint, options };
                 showLoginModal();
@@ -124,7 +123,6 @@
             return res.text();
 
         } catch (error) {
-            // Show a toast for errors unless it's an auth error (which shows a modal).
             if (error.message !== "AUTH_REQUIRED" && !error.message.includes("Permission denied")) {
                 showToast(error.message, 'API Error', 'danger');
             }
@@ -148,7 +146,13 @@
             const elements = document.querySelectorAll(`.perm-${perm}`);
             const hasPerm = userPerms.includes(perm);
             elements.forEach(el => {
-                const displayStyle = el.tagName === 'BUTTON' || el.tagName === 'A' ? 'inline-block' : '';
+                // CHANGE: Explicitly handle different tag types to ensure correct display property.
+                let displayStyle = ''; // Default to stylesheet
+                if (el.tagName === 'BUTTON' || el.tagName === 'A') {
+                    displayStyle = 'inline-block';
+                } else if (el.tagName === 'LI') {
+                    displayStyle = 'block'; // Nav items are block-level elements
+                }
                 el.style.display = hasPerm ? displayStyle : 'none';
             });
         });

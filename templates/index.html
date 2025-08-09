@@ -16,8 +16,9 @@
     #queue-header { position: relative; z-index: 11; }
     .now-downloading-thumbnail { width: 120px; height: 90px; object-fit: cover; border-radius: var(--bs-border-radius); }
     .scythe-icon { transform: rotate(45deg); }
-    /* CHANGE: Styles for scythe scheduling UI */
     #schedule-options-weekly { display: none; }
+    /* CHANGE: Added flex-wrap to ensure the selector is responsive on mobile. */
+    .weekday-selector { display: flex; flex-wrap: wrap; justify-content: space-around; padding: 0.5rem; border-radius: var(--bs-border-radius); background-color: var(--bs-tertiary-bg); }
 {% endblock %}
 
 {% block content %}
@@ -43,7 +44,6 @@
           <div id="playlist-range-options" class="row mb-3 playlist-range-options"><div class="col-md-6"><label class="form-label">Start Index <small>(optional)</small></label><input type="number" name="playlist_start" class="form-control" min="1" placeholder="e.g., 5"></div><div class="col-md-6"><label class="form-label">End Index <small>(optional)</small></label><input type="number" name="playlist_end" class="form-control" min="1" placeholder="e.g., 20"></div></div>
           
           <div class="accordion mb-3" id="advancedAccordion"><div class="accordion-item"><h2 class="accordion-header"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne">Advanced Options</button></h2><div id="collapseOne" class="accordion-collapse collapse" data-bs-parent="#advancedAccordion"><div class="accordion-body"><div class="row"><div class="col-md-6 mb-3"><label class="form-label">Proxy URL <small>(optional)</small></label><input type="text" name="proxy" class="form-control" placeholder="e.g., socks5://127.0.0.1:1080"></div><div class="col-md-6 mb-3"><label class="form-label">Rate Limit <small>(optional)</small></label><input type="text" name="rate_limit" class="form-control" placeholder="e.g., 5M for 5MB/s"></div></div><hr>
-          {# CHANGE: Added Post-Processing Options #}
           <h5>Post-Processing</h5><div class="form-check form-switch mb-2"><input class="form-check-input" type="checkbox" role="switch" name="embed_lyrics"><label class="form-check-label" for="embed_lyrics">Embed Lyrics <small class="text-muted">(Music mode only)</small></label></div><div class="form-check form-switch"><input class="form-check-input" type="checkbox" role="switch" name="split_chapters"><label class="form-check-label" for="split_chapters">Split by Chapters</label></div></div></div></div>
           <div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="use_archive" value="yes" checked><label class="form-check-label">Use Archive to skip already-downloaded files in playlists</label></div>
           <button type="submit" class="btn btn-primary w-100">Add to Queue</button>
@@ -100,7 +100,6 @@
             <hr>
             <div id="scythe-editor-options-container"></div>
             <hr>
-            {# CHANGE: Added Scheduling UI to Scythe Editor #}
             <h5><i class="bi bi-clock-history"></i> Scheduling</h5>
             <div class="form-check form-switch mb-3">
                 <input class="form-check-input" type="checkbox" role="switch" id="schedule-enabled">
@@ -108,22 +107,30 @@
             </div>
             <div id="schedule-options-container" style="display: none;">
                 <div class="row">
-                    <div class="col-md-4 mb-3">
+                    <div class="col-md-6 mb-3">
                         <label for="schedule-interval" class="form-label">Frequency</label>
                         <select id="schedule-interval" class="form-select">
                             <option value="daily">Daily</option>
                             <option value="weekly">Weekly</option>
                         </select>
                     </div>
-                    <div class="col-md-4 mb-3" id="schedule-options-weekly">
-                        <label for="schedule-weekday" class="form-label">Day of Week</label>
-                        <select id="schedule-weekday" class="form-select">
-                            <option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option><option value="3">Thursday</option><option value="4">Friday</option><option value="5">Saturday</option><option value="6">Sunday</option>
-                        </select>
-                    </div>
-                    <div class="col-md-4 mb-3">
+                    <div class="col-md-6 mb-3">
                         <label for="schedule-time" class="form-label">Time</label>
                         <input type="time" id="schedule-time" class="form-control" required>
+                        <div class="form-text">All times are based on the server's clock.</div>
+                    </div>
+                </div>
+                <div id="schedule-options-weekly">
+                    <label class="form-label">Days of the Week</label>
+                    <div class="weekday-selector">
+                        {# CHANGE: Added mb-2 for better spacing when wrapped. #}
+                        <div class="form-check form-check-inline mb-2"><input class="form-check-input" type="checkbox" value="0" id="weekday-0"><label class="form-check-label" for="weekday-0">Mon</label></div>
+                        <div class="form-check form-check-inline mb-2"><input class="form-check-input" type="checkbox" value="1" id="weekday-1"><label class="form-check-label" for="weekday-1">Tue</label></div>
+                        <div class="form-check form-check-inline mb-2"><input class="form-check-input" type="checkbox" value="2" id="weekday-2"><label class="form-check-label" for="weekday-2">Wed</label></div>
+                        <div class="form-check form-check-inline mb-2"><input class="form-check-input" type="checkbox" value="3" id="weekday-3"><label class="form-check-label" for="weekday-3">Thu</label></div>
+                        <div class="form-check form-check-inline mb-2"><input class="form-check-input" type="checkbox" value="4" id="weekday-4"><label class="form-check-label" for="weekday-4">Fri</label></div>
+                        <div class="form-check form-check-inline mb-2"><input class="form-check-input" type="checkbox" value="5" id="weekday-5"><label class="form-check-label" for="weekday-5">Sat</label></div>
+                        <div class="form-check form-check-inline mb-2"><input class="form-check-input" type="checkbox" value="6" id="weekday-6"><label class="form-check-label" for="weekday-6">Sun</label></div>
                     </div>
                 </div>
             </div>

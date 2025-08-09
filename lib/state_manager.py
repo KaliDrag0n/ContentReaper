@@ -5,6 +5,9 @@ import json
 import os
 import time
 import shutil
+import logging
+
+logger = logging.getLogger()
 
 class StateManager:
     """
@@ -39,19 +42,25 @@ class StateManager:
         lock_wait_logged = False
         while time.time() - start_time < timeout:
             try:
+                if os.path.exists(self.lock_file):
+                    lock_age = time.time() - os.path.getmtime(self.lock_file)
+                    if lock_age > 60:
+                        logger.warning(f"Found stale lock file older than 60s: {self.lock_file}. Removing it.")
+                        self._release_lock()
+
                 fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.close(fd)
                 return True
             except FileExistsError:
                 if not lock_wait_logged:
-                    print(f"INFO: Waiting for lock file '{self.lock_file}' to be released...")
+                    logger.info(f"Waiting for lock file '{self.lock_file}' to be released...")
                     lock_wait_logged = True
                 time.sleep(0.1)
             except Exception as e:
-                print(f"ERROR: Unexpected error acquiring lock: {e}")
+                logger.error(f"Unexpected error acquiring lock: {e}")
                 return False
         
-        print(f"WARNING: Lock file {self.lock_file} has been held for over {timeout} seconds. Breaking lock.")
+        logger.warning(f"Lock file {self.lock_file} has been held for over {timeout} seconds. Breaking lock.")
         self._release_lock()
         return self._acquire_lock(timeout=1)
 
@@ -61,7 +70,7 @@ class StateManager:
             if os.path.exists(self.lock_file):
                 os.remove(self.lock_file)
         except Exception as e:
-            print(f"ERROR: Could not release lock file: {e}")
+            logger.error(f"Could not release lock file: {e}")
 
     def _get_default_current_download(self) -> dict:
         """Returns a dictionary representing a clean 'current_download' state."""
@@ -174,6 +183,16 @@ class StateManager:
             self.save_state()
         return new_id
     
+    # CHANGE: New method to add a system notification to the history panel.
+    def add_notification_to_history(self, message: str):
+        """Adds a non-job notification to the history for user feedback."""
+        notification = {
+            "title": message,
+            "status": "INFO", # A special status for the UI to recognize
+            "timestamp": time.time()
+        }
+        self.add_to_history(notification)
+
     def update_history_item(self, log_id: int, data_to_update: dict):
         """Updates an existing history item with new data."""
         with self._lock:
@@ -229,7 +248,7 @@ class StateManager:
     def save_state(self):
         """Saves the current state to a JSON file atomically with a backup."""
         if not self._acquire_lock():
-            print("Could not acquire lock to save state. Skipping save.")
+            logger.error("Could not acquire lock to save state. Skipping save.")
             return
         
         try:
@@ -252,31 +271,31 @@ class StateManager:
             os.replace(temp_file_path, self.state_file)
 
         except Exception as e:
-            print(f"ERROR: Could not save state to file: {e}")
+            logger.error(f"Could not save state to file: {e}")
             if os.path.exists(backup_file_path):
                 try:
                     shutil.copy2(backup_file_path, self.state_file)
-                    print("Restored state from backup due to save error.")
+                    logger.info("Restored state from backup due to save error.")
                 except Exception as e_restore:
-                    print(f"FATAL: Could not restore state from backup: {e_restore}")
+                    logger.critical(f"FATAL: Could not restore state from backup: {e_restore}")
             
             if os.path.exists(temp_file_path):
                 try: os.remove(temp_file_path)
-                except Exception as e_clean: print(f"ERROR: Could not clean up temp state file: {e_clean}")
+                except Exception as e_clean: logger.error(f"ERROR: Could not clean up temp state file: {e_clean}")
         finally:
             self._release_lock()
 
     def load_state(self):
         """Loads state from JSON, with a fallback to a backup file."""
         if not self._acquire_lock():
-            print("Could not acquire lock to load state. Starting fresh.")
+            logger.error("Could not acquire lock to load state. Starting fresh.")
             self._reset_state_to_defaults()
             return
             
         try:
             backup_file_path = self.state_file + ".bak"
             if not os.path.exists(self.state_file) and not os.path.exists(backup_file_path):
-                print("State file and backup not found. Starting with a fresh state.")
+                logger.info("State file and backup not found. Starting with a fresh state.")
                 return
 
             loaded_successfully = False
@@ -288,11 +307,11 @@ class StateManager:
                             state = json.loads(content)
                             self._apply_loaded_state(state)
                             loaded_successfully = True
-                            print("Successfully loaded state from main file.")
+                            logger.info("Successfully loaded state from main file.")
                         else:
-                            print("WARNING: Main state file is empty. Trying backup.")
+                            logger.warning("Main state file is empty. Trying backup.")
                 except (json.JSONDecodeError, OSError) as e:
-                    print(f"WARNING: Could not load main state file: {e}. Attempting to use backup.")
+                    logger.warning(f"Could not load main state file: {e}. Attempting to use backup.")
 
             if not loaded_successfully and os.path.exists(backup_file_path):
                 try:
@@ -300,20 +319,20 @@ class StateManager:
                         state = json.load(f)
                         self._apply_loaded_state(state)
                         shutil.copy2(backup_file_path, self.state_file)
-                        print("Successfully loaded and restored state from backup file.")
+                        logger.info("Successfully loaded and restored state from backup file.")
                         loaded_successfully = True
                 except (json.JSONDecodeError, OSError) as e:
-                    print(f"ERROR: Could not load backup state file: {e}. Starting fresh.")
+                    logger.error(f"Could not load backup state file: {e}. Starting fresh.")
 
             if not loaded_successfully:
-                print("FATAL: Both state file and backup are corrupted or unreadable.")
+                logger.critical("FATAL: Both state file and backup are corrupted or unreadable.")
                 corrupted_path = self.state_file + f".corrupted.{int(time.time())}.bak"
                 if os.path.exists(self.state_file):
                     try:
                         os.rename(self.state_file, corrupted_path)
-                        print(f"Backed up corrupted state file to {corrupted_path}")
+                        logger.info(f"Backed up corrupted state file to {corrupted_path}")
                     except OSError as e_rename:
-                        print(f"Could not back up corrupted state file. Error: {e_rename}")
+                        logger.error(f"Could not back up corrupted state file. Error: {e_rename}")
                 self._reset_state_to_defaults()
         finally:
             self._release_lock()
@@ -332,9 +351,8 @@ class StateManager:
             
             abandoned_job = state.get("current_job")
             if isinstance(abandoned_job, dict):
-                print(f"Found abandoned job: {abandoned_job.get('id', 'N/A')}. Moving to history.")
+                logger.info(f"Found abandoned job: {abandoned_job.get('id', 'N/A')}. Moving to history.")
                 
-                # CHANGE: Preserve the log file for abandoned jobs.
                 app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 log_dir = os.path.join(app_root, "logs")
                 abandoned_job_id = abandoned_job.get('id')
@@ -357,14 +375,13 @@ class StateManager:
                 if os.path.exists(temp_log_path):
                     try:
                         shutil.move(temp_log_path, final_log_path)
-                        # Update the history item we just added with the correct log path
                         for h in self.history:
                             if h.get("log_id") == new_log_id:
                                 h["log_path"] = final_log_path
                                 break
-                        print(f"Preserved log for abandoned job {abandoned_job_id} at {final_log_path}")
+                        logger.info(f"Preserved log for abandoned job {abandoned_job_id} at {final_log_path}")
                     except Exception as e:
-                        print(f"ERROR: Could not preserve log for abandoned job: {e}")
+                        logger.error(f"ERROR: Could not preserve log for abandoned job: {e}")
 
             with self.queue.mutex:
                 self.queue.queue.clear()
@@ -383,4 +400,4 @@ class StateManager:
                     self.queue.put(job)
                     processed_ids.add(job['id'])
             
-            print(f"Applied state: {self.queue.qsize()} item(s) in queue, {len(self.history)} history entries.")
+            logger.info(f"Applied state: {self.queue.qsize()} item(s) in queue, {len(self.history)} history entries.")
