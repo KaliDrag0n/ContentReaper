@@ -11,7 +11,11 @@ import threading
 import queue
 import platform
 import signal
+import logging
 from .sanitizer import sanitize_filename
+
+# CHANGE: Get the root logger configured in web_tool.py
+logger = logging.getLogger()
 
 # --- Helper Functions ---
 
@@ -114,8 +118,8 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
     if os.path.exists(cookie_file_path) and os.path.getsize(cookie_file_path) > 0:
         cmd.extend(['--cookies', cookie_file_path])
     if job.get("archive"):
-        # --- CHANGE: Add --force-download-archive to ensure skipping ---
-        cmd.extend(['--download-archive', os.path.join(temp_dir_path, "archive.temp.txt"), '--force-download-archive'])
+        # yt-dlp will now only read the archive once at the start of the job.
+        cmd.extend(['--download-archive', os.path.join(temp_dir_path, "archive.temp.txt")])
         
     cmd.append(job["url"])
     return cmd
@@ -207,14 +211,14 @@ def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name
                 error_summary = _generate_error_summary(temp_log_path)
 
     except Exception as e:
-        print(f"ERROR during job finalization: {e}")
+        logger.error(f"ERROR during job finalization: {e}")
         error_summary = f"A critical error occurred during job finalization: {e}"
     
     if os.path.exists(temp_dir_path):
         try:
             shutil.rmtree(temp_dir_path)
         except OSError as e:
-            print(f"ERROR: Could not remove temp folder {temp_dir_path}: {e}")
+            logger.error(f"ERROR: Could not remove temp folder {temp_dir_path}: {e}")
 
     return final_status, final_folder_name, final_filenames, error_summary
 
@@ -233,7 +237,7 @@ def _prepare_job_environment(job, config, log_dir):
             try:
                 shutil.copy2(main_archive_file, os.path.join(temp_dir_path, "archive.temp.txt"))
             except Exception as e:
-                print(f"Warning: Could not copy existing archive file: {e}")
+                logger.warning(f"Warning: Could not copy existing archive file: {e}")
             
     return temp_dir_path, temp_log_path
 
@@ -333,11 +337,11 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
                 process.terminate()
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            print(f"Process {process.pid} did not terminate gracefully. Killing.")
+            logger.warning(f"Process {process.pid} did not terminate gracefully. Killing.")
             process.kill()
             process.wait()
         except Exception as e:
-            print(f"Error during process termination: {e}")
+            logger.error(f"Error during process termination: {e}")
             process.kill()
             process.wait()
 
@@ -354,7 +358,7 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
 
 def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path, ffmpeg_path, stop_event):
     """The main worker loop that processes jobs from the queue."""
-    print("Worker thread started.")
+    logger.info("Worker thread started.")
     while not stop_event.is_set():
         state_manager.queue_paused_event.wait()
         
@@ -387,7 +391,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
             
         except Exception as e:
             status = "ERROR"
-            print(f"WORKER EXCEPTION for job {job.get('id')}: {e}")
+            logger.error(f"WORKER EXCEPTION for job {job.get('id')}: {e}", exc_info=True)
             if temp_log_path and os.path.exists(temp_log_path):
                 try:
                     with open(temp_log_path, 'a', encoding='utf-8') as log_file:
@@ -406,7 +410,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                     shutil.move(temp_log_path, final_log_path)
                     log_path_for_history = final_log_path
             except Exception as e:
-                print(f"ERROR: Could not move log file {temp_log_path}: {e}")
+                logger.error(f"ERROR: Could not move log file {temp_log_path}: {e}")
             
             history_item = {
                 "log_id": log_id_for_file,
@@ -424,4 +428,4 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
             
             state_manager.queue.task_done()
             
-    print("Worker thread has gracefully exited.")
+    logger.info("Worker thread has gracefully exited.")

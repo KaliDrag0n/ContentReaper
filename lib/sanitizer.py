@@ -64,7 +64,8 @@ def sanitize_filename(name: str) -> str:
             safe_name = safe_name.encode('utf-8')[:MAX_FILENAME_LENGTH].decode('utf-8', 'ignore')
 
     # 7. If the name is empty after all sanitization, return a default.
-    if not safe_name.strip():
+    # CHANGE: Also check if stripping periods made the name empty.
+    if not safe_name.strip() or not safe_name.strip('.'):
         return "Untitled"
         
     return safe_name

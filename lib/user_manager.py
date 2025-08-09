@@ -4,7 +4,11 @@ import os
 import shutil
 import time
 import threading
+import logging
 from werkzeug.security import generate_password_hash
+
+# CHANGE: Get the root logger configured in web_tool.py
+logger = logging.getLogger()
 
 class UserManager:
     """
@@ -20,11 +24,22 @@ class UserManager:
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
+                # CHANGE: Check for and handle stale lock files.
+                if os.path.exists(self.lock_file):
+                    lock_age = time.time() - os.path.getmtime(self.lock_file)
+                    if lock_age > 60: # If lock is older than 60 seconds
+                        logger.warning(f"Found stale lock file older than 60s: {self.lock_file}. Removing it.")
+                        self._release_lock()
+                
                 fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.close(fd)
                 return True
             except FileExistsError:
                 time.sleep(0.1)
+            except Exception as e:
+                logger.error(f"Unexpected error acquiring users lock: {e}")
+                return False
+        logger.error(f"Could not acquire users lock file after {timeout} seconds.")
         return False
 
     def _release_lock(self):
@@ -32,7 +47,7 @@ class UserManager:
             if os.path.exists(self.lock_file):
                 os.remove(self.lock_file)
         except Exception as e:
-            print(f"ERROR: Could not release users lock file: {e}")
+            logger.error(f"Could not release users lock file: {e}")
 
     def _load_users(self):
         """Loads users from JSON, with a fallback to a backup file."""
@@ -45,21 +60,21 @@ class UserManager:
                 if not content.strip(): return {}
                 return json.loads(content)
         except (json.JSONDecodeError, OSError) as e:
-            print(f"WARNING: Could not load main users file: {e}. Attempting backup.")
+            logger.warning(f"Could not load main users file: {e}. Attempting backup.")
             backup_file = self.users_file + ".bak"
             if os.path.exists(backup_file):
                 try:
                     with open(backup_file, 'r', encoding='utf-8') as f:
                         return json.load(f)
                 except Exception as bak_e:
-                    print(f"ERROR: Could not load backup users file: {bak_e}. Returning empty dict.")
+                    logger.error(f"Could not load backup users file: {bak_e}. Returning empty dict.")
         return {}
 
     def _save_users(self, users_data):
         """Saves the users dictionary to a JSON file atomically with a backup."""
         with self.file_lock:
             if not self._acquire_lock():
-                print("Could not acquire lock to save users. Aborting.")
+                logger.error("Could not acquire lock to save users. Aborting.")
                 return
 
             try:
@@ -74,7 +89,7 @@ class UserManager:
                 
                 os.replace(temp_file, self.users_file)
             except Exception as e:
-                print(f"ERROR: Could not save users file: {e}")
+                logger.error(f"Could not save users file: {e}")
             finally:
                 self._release_lock()
 

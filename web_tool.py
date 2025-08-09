@@ -105,7 +105,7 @@ try:
     from werkzeug.security import generate_password_hash, check_password_hash
     from flask_wtf.csrf import CSRFProtect, generate_csrf
     from lib import dependency_manager as dm, state_manager as sm, worker, sanitizer, scythe_manager as scm, user_manager as um
-    from flask import Flask, request, render_template, jsonify, redirect, url_for, Response, send_file, session
+    from flask import Flask, request, render_template, jsonify, redirect, url_for, Response, send_file, session, flash
     from functools import wraps
 except ImportError:
     logger.critical("Core Python packages not found. Attempting to install from requirements.txt...")
@@ -120,7 +120,7 @@ except ImportError:
 
 # --- Role-based Security System ---
 def permission_required(permission):
-    """Decorator to check if a logged-in user has a specific permission."""
+    """Decorator for API routes to check if a logged-in user has a specific permission."""
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
@@ -139,10 +139,35 @@ def permission_required(permission):
         return decorated_function
     return decorator
 
+# CHANGE: New decorator for page routes that redirects on failure.
+def page_permission_required(permission):
+    """Decorator for page routes that redirects and flashes a message on permission failure."""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            role = session.get('role')
+            has_permission = False
+            if role:
+                if role == 'admin':
+                    has_permission = True
+                else:
+                    user = user_manager.get_user(role)
+                    if user and user.get("permissions", {}).get(permission, False):
+                        has_permission = True
+            
+            if not has_permission:
+                flash("You do not have permission to access this page. Please log in as an administrator.", "danger")
+                return redirect(url_for('index_route'))
+            
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
 def is_safe_path(basedir, path_to_check, allow_file=False):
-    real_basedir = os.path.realpath(basedir)
+    # Use os.path.normcase for case-insensitive comparison, critical for Windows.
+    real_basedir = os.path.normcase(os.path.realpath(basedir))
     try:
-        real_path_to_check = os.path.realpath(path_to_check)
+        real_path_to_check = os.path.normcase(os.path.realpath(path_to_check))
     except OSError:
         return False
     
@@ -406,7 +431,12 @@ def _parse_job_data(form_data):
 def register_routes(app):
     @app.context_processor
     def inject_globals():
-        return dict(app_name=APP_NAME, app_version=APP_VERSION)
+        # CHANGE: Embed CSRF token for faster first-time secure requests.
+        return dict(
+            app_name=APP_NAME, 
+            app_version=APP_VERSION,
+            csrf_token=generate_csrf()
+        )
 
     def get_current_state():
         with state_manager._lock:
@@ -432,7 +462,7 @@ def register_routes(app):
         return render_template("file_manager.html")
 
     @app.route("/settings")
-    @permission_required('admin')
+    @page_permission_required('admin') # CHANGE: Use page-specific decorator
     def settings_route():
         with state_manager._lock:
             current_update_status = update_status.copy()
@@ -492,13 +522,17 @@ def register_routes(app):
         admin_user = user_manager.get_user('admin')
         admin_pass_set = bool(admin_user and admin_user.get("password_hash"))
         
+        # CHANGE: Reworked logic to handle public sessions more gracefully.
+        role = session.get('role')
+        manually_logged_in = session.get('manual_login', False)
+
         public_user = CONFIG.get('public_user')
-        if public_user and 'role' not in session:
+        if public_user and not role:
             user_data = user_manager.get_user(public_user)
             if user_data:
                 session['role'] = public_user
-
-        role = session.get('role')
+                role = public_user
+        
         permissions = {}
         if role and role != 'admin':
             user_data = user_manager.get_user(role)
@@ -507,7 +541,8 @@ def register_routes(app):
 
         return jsonify({
             "admin_password_set": admin_pass_set, 
-            "logged_in": 'role' in session,
+            "logged_in": bool(role),
+            "manually_logged_in": manually_logged_in,
             "role": role,
             "permissions": permissions
         })
@@ -527,11 +562,13 @@ def register_routes(app):
         if not user_data or not user_data.get("password_hash"):
             if username == 'admin' and not (user_data and user_data.get("password_hash")):
                  session['role'] = 'admin'
+                 session['manual_login'] = True # CHANGE: Flag manual login
                  return jsonify({"message": "Login successful. Please set a password."})
             return jsonify({"error": "Invalid username or password."}), 401
         
         if check_password_hash(user_data["password_hash"], password):
             session['role'] = username
+            session['manual_login'] = True # CHANGE: Flag manual login
             return jsonify({"message": "Login successful."})
         
         return jsonify({"error": "Invalid username or password."}), 401
@@ -539,6 +576,7 @@ def register_routes(app):
     @app.route('/api/auth/logout', methods=['POST'])
     def logout_route():
         session.pop('role', None)
+        session.pop('manual_login', None) # CHANGE: Clear manual login flag
         return jsonify({"message": "Logged out."})
         
     @app.route('/api/settings', methods=['GET', 'POST'])
@@ -774,24 +812,25 @@ def register_routes(app):
             if not history_item or "job_data" not in history_item:
                 return jsonify({"error": "Could not find original job data in history."}), 404
             
-            job_url = history_item["job_data"].get("url")
-            for scythe in scythe_manager.get_all():
-                if scythe.get("job_data", {}).get("url") == job_url:
-                    return jsonify({"error": "A Scythe for this URL already exists."}), 409
-
             scythe_data = {
                 "name": history_item.get("title", "Untitled Scythe"),
                 "job_data": history_item["job_data"]
             }
             scythe_data["job_data"]["resolved_folder"] = history_item.get("folder")
             
-            scythe_manager.add(scythe_data)
-            return jsonify({"message": f"Added Scythe: {scythe_data['name']}", "newState": get_current_state()}), 201
+            result, message = scythe_manager.add(scythe_data)
+            if result:
+                return jsonify({"message": message, "newState": get_current_state()}), 201
+            else:
+                return jsonify({"error": message}), 409
 
         elif (job_data := data.get("job_data")) and (name := data.get("name")):
             scythe_data = {"name": name, "job_data": job_data}
-            scythe_manager.add(scythe_data)
-            return jsonify({"message": f"Created Scythe: {name}", "newState": get_current_state()}), 201
+            result, message = scythe_manager.add(scythe_data)
+            if result:
+                return jsonify({"message": message, "newState": get_current_state()}), 201
+            else:
+                return jsonify({"error": message}), 409
         
         return jsonify({"error": "Invalid payload for creating a Scythe."}), 400
 

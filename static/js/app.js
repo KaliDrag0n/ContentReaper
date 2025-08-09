@@ -14,6 +14,7 @@
     let loginModalInstance = null;
     let toastInstance = null;
     
+    // CHANGE: CSRF token is now read from the meta tag on page load.
     let csrfToken = null;
     let requestToRetry = null; 
 
@@ -89,8 +90,13 @@
         }
 
         if (method !== 'GET' && method !== 'HEAD') {
-            if (!csrfToken) await fetchCsrfToken();
-            if (csrfToken) fetchOptions.headers['X-CSRF-Token'] = csrfToken;
+            // CHANGE: Use pre-loaded token, with a fallback to fetch if it's missing.
+            if (!csrfToken) {
+                await fetchCsrfToken();
+            }
+            if (csrfToken) {
+                fetchOptions.headers['X-CSRF-Token'] = csrfToken;
+            }
         }
 
         try {
@@ -132,7 +138,7 @@
         if (authStatus.logged_in) {
             if (authStatus.role === 'admin') {
                 userPerms = allPerms;
-            } else if (authStatus.role === 'guest' && authStatus.permissions) {
+            } else if (authStatus.permissions) { // Public user might not have a role but has perms
                 userPerms = Object.keys(authStatus.permissions).filter(p => authStatus.permissions[p]);
             }
         }
@@ -148,11 +154,20 @@
         });
     };
 
-    const updateAuthUI = (isLoggedIn) => {
+    const updateAuthUI = (authStatus) => {
         const loginBtn = document.getElementById('login-btn');
         const logoutBtn = document.getElementById('logout-btn');
-        if (loginBtn) loginBtn.style.display = isLoggedIn ? 'none' : 'inline-block';
-        if (logoutBtn) logoutBtn.style.display = isLoggedIn ? 'inline-block' : 'none';
+        
+        // CHANGE: Reworked to handle public sessions, showing Login even when a public user is "active".
+        if (authStatus.manually_logged_in) {
+            // A real user is logged in, show Logout button.
+            if (loginBtn) loginBtn.style.display = 'none';
+            if (logoutBtn) logoutBtn.style.display = 'inline-block';
+        } else {
+            // Not logged in, or in an implicit public session. Show Login button.
+            if (loginBtn) loginBtn.style.display = 'inline-block';
+            if (logoutBtn) logoutBtn.style.display = 'none';
+        }
     };
 
     const initializeSharedComponents = () => {
@@ -161,6 +176,9 @@
         window.showLoginModal = showLoginModal;
         window.apiRequest = apiRequest;
         window.showToast = showToast;
+
+        // CHANGE: Read the CSRF token from the meta tag on load.
+        csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
 
         const themeToggle = document.getElementById('theme-toggle');
         if (themeToggle) {
@@ -201,7 +219,7 @@
                     passwordInput.value = '';
                     
                     const newAuthStatus = await apiRequest(window.API.authStatus);
-                    updateAuthUI(newAuthStatus.logged_in);
+                    updateAuthUI(newAuthStatus);
                     updateUIPermissions(newAuthStatus);
                     document.dispatchEvent(new CustomEvent('auth-changed', { detail: newAuthStatus }));
 
@@ -225,7 +243,6 @@
             });
         }
 
-        // --- FIX: Added the missing event listener for the login button ---
         const loginBtn = document.getElementById('login-btn');
         if (loginBtn) {
             loginBtn.addEventListener('click', showLoginModal);
@@ -236,8 +253,8 @@
             logoutBtn.addEventListener('click', async () => {
                 try {
                     await apiRequest(window.API.authLogout, { method: 'POST' });
-                    const newAuthStatus = { logged_in: false, role: null, permissions: {} };
-                    updateAuthUI(false);
+                    const newAuthStatus = await apiRequest(window.API.authStatus);
+                    updateAuthUI(newAuthStatus);
                     updateUIPermissions(newAuthStatus);
                     document.dispatchEvent(new CustomEvent('auth-changed', { detail: newAuthStatus }));
                 } catch(err) { /* apiRequest handles showing the error toast */ }
@@ -245,11 +262,7 @@
         }
 
         apiRequest(window.API.authStatus).then(status => {
-            if (status.admin_password_set && !status.logged_in) {
-                 updateAuthUI(false);
-            } else {
-                 updateAuthUI(status.logged_in);
-            }
+            updateAuthUI(status);
             updateUIPermissions(status);
         }).catch(() => {});
     };

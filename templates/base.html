@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{{ app_name }}{% endblock %}</title>
 
+  {# CHANGE: Embed CSRF token directly into the page for faster secure requests. #}
+  <meta name="csrf-token" content="{{ csrf_token }}">
+
   {# Pre-load theme to prevent flash of unstyled content #}
   <script>
     (function() {
@@ -73,7 +76,6 @@
         </div>
         <div class="modal-body">
           <form id="login-form">
-            <!-- CHANGE: Added Username field -->
             <div class="mb-3">
               <label for="login-username-input" class="form-label">Username</label>
               <input type="text" class="form-control" id="login-username-input" value="admin" required>
@@ -124,6 +126,17 @@
     </header>
 
     <main>
+      {# CHANGE: Add block to render flashed messages for redirects. #}
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+              {{ message }}
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
       {% block content %}{% endblock %}
     </main>
 

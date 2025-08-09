@@ -4,6 +4,10 @@ import os
 import shutil
 import time
 import threading
+import logging
+
+# CHANGE: Get the root logger configured in web_tool.py
+logger = logging.getLogger()
 
 class ScytheManager:
     """
@@ -22,11 +26,22 @@ class ScytheManager:
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
+                # CHANGE: Check for and handle stale lock files.
+                if os.path.exists(self.lock_file):
+                    lock_age = time.time() - os.path.getmtime(self.lock_file)
+                    if lock_age > 60: # If lock is older than 60 seconds
+                        logger.warning(f"Found stale lock file older than 60s: {self.lock_file}. Removing it.")
+                        self._release_lock()
+
                 fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.close(fd)
                 return True
             except FileExistsError:
                 time.sleep(0.1)
+            except Exception as e:
+                logger.error(f"Unexpected error acquiring scythes lock: {e}")
+                return False
+        logger.error(f"Could not acquire scythes lock file after {timeout} seconds.")
         return False
 
     def _release_lock(self):
@@ -35,7 +50,7 @@ class ScytheManager:
             if os.path.exists(self.lock_file):
                 os.remove(self.lock_file)
         except Exception as e:
-            print(f"ERROR: Could not release scythes lock file: {e}")
+            logger.error(f"Could not release scythes lock file: {e}")
 
     def _load_scythes(self):
         """Loads scythes from JSON, with a fallback to a backup file."""
@@ -48,21 +63,21 @@ class ScytheManager:
                 if not content.strip(): return []
                 return json.loads(content)
         except (json.JSONDecodeError, OSError) as e:
-            print(f"WARNING: Could not load main scythes file: {e}. Attempting backup.")
+            logger.warning(f"Could not load main scythes file: {e}. Attempting backup.")
             backup_file = self.scythes_file + ".bak"
             if os.path.exists(backup_file):
                 try:
                     with open(backup_file, 'r', encoding='utf-8') as f:
                         return json.load(f)
                 except Exception as bak_e:
-                    print(f"ERROR: Could not load backup scythes file: {bak_e}. Returning empty list.")
+                    logger.error(f"Could not load backup scythes file: {bak_e}. Returning empty list.")
         return []
 
     def _save_scythes(self, scythes_data):
         """Saves the scythes list to a JSON file atomically with a backup."""
         with self.file_lock:
             if not self._acquire_lock():
-                print("Could not acquire lock to save scythes. Aborting.")
+                logger.error("Could not acquire lock to save scythes. Aborting.")
                 return
 
             try:
@@ -77,7 +92,7 @@ class ScytheManager:
                 
                 os.replace(temp_file, self.scythes_file)
             except Exception as e:
-                print(f"ERROR: Could not save scythes file: {e}")
+                logger.error(f"Could not save scythes file: {e}")
             finally:
                 self._release_lock()
 
@@ -94,6 +109,15 @@ class ScytheManager:
     def add(self, scythe_data):
         """Adds a new scythe to the file."""
         scythes = self.get_all()
+
+        # Moved duplicate check into the manager for consistency and security.
+        job_url = scythe_data.get("job_data", {}).get("url")
+        if job_url:
+            for scythe in scythes:
+                if scythe.get("job_data", {}).get("url") == job_url:
+                    # CHANGE: Provide a more descriptive error message.
+                    return False, f"A Scythe for this URL already exists ('{scythe.get('name')}')"
+
         max_id = -1
         for item in scythes:
             if item.get('id', -1) > max_id:
@@ -103,7 +127,7 @@ class ScytheManager:
         scythe_data['id'] = new_id
         scythes.append(scythe_data)
         self._save_scythes(scythes)
-        return new_id
+        return True, f"Added Scythe: {scythe_data.get('name', 'Untitled')}"
 
     def update(self, scythe_id, scythe_data):
         """Updates an existing scythe in the file."""

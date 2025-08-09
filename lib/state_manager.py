@@ -333,6 +333,13 @@ class StateManager:
             abandoned_job = state.get("current_job")
             if isinstance(abandoned_job, dict):
                 print(f"Found abandoned job: {abandoned_job.get('id', 'N/A')}. Moving to history.")
+                
+                # CHANGE: Preserve the log file for abandoned jobs.
+                app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                log_dir = os.path.join(app_root, "logs")
+                abandoned_job_id = abandoned_job.get('id')
+                temp_log_path = os.path.join(log_dir, f"job_active_{abandoned_job_id}.log")
+                
                 history_item = {
                     "url": abandoned_job.get("url", "Unknown URL"),
                     "title": abandoned_job.get("folder") or abandoned_job.get("url", "Unknown Title"),
@@ -343,7 +350,21 @@ class StateManager:
                     "log_path": "No log generated.",
                     "error_summary": "Job was interrupted by an application crash or ungraceful shutdown."
                 }
-                self.add_to_history(history_item, save=False)
+                
+                new_log_id = self.add_to_history(history_item, save=False)
+                final_log_path = os.path.join(log_dir, f"job_{new_log_id}.log")
+
+                if os.path.exists(temp_log_path):
+                    try:
+                        shutil.move(temp_log_path, final_log_path)
+                        # Update the history item we just added with the correct log path
+                        for h in self.history:
+                            if h.get("log_id") == new_log_id:
+                                h["log_path"] = final_log_path
+                                break
+                        print(f"Preserved log for abandoned job {abandoned_job_id} at {final_log_path}")
+                    except Exception as e:
+                        print(f"ERROR: Could not preserve log for abandoned job: {e}")
 
             with self.queue.mutex:
                 self.queue.queue.clear()
