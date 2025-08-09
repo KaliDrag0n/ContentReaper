@@ -64,14 +64,14 @@ GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
 
 # --- Global Variables (will be initialized in create_app) ---
 state_manager = None
-scythe_manager = None # NEW
+scythe_manager = None
+user_manager = None
 update_status = {"update_available": False, "latest_version": "0.0.0", "release_url": "", "release_notes": ""}
 WORKER_THREAD = None
 STOP_EVENT = threading.Event()
 YT_DLP_PATH = None
 FFMPEG_PATH = None
 CONFIG = {}
-PASSWORD_IS_SET = False
 
 def print_banner():
     """Prints the stylized startup banner to the console."""
@@ -104,7 +104,7 @@ try:
     import flask, waitress, requests
     from werkzeug.security import generate_password_hash, check_password_hash
     from flask_wtf.csrf import CSRFProtect, generate_csrf
-    from lib import dependency_manager as dm, state_manager as sm, worker, sanitizer, scythe_manager as scm # NEW
+    from lib import dependency_manager as dm, state_manager as sm, worker, sanitizer, scythe_manager as scm, user_manager as um
     from flask import Flask, request, render_template, jsonify, redirect, url_for, Response, send_file, session
     from functools import wraps
 except ImportError:
@@ -118,15 +118,26 @@ except ImportError:
         logger.critical(f"Failed to install dependencies. Please run 'pip install -r requirements.txt' manually. Error: {e}")
         sys.exit(1)
 
-# --- Helper Functions ---
+# --- Role-based Security System ---
+def permission_required(permission):
+    """Decorator to check if a logged-in user has a specific permission."""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            role = session.get('role')
+            if not role:
+                return jsonify({"error": "Authentication required. Please log in."}), 401
+            
+            if role == 'admin':
+                return f(*args, **kwargs)
 
-def password_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not PASSWORD_IS_SET or session.get('is_logged_in'):
-            return f(*args, **kwargs)
-        return jsonify({"error": "Authentication required. Please log in."}), 401
-    return decorated_function
+            user = user_manager.get_user(role)
+            if user and user.get("permissions", {}).get(permission, False):
+                return f(*args, **kwargs)
+
+            return jsonify({"error": "Permission denied."}), 403
+        return decorated_function
+    return decorator
 
 def is_safe_path(basedir, path_to_check, allow_file=False):
     real_basedir = os.path.realpath(basedir)
@@ -156,26 +167,52 @@ def secure_join(base_dir, user_path):
 # --- App Initialization and Management ---
 
 def load_config():
-    """Loads configuration from config.json, sets defaults, and validates."""
-    global CONFIG, PASSWORD_IS_SET
+    """Loads configuration, migrates old format, sets defaults, and validates."""
+    global CONFIG
     
     config_path = os.path.join(APP_ROOT, "config.json")
     
     defaults = {
         "download_dir": os.path.join(APP_ROOT, "downloads"),
         "temp_dir": os.path.join(APP_ROOT, ".temp"),
-        "admin_password_hash": None,
         "server_host": "0.0.0.0",
         "server_port": 8080,
-        "log_level": "INFO"
+        "log_level": "INFO",
+        "public_user": None
     }
     
     CONFIG = defaults.copy()
+    config_updated = False
 
     if os.path.exists(config_path):
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
-                CONFIG.update(json.load(f))
+                loaded_config = json.load(f)
+                
+                if "users" in loaded_config or "guest_permissions" in loaded_config:
+                    logger.warning("Old user config format detected. Migrating to users.json.")
+                    
+                    users_to_migrate = loaded_config.pop("users", {})
+                    guest_perms = loaded_config.pop("guest_permissions", {})
+
+                    if "admin" in users_to_migrate and users_to_migrate["admin"].get("password_hash"):
+                        admin_user = {"password_hash": users_to_migrate["admin"]["password_hash"], "permissions": {}}
+                        user_manager.update_user("admin", password=None, permissions=admin_user["permissions"])
+                        all_users = user_manager._load_users()
+                        all_users['admin']['password_hash'] = admin_user['password_hash']
+                        user_manager._save_users(all_users)
+
+
+                    if "guest" in users_to_migrate:
+                        guest_user = {"password_hash": users_to_migrate["guest"].get("password_hash"), "permissions": guest_perms}
+                        user_manager.update_user("guest", password=None, permissions=guest_user["permissions"])
+                        all_users = user_manager._load_users()
+                        all_users['guest']['password_hash'] = guest_user['password_hash']
+                        user_manager._save_users(all_users)
+
+                    config_updated = True
+                
+                CONFIG.update(loaded_config)
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"Could not load config.json, using defaults. Error: {e}")
     
@@ -199,10 +236,8 @@ def load_config():
             logger.critical(f"Path for '{key}' ('{path}') is invalid: {e}")
             raise RuntimeError(f"Configuration validation failed for '{key}'.")
 
-    PASSWORD_IS_SET = bool(CONFIG.get("admin_password_hash"))
-    logger.info(f"Admin password is {'set' if PASSWORD_IS_SET else 'NOT set.'}")
-    
-    save_config()
+    if config_updated or not os.path.exists(config_path):
+        save_config()
 
 def save_config():
     """Saves the current configuration to config.json."""
@@ -261,8 +296,12 @@ def trigger_update_and_restart():
 # --- Application Factory ---
 
 def create_app():
-    global state_manager, scythe_manager, WORKER_THREAD, YT_DLP_PATH, FFMPEG_PATH
+    global state_manager, scythe_manager, user_manager, WORKER_THREAD, YT_DLP_PATH, FFMPEG_PATH
     print_banner()
+    
+    users_file = os.path.join(APP_ROOT, "users.json")
+    user_manager = um.UserManager(users_file)
+
     load_config()
     cleanup_stale_processes_and_files(CONFIG['temp_dir'])
     
@@ -293,7 +332,6 @@ def create_app():
     state_file = os.path.join(APP_ROOT, "state.json")
     state_manager = sm.StateManager(state_file)
     
-    # NEW: Initialize the separate ScytheManager
     scythes_file = os.path.join(APP_ROOT, "scythes.json")
     scythe_manager = scm.ScytheManager(scythes_file)
     
@@ -371,7 +409,6 @@ def register_routes(app):
         return dict(app_name=APP_NAME, app_version=APP_VERSION)
 
     def get_current_state():
-        # Now combines state from two different managers
         with state_manager._lock:
             state = {
                 "queue": state_manager.get_queue_list(),
@@ -395,6 +432,7 @@ def register_routes(app):
         return render_template("file_manager.html")
 
     @app.route("/settings")
+    @permission_required('admin')
     def settings_route():
         with state_manager._lock:
             current_update_status = update_status.copy()
@@ -410,6 +448,7 @@ def register_routes(app):
             return jsonify(update_status)
 
     @app.route("/queue", methods=["POST"])
+    @permission_required('can_add_to_queue')
     def add_to_queue_route():
         try:
             urls = [line.strip() for line in request.form.get("urls", "").strip().splitlines() if line.strip()]
@@ -429,7 +468,7 @@ def register_routes(app):
             return jsonify({"error": "An unexpected server error occurred."}), 500
 
     @app.route("/queue/continue", methods=['POST'])
-    @password_required
+    @permission_required('can_add_to_queue')
     def continue_job_route():
         data = request.get_json()
         if not data or "log_id" not in data:
@@ -450,7 +489,28 @@ def register_routes(app):
 
     @app.route('/api/auth/status')
     def auth_status_route():
-        return jsonify({"password_set": PASSWORD_IS_SET, "logged_in": session.get('is_logged_in', False)})
+        admin_user = user_manager.get_user('admin')
+        admin_pass_set = bool(admin_user and admin_user.get("password_hash"))
+        
+        public_user = CONFIG.get('public_user')
+        if public_user and 'role' not in session:
+            user_data = user_manager.get_user(public_user)
+            if user_data:
+                session['role'] = public_user
+
+        role = session.get('role')
+        permissions = {}
+        if role and role != 'admin':
+            user_data = user_manager.get_user(role)
+            if user_data:
+                permissions = user_data.get('permissions', {})
+
+        return jsonify({
+            "admin_password_set": admin_pass_set, 
+            "logged_in": 'role' in session,
+            "role": role,
+            "permissions": permissions
+        })
     
     @app.route('/api/auth/csrf-token')
     def get_csrf_token_route():
@@ -458,40 +518,31 @@ def register_routes(app):
 
     @app.route('/api/auth/login', methods=['POST'])
     def login_route():
-        if not PASSWORD_IS_SET:
-            return jsonify({"error": "No password is set on the server."}), 400
-        password = (request.get_json() or {}).get('password')
-        if check_password_hash(CONFIG['admin_password_hash'], password):
-            session['is_logged_in'] = True
+        data = request.get_json() or {}
+        username = data.get('username', '').lower()
+        password = data.get('password')
+        
+        user_data = user_manager.get_user(username)
+        
+        if not user_data or not user_data.get("password_hash"):
+            if username == 'admin' and not (user_data and user_data.get("password_hash")):
+                 session['role'] = 'admin'
+                 return jsonify({"message": "Login successful. Please set a password."})
+            return jsonify({"error": "Invalid username or password."}), 401
+        
+        if check_password_hash(user_data["password_hash"], password):
+            session['role'] = username
             return jsonify({"message": "Login successful."})
-        return jsonify({"error": "Invalid password."}), 401
+        
+        return jsonify({"error": "Invalid username or password."}), 401
 
     @app.route('/api/auth/logout', methods=['POST'])
     def logout_route():
-        session.pop('is_logged_in', None)
+        session.pop('role', None)
         return jsonify({"message": "Logged out."})
-
-    @app.route('/api/auth/set-password', methods=['POST'])
-    @password_required
-    def set_password_route():
-        global PASSWORD_IS_SET
-        data = request.get_json()
-        if PASSWORD_IS_SET and not check_password_hash(CONFIG['admin_password_hash'], data.get('current_password')):
-            return jsonify({"error": "Current password is incorrect."}), 403
-        
-        if new_password := data.get('new_password'):
-            CONFIG['admin_password_hash'] = generate_password_hash(new_password)
-            PASSWORD_IS_SET, message = True, "Password updated successfully."
-        else:
-            CONFIG['admin_password_hash'] = None
-            PASSWORD_IS_SET, message = False, "Password has been removed."
-        
-        save_config()
-        session['is_logged_in'] = True
-        return jsonify({"message": message})
         
     @app.route('/api/settings', methods=['GET', 'POST'])
-    @password_required
+    @permission_required('admin')
     def api_settings_route():
         if request.method == 'POST':
             data = request.get_json()
@@ -502,6 +553,7 @@ def register_routes(app):
             CONFIG["temp_dir"] = data.get("temp_dir", CONFIG["temp_dir"]).strip()
             CONFIG["log_level"] = data.get("log_level", CONFIG["log_level"]).strip().upper()
             CONFIG["server_host"] = data.get("server_host", CONFIG["server_host"]).strip()
+            CONFIG["public_user"] = data.get("public_user") if data.get("public_user") != "None" else None
             try:
                 CONFIG["server_port"] = int(data.get("server_port", CONFIG["server_port"]))
             except (ValueError, TypeError):
@@ -530,12 +582,47 @@ def register_routes(app):
             logger.error(f"Could not read cookie file for API: {e}")
 
         return jsonify({
-            "config": {k: v for k, v in CONFIG.items() if k != 'admin_password_hash'},
-            "cookies": cookie_content
+            "config": CONFIG,
+            "cookies": cookie_content,
+            "users": user_manager.get_all_users()
         })
 
+    @app.route('/api/users', methods=['POST'])
+    @permission_required('admin')
+    def add_user_route():
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
+        permissions = data.get('permissions')
+        if not username or not isinstance(permissions, dict):
+            return jsonify({"error": "Invalid payload."}), 400
+        
+        if user_manager.add_user(username, password, permissions):
+            return jsonify({"message": f"User '{username}' created."}), 201
+        return jsonify({"error": f"User '{username}' already exists."}), 409
+
+    @app.route('/api/users/<username>', methods=['PUT'])
+    @permission_required('admin')
+    def update_user_route(username):
+        data = request.get_json()
+        password = data.get('password')
+        permissions = data.get('permissions')
+        if not isinstance(permissions, dict):
+            return jsonify({"error": "Invalid payload."}), 400
+        
+        if user_manager.update_user(username, password, permissions):
+            return jsonify({"message": f"User '{username}' updated."})
+        return jsonify({"error": "User not found."}), 404
+
+    @app.route('/api/users/<username>', methods=['DELETE'])
+    @permission_required('admin')
+    def delete_user_route(username):
+        if user_manager.delete_user(username):
+            return jsonify({"message": f"User '{username}' deleted."})
+        return jsonify({"error": "User not found or cannot be deleted."}), 404
+    
     @app.route("/api/stop", methods=['POST'])
-    @password_required
+    @permission_required('can_add_to_queue')
     def stop_route():
         mode = (request.get_json() or {}).get('mode', 'cancel').upper()
         state_manager.stop_mode = "SAVE" if mode == 'SAVE' else "CANCEL"
@@ -543,13 +630,13 @@ def register_routes(app):
         return jsonify({"message": f"{state_manager.stop_mode.capitalize()} signal sent."})
 
     @app.route('/queue/clear', methods=['POST'])
-    @password_required
+    @permission_required('can_add_to_queue')
     def clear_queue_route():
         state_manager.clear_queue()
         return jsonify({"message": "Queue cleared.", "newState": get_current_state()})
 
     @app.route('/history/clear', methods=['POST'])
-    @password_required
+    @permission_required('admin')
     def clear_history_route():
         log_dir = os.path.join(APP_ROOT, "logs")
         for path in state_manager.clear_history():
@@ -559,7 +646,7 @@ def register_routes(app):
         return jsonify({"message": "History cleared.", "newState": get_current_state()})
 
     @app.route("/api/delete_item", methods=['POST'])
-    @password_required
+    @permission_required('can_delete_files')
     def delete_item_route():
         paths_to_delete = (request.get_json() or {}).get('paths', [])
         if not paths_to_delete: return jsonify({"error": "Missing 'paths' parameter."}), 400
@@ -582,13 +669,13 @@ def register_routes(app):
         return jsonify({"message": f"Successfully deleted {deleted_count} item(s)."})
 
     @app.route("/api/force_update_check", methods=['POST'])
-    @password_required
+    @permission_required('admin')
     def force_update_check_route():
         _run_update_check()
         return jsonify({"message": "Update check completed."})
 
     @app.route('/api/shutdown', methods=['POST'])
-    @password_required
+    @permission_required('admin')
     def shutdown_route():
         logger.info("Shutdown requested via API.")
         STOP_EVENT.set()
@@ -596,19 +683,19 @@ def register_routes(app):
         return jsonify({"message": "Server is shutting down."})
 
     @app.route('/api/install_update', methods=['POST'])
-    @password_required
+    @permission_required('admin')
     def install_update_route():
         threading.Thread(target=trigger_update_and_restart).start()
         return jsonify({"message": "Update process initiated."})
 
     @app.route('/queue/delete/by-id/<int:job_id>', methods=['POST'])
-    @password_required
+    @permission_required('can_add_to_queue')
     def delete_from_queue_route(job_id):
         state_manager.delete_from_queue(job_id)
         return jsonify({"message": "Queue item removed.", "newState": get_current_state()})
 
     @app.route('/queue/reorder', methods=['POST'])
-    @password_required
+    @permission_required('can_add_to_queue')
     def reorder_queue_route():
         data = request.get_json()
         try:
@@ -619,19 +706,19 @@ def register_routes(app):
         return jsonify({"message": "Queue reordered.", "newState": get_current_state()})
 
     @app.route('/queue/pause', methods=['POST'])
-    @password_required
+    @permission_required('can_add_to_queue')
     def pause_queue_route():
         state_manager.pause_queue()
         return jsonify({"message": "Queue paused.", "newState": get_current_state()})
 
     @app.route('/queue/resume', methods=['POST'])
-    @password_required
+    @permission_required('can_add_to_queue')
     def resume_queue_route():
         state_manager.resume_queue()
         return jsonify({"message": "Queue resumed.", "newState": get_current_state()})
 
     @app.route('/history/delete/<int:log_id>', methods=['POST'])
-    @password_required
+    @permission_required('admin')
     def delete_from_history_route(log_id):
         log_dir = os.path.join(APP_ROOT, "logs")
         path_to_delete = state_manager.delete_from_history(log_id)
@@ -641,7 +728,6 @@ def register_routes(app):
         return jsonify({"message": "History item deleted.", "newState": get_current_state()})
 
     @app.route('/api/history/item/<int:log_id>')
-    @password_required
     def get_history_item_route(log_id):
         item = state_manager.get_history_item_by_log_id(log_id)
         if not item:
@@ -676,9 +762,9 @@ def register_routes(app):
             except Exception as e: log_content = f"ERROR: Could not read live log file. Reason: {e}"
         return jsonify({"log": log_content})
 
-    # --- Scythes API Routes (Now using ScytheManager) ---
+    # --- Scythes API Routes ---
     @app.route('/api/scythes', methods=['POST'])
-    @password_required
+    @permission_required('can_manage_scythes')
     def add_scythe_route():
         data = request.get_json()
         if not data: return jsonify({"error": "Invalid request."}), 400
@@ -710,7 +796,7 @@ def register_routes(app):
         return jsonify({"error": "Invalid payload for creating a Scythe."}), 400
 
     @app.route('/api/scythes/<int:scythe_id>', methods=['PUT'])
-    @password_required
+    @permission_required('can_manage_scythes')
     def update_scythe_route(scythe_id):
         data = request.get_json()
         if not data or not data.get("name") or not data.get("job_data"):
@@ -721,14 +807,14 @@ def register_routes(app):
         return jsonify({"error": "Scythe not found."}), 404
 
     @app.route('/api/scythes/<int:scythe_id>', methods=['DELETE'])
-    @password_required
+    @permission_required('can_manage_scythes')
     def delete_scythe_route(scythe_id):
         if scythe_manager.delete(scythe_id):
             return jsonify({"message": "Scythe deleted.", "newState": get_current_state()})
         return jsonify({"error": "Scythe not found."}), 404
 
     @app.route('/api/scythes/<int:scythe_id>/reap', methods=['POST'])
-    @password_required
+    @permission_required('can_add_to_queue')
     def reap_scythe_route(scythe_id):
         scythe = scythe_manager.get_by_id(scythe_id)
         if not scythe or not scythe.get("job_data"):
@@ -741,7 +827,6 @@ def register_routes(app):
         return jsonify({"message": f"Added '{scythe.get('name')}' to queue.", "newState": get_current_state()})
 
     @app.route("/api/files")
-    @password_required
     def list_files_route():
         base_download_dir = CONFIG.get("download_dir")
         req_path = request.args.get('path', '')
@@ -769,7 +854,7 @@ def register_routes(app):
         return jsonify(sorted(items, key=lambda x: (x['type'] == 'file', x['name'].lower())))
 
     @app.route("/download_item")
-    @password_required
+    @permission_required('can_download_files')
     def download_item_route():
         paths = request.args.getlist('paths')
         base_download_dir = CONFIG.get("download_dir")

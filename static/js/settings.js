@@ -1,19 +1,21 @@
 /**
  * static/js/settings.js
- * Handles all logic for the settings page.
- * Fetches its own data via API for better decoupling and provides a smoother UX.
+ * Handles all logic for the settings page, including the new user management panel.
  */
 
 (function() {
     'use strict';
+    let userEditorModalInstance = null;
+    let allUsers = {};
 
     /**
-     * Populates the settings form with data fetched from the API.
+     * Populates all settings forms with data fetched from the API.
      */
     const populateSettings = async () => {
         try {
             const data = await window.apiRequest(window.API.settings);
             
+            // General Settings
             document.getElementById('download_dir').value = data.config.download_dir;
             document.getElementById('temp_dir').value = data.config.temp_dir;
             document.getElementById('log_level').value = data.config.log_level || 'INFO';
@@ -25,6 +27,11 @@
                 cookieTextarea.value = data.cookies;
             }
 
+            // User Management
+            allUsers = data.users || {};
+            renderUserTable(allUsers);
+            populatePublicUserDropdown(allUsers, data.config.public_user);
+
         } catch (error) {
             if (error.message !== "AUTH_REQUIRED") {
                 console.error("Failed to load settings:", error);
@@ -34,53 +41,89 @@
         }
     };
 
-    /**
-     * Updates the UI elements on the settings page based on auth status.
-     * @param {boolean} isLoggedIn - Whether the user is currently logged in.
-     * @param {boolean} isPasswordSet - Whether a password is set on the server.
-     */
-    const handleAuthChange = (isLoggedIn, isPasswordSet) => {
-        const cookieTextarea = document.getElementById('cookie_content');
-        const setupAlert = document.getElementById('setup-alert');
-        const currentPasswordGroup = document.getElementById('current-password-group');
+    const renderUserTable = (users) => {
+        const tableBody = document.getElementById('user-list-table');
+        tableBody.innerHTML = ''; // Clear existing rows
 
-        if (!isPasswordSet) {
-            setupAlert.style.display = 'block';
-            currentPasswordGroup.style.display = 'none';
-        } else {
-            setupAlert.style.display = 'none';
-            currentPasswordGroup.style.display = 'block';
-        }
+        Object.keys(users).sort().forEach(username => {
+            const user = users[username];
+            const tr = document.createElement('tr');
+            const role = username === 'admin' ? 'Admin' : 'User';
+            
+            const actions = username === 'admin' 
+                ? `<button class="btn btn-sm btn-secondary user-action-btn" data-action="edit" data-username="${username}"><i class="bi bi-pencil-fill"></i> Edit</button>`
+                : `<div class="btn-group">
+                       <button class="btn btn-sm btn-secondary user-action-btn" data-action="edit" data-username="${username}"><i class="bi bi-pencil-fill"></i> Edit</button>
+                       <button class="btn btn-sm btn-danger user-action-btn" data-action="delete" data-username="${username}"><i class="bi bi-trash-fill"></i> Delete</button>
+                   </div>`;
 
-        if (isPasswordSet && !isLoggedIn) {
-            cookieTextarea.placeholder = "Login to view/edit cookies...";
-            cookieTextarea.disabled = true;
-            cookieTextarea.value = ''; // Clear cookies if logged out
-        } else {
-            cookieTextarea.disabled = false;
-            cookieTextarea.placeholder = "Paste your Netscape format cookies here...";
-            // If the user just logged in or the page is loading,
-            // we should re-populate the settings to fetch the now-accessible cookie content.
-            if (isLoggedIn || !isPasswordSet) {
-                populateSettings();
+            tr.innerHTML = `
+                <td>${username}</td>
+                <td><span class="badge bg-${role === 'Admin' ? 'primary' : 'secondary'}">${role}</span></td>
+                <td class="text-end">${actions}</td>
+            `;
+            tableBody.appendChild(tr);
+        });
+    };
+
+    const populatePublicUserDropdown = (users, selectedUser) => {
+        const selectEl = document.getElementById('public_user');
+        selectEl.innerHTML = '<option value="None">None (Login Required)</option>';
+        Object.keys(users).forEach(username => {
+            if (username !== 'admin') {
+                const option = document.createElement('option');
+                option.value = username;
+                option.textContent = username;
+                if (username === selectedUser) {
+                    option.selected = true;
+                }
+                selectEl.appendChild(option);
             }
+        });
+    };
+
+    const openUserEditor = (username = null) => {
+        const modalEl = document.getElementById('userEditorModal');
+        if (!userEditorModalInstance) {
+            userEditorModalInstance = new bootstrap.Modal(modalEl);
         }
+        const form = document.getElementById('user-editor-form');
+        form.reset();
+
+        const titleEl = document.getElementById('userEditorTitle');
+        const usernameInput = document.getElementById('user-editor-username');
+        const originalUsernameInput = document.getElementById('user-editor-original-username');
+        const passwordHelpText = document.getElementById('password-help-text');
+
+        if (username) { // Editing
+            const user = allUsers[username];
+            titleEl.textContent = `Edit User: ${username}`;
+            usernameInput.value = username;
+            usernameInput.disabled = true;
+            originalUsernameInput.value = username;
+            passwordHelpText.textContent = "Leave blank to keep the current password.";
+
+            // Populate permissions
+            const permissions = user.permissions || {};
+            Object.keys(permissions).forEach(perm => {
+                const checkbox = form.querySelector(`[name="${perm}"]`);
+                if (checkbox) checkbox.checked = permissions[perm];
+            });
+
+        } else { // Adding
+            titleEl.textContent = 'Add New User';
+            usernameInput.disabled = false;
+            originalUsernameInput.value = '';
+            passwordHelpText.textContent = "A password is required for new users.";
+        }
+
+        userEditorModalInstance.show();
     };
 
     const initializeSettingsPage = () => {
-        // Initial auth state check
-        window.apiRequest(window.API.authStatus).then(status => {
-            handleAuthChange(status.logged_in, status.password_set);
-        });
+        populateSettings();
 
-        // Listen for auth changes from the login modal or logout button
-        document.addEventListener('auth-changed', () => {
-            // We need to re-check the full auth status to know if a password is set
-            window.apiRequest(window.API.authStatus).then(status => {
-                handleAuthChange(status.logged_in, status.password_set);
-            });
-        });
-
+        // General settings form
         const settingsForm = document.getElementById('general-settings-form');
         if (settingsForm) {
             settingsForm.addEventListener('submit', async (e) => {
@@ -98,9 +141,7 @@
                         method: 'POST',
                         body: JSON.stringify(settingsData)
                     });
-
                     window.showToast(response.message, 'Success', 'success');
-
                 } catch (error) {
                     console.error("Failed to save settings:", error);
                 } finally {
@@ -110,51 +151,74 @@
             });
         }
 
-        const passwordForm = document.getElementById('password-form');
-        if (passwordForm) {
-            passwordForm.addEventListener('submit', async (e) => {
-                e.preventDefault();
-                const currentPassword = document.getElementById('current-password').value;
-                const newPassword = document.getElementById('new-password').value;
-                const confirmPassword = document.getElementById('confirm-password').value;
-                const statusEl = document.getElementById('password-status');
-                const submitBtn = document.getElementById('password-submit-btn');
+        // User management event delegation
+        document.getElementById('add-user-btn').addEventListener('click', () => openUserEditor());
+        
+        document.getElementById('user-list-table').addEventListener('click', (e) => {
+            const target = e.target.closest('.user-action-btn');
+            if (!target) return;
 
-                statusEl.textContent = '';
-                statusEl.className = 'form-text mb-2';
+            const username = target.dataset.username;
+            const action = target.dataset.action;
 
-                if (newPassword !== confirmPassword) {
-                    statusEl.textContent = 'New passwords do not match.';
-                    statusEl.classList.add('text-danger');
-                    return;
-                }
-
-                submitBtn.disabled = true;
-                submitBtn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Saving...`;
-
-                try {
-                    const response = await window.apiRequest(window.API.authSetPassword, {
-                        method: 'POST',
-                        body: JSON.stringify({
-                            current_password: currentPassword,
-                            new_password: newPassword
-                        })
-                    });
-                    statusEl.textContent = response.message;
-                    statusEl.classList.add('text-success');
-                    // Let the auth-changed event handle the UI update instead of reloading
-                    document.dispatchEvent(new CustomEvent('auth-changed', { detail: { loggedIn: true } }));
-                } catch (error) {
-                    if (error.message !== "AUTH_REQUIRED") {
-                        statusEl.textContent = `Error: ${error.message}`;
-                        statusEl.classList.add('text-danger');
+            if (action === 'edit') {
+                openUserEditor(username);
+            } else if (action === 'delete') {
+                window.showConfirmModal(`Delete User: ${username}?`, 'Are you sure you want to permanently delete this user? This cannot be undone.', async () => {
+                    try {
+                        const response = await window.apiRequest(`/api/users/${username}`, { method: 'DELETE' });
+                        window.showToast(response.message, 'Success', 'success');
+                        populateSettings(); // Refresh the list
+                    } catch (error) {
+                        console.error("Failed to delete user:", error);
                     }
-                } finally {
-                    submitBtn.disabled = false;
-                    submitBtn.innerHTML = 'Set/Update Password';
-                }
+                });
+            }
+        });
+
+        // User editor form submission
+        const userEditorForm = document.getElementById('user-editor-form');
+        userEditorForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const submitBtn = userEditorForm.querySelector('button[type="submit"]');
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Saving...`;
+
+            const originalUsername = document.getElementById('user-editor-original-username').value;
+            const username = document.getElementById('user-editor-username').value;
+            const password = document.getElementById('user-editor-password').value;
+
+            const formData = new FormData(userEditorForm);
+            const permissions = {};
+            ['can_add_to_queue', 'can_manage_scythes', 'can_download_files', 'can_delete_files'].forEach(perm => {
+                permissions[perm] = formData.has(perm);
             });
-        }
+
+            const isEditing = !!originalUsername;
+            const payload = {
+                username: username,
+                password: password,
+                permissions: permissions
+            };
+
+            const endpoint = isEditing ? `/api/users/${originalUsername}` : '/api/users';
+            const method = isEditing ? 'PUT' : 'POST';
+
+            try {
+                const response = await window.apiRequest(endpoint, {
+                    method: method,
+                    body: JSON.stringify(payload)
+                });
+                window.showToast(response.message, 'Success', 'success');
+                userEditorModalInstance.hide();
+                populateSettings(); // Refresh the list
+            } catch (error) {
+                console.error("Failed to save user:", error);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = 'Save User';
+            }
+        });
 
         const updateBtn = document.getElementById('check-for-updates-btn');
         if(updateBtn) {

@@ -19,10 +19,6 @@
 
     // --- UTILITY FUNCTIONS ---
 
-    /**
-     * Applies a color theme to the entire document.
-     * @param {string} theme - The theme to apply ('light' or 'dark').
-     */
     const applyTheme = (theme) => {
         document.documentElement.dataset.bsTheme = theme;
         const toggle = document.getElementById('theme-toggle');
@@ -31,12 +27,6 @@
         }
     };
 
-    /**
-     * Displays a global Bootstrap toast notification.
-     * @param {string} message - The main content of the toast.
-     * @param {string} [title='Notification'] - The title of the toast.
-     * @param {'success'|'danger'|'info'} [type='info'] - The toast style.
-     */
     const showToast = (message, title = 'Notification', type = 'info') => {
         const toastEl = document.getElementById('actionToast');
         if (!toastEl) return;
@@ -48,12 +38,6 @@
         toastInstance.show();
     };
 
-    /**
-     * Displays a Bootstrap confirmation modal.
-     * @param {string} title - The title for the modal header.
-     * @param {string} body - The text content for the modal body.
-     * @param {function} onConfirm - The callback to execute on confirmation.
-     */
     const showConfirmModal = (title, body, onConfirm) => {
         if (!confirmModalInstance) {
             console.error("Confirmation modal is not initialized.");
@@ -65,9 +49,6 @@
         confirmModalInstance.show();
     };
 
-    /**
-     * Shows the global login modal.
-     */
     const showLoginModal = () => {
         if (!loginModalInstance) {
             const modalEl = document.getElementById('loginModal');
@@ -82,9 +63,6 @@
         loginModalInstance.show();
     };
 
-    /**
-     * Fetches the CSRF token from the backend.
-     */
     const fetchCsrfToken = async () => {
         try {
             const res = await fetch(window.API.csrfToken);
@@ -96,12 +74,6 @@
         }
     };
 
-    /**
-     * A secure wrapper for the fetch API that handles CSRF, authentication, and errors.
-     * @param {string} endpoint - The API endpoint to call.
-     * @param {object} [options={}] - Standard fetch options.
-     * @returns {Promise<any>} - A promise that resolves with the JSON response.
-     */
     async function apiRequest(endpoint, options = {}) {
         const fetchOptions = {
             ...options,
@@ -152,11 +124,30 @@
             throw error;
         }
     }
+    
+    const updateUIPermissions = (authStatus) => {
+        const allPerms = ['admin', 'can_add_to_queue', 'can_manage_scythes', 'can_download_files', 'can_delete_files'];
+        
+        let userPerms = [];
+        if (authStatus.logged_in) {
+            if (authStatus.role === 'admin') {
+                userPerms = allPerms;
+            } else if (authStatus.role === 'guest' && authStatus.permissions) {
+                userPerms = Object.keys(authStatus.permissions).filter(p => authStatus.permissions[p]);
+            }
+        }
 
-    /**
-     * Updates the main login/logout buttons based on authentication status.
-     * @param {boolean} isLoggedIn - Whether the user is currently logged in.
-     */
+        allPerms.forEach(perm => {
+            const elements = document.querySelectorAll(`.perm-${perm}`);
+            const hasPerm = userPerms.includes(perm);
+            elements.forEach(el => {
+                // Use inline-block for buttons and default for other elements
+                const displayStyle = el.tagName === 'BUTTON' || el.tagName === 'A' ? 'inline-block' : '';
+                el.style.display = hasPerm ? displayStyle : 'none';
+            });
+        });
+    };
+
     const updateAuthUI = (isLoggedIn) => {
         const loginBtn = document.getElementById('login-btn');
         const logoutBtn = document.getElementById('logout-btn');
@@ -164,9 +155,6 @@
         if (logoutBtn) logoutBtn.style.display = isLoggedIn ? 'inline-block' : 'none';
     };
 
-    /**
-     * Initializes shared components when the DOM is fully loaded.
-     */
     const initializeSharedComponents = () => {
         window.applyTheme = applyTheme;
         window.showConfirmModal = showConfirmModal;
@@ -196,36 +184,38 @@
         if (loginForm) {
             loginForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
+                const usernameInput = document.getElementById('login-username-input');
                 const passwordInput = document.getElementById('login-password-input');
                 const errorEl = document.getElementById('login-error');
+                const username = usernameInput.value;
                 const password = passwordInput.value;
                 errorEl.textContent = '';
 
                 try {
                     await apiRequest(window.API.authLogin, {
                         method: 'POST',
-                        body: JSON.stringify({ password })
+                        body: JSON.stringify({ username, password })
                     });
                     
                     if (loginModalInstance) loginModalInstance.hide();
                     passwordInput.value = '';
-                    updateAuthUI(true);
-
-                    document.dispatchEvent(new CustomEvent('auth-changed', { detail: { loggedIn: true } }));
+                    
+                    const newAuthStatus = await apiRequest(window.API.authStatus);
+                    updateAuthUI(newAuthStatus.logged_in);
+                    updateUIPermissions(newAuthStatus);
+                    document.dispatchEvent(new CustomEvent('auth-changed', { detail: newAuthStatus }));
 
                     if (requestToRetry) {
                         const { endpoint, options } = requestToRetry;
                         requestToRetry = null;
                         
-                        // --- CHANGE: Show success toast after retried request completes ---
                         apiRequest(endpoint, options)
                             .then(data => {
-                                // If the server sends back a message, show it as a success toast.
                                 if (data && data.message) {
                                     window.showToast(data.message, 'Success', 'success');
                                 }
                             })
-                            .catch(() => {}); // Errors are already handled by apiRequest
+                            .catch(() => {});
                     }
                 } catch (err) {
                     if (err.message !== "AUTH_REQUIRED") {
@@ -235,24 +225,32 @@
             });
         }
 
+        // --- FIX: Added the missing event listener for the login button ---
+        const loginBtn = document.getElementById('login-btn');
+        if (loginBtn) {
+            loginBtn.addEventListener('click', showLoginModal);
+        }
+
         const logoutBtn = document.getElementById('logout-btn');
         if(logoutBtn) {
             logoutBtn.addEventListener('click', async () => {
                 try {
                     await apiRequest(window.API.authLogout, { method: 'POST' });
+                    const newAuthStatus = { logged_in: false, role: null, permissions: {} };
                     updateAuthUI(false);
-                    document.dispatchEvent(new CustomEvent('auth-changed', { detail: { loggedIn: false } }));
+                    updateUIPermissions(newAuthStatus);
+                    document.dispatchEvent(new CustomEvent('auth-changed', { detail: newAuthStatus }));
                 } catch(err) { /* apiRequest handles showing the error toast */ }
             });
         }
 
         apiRequest(window.API.authStatus).then(status => {
-            const loginBtn = document.getElementById('login-btn');
-            if (status.password_set && !status.logged_in && loginBtn) {
+            if (status.admin_password_set && !status.logged_in) {
                  updateAuthUI(false);
             } else {
                  updateAuthUI(status.logged_in);
             }
+            updateUIPermissions(status);
         }).catch(() => {});
     };
 

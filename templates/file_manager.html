@@ -19,7 +19,7 @@
 
 {% block nav_buttons %}
   <a href="{{ url_for('index_route') }}" class="btn btn-secondary me-3"><i class="bi bi-house-fill"></i> Home</a>
-  <a href="{{ url_for('settings_route') }}" class="btn btn-secondary me-3"><i class="bi bi-gear-fill"></i> Settings</a>
+  <a href="{{ url_for('settings_route') }}" class="btn btn-secondary me-3 perm-admin"><i class="bi bi-gear-fill"></i> Settings</a>
 {% endblock %}
 
 {% block content %}
@@ -39,8 +39,8 @@
     </div>
     <div id="selection-actions" class="mt-2 p-2 rounded bg-body-tertiary">
         <span id="selection-count" class="me-3 text-muted fw-bold"></span>
-        <button class="btn btn-success btn-sm me-2" id="download-selected-btn"><i class="bi bi-file-earmark-zip-fill"></i> Download Selected (.zip)</button>
-        <button class="btn btn-danger btn-sm" id="delete-selected-btn"><i class="bi bi-trash-fill"></i> Delete Selected</button>
+        <button class="btn btn-success btn-sm me-2 perm-can_download_files" id="download-selected-btn"><i class="bi bi-file-earmark-zip-fill"></i> Download Selected (.zip)</button>
+        <button class="btn btn-danger btn-sm perm-can_delete_files" id="delete-selected-btn"><i class="bi bi-trash-fill"></i> Delete Selected</button>
     </div>
   </div>
   <div class="list-group list-group-flush" id="file-list-root">

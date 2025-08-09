@@ -44,7 +44,10 @@
     .word-break {
         word-break: break-word;
     }
-    /* Additional page-specific styles can be added here */
+    /* Hide permission-controlled elements by default */
+    .perm-admin, .perm-can_add_to_queue, .perm-can_manage_scythes, .perm-can_download_files, .perm-can_delete_files {
+        display: none;
+    }
     {% block styles %}{% endblock %}
   </style>
 </head>
@@ -70,6 +73,11 @@
         </div>
         <div class="modal-body">
           <form id="login-form">
+            <!-- CHANGE: Added Username field -->
+            <div class="mb-3">
+              <label for="login-username-input" class="form-label">Username</label>
+              <input type="text" class="form-control" id="login-username-input" value="admin" required>
+            </div>
             <div class="mb-3">
               <label for="login-password-input" class="form-label">Password</label>
               <input type="password" class="form-control" id="login-password-input" required>

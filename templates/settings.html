@@ -46,15 +46,24 @@
             <div class="form-text">The port the server runs on. Requires restart.</div>
         </div>
       </div>
-      <div class="mb-3">
-        <label for="log_level" class="form-label">Log Level</label>
-        <select class="form-select" id="log_level" name="log_level">
-            <option value="DEBUG">Debug</option>
-            <option value="INFO">Info</option>
-            <option value="WARNING">Warning</option>
-            <option value="ERROR">Error</option>
-        </select>
-        <div class="form-text">Controls the verbosity of logs. Requires a server restart to take effect.</div>
+      <div class="row">
+        <div class="col-md-6 mb-3">
+            <label for="log_level" class="form-label">Log Level</label>
+            <select class="form-select" id="log_level" name="log_level">
+                <option value="DEBUG">Debug</option>
+                <option value="INFO">Info</option>
+                <option value="WARNING">Warning</option>
+                <option value="ERROR">Error</option>
+            </select>
+            <div class="form-text">Controls the verbosity of logs. Requires a server restart to take effect.</div>
+        </div>
+        <div class="col-md-6 mb-3">
+            <label for="public_user" class="form-label">Public Access</label>
+            <select class="form-select" id="public_user" name="public_user">
+                <!-- Options populated by JS -->
+            </select>
+            <div class="form-text">Allow non-logged-in users to have the permissions of a specific account.</div>
+        </div>
       </div>
       <div class="mb-3">
         <label for="cookie_content" class="form-label">Cookies</label>
@@ -66,28 +75,25 @@
   </div>
 </div>
 
-<!-- Admin Password Card -->
+<!-- NEW: User Management Card -->
 <div class="card mb-4">
-    <div class="card-header">Admin Password</div>
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>User Management</span>
+        <button class="btn btn-sm btn-primary" id="add-user-btn"><i class="bi bi-person-plus-fill"></i> Add User</button>
+    </div>
     <div class="card-body">
-        <form id="password-form">
-            <div class="mb-3" id="current-password-group" style="display: none;">
-                <label for="current-password" class="form-label">Current Password</label>
-                <input type="password" class="form-control" id="current-password">
-                <div class="form-text">Required to make changes if a password is already set.</div>
-            </div>
-            <div class="mb-3">
-                <label for="new-password" class="form-label">New Password</label>
-                <input type="password" class="form-control" id="new-password">
-                <div class="form-text">Leave blank to remove password protection.</div>
-            </div>
-            <div class="mb-3">
-                <label for="confirm-password" class="form-label">Confirm New Password</label>
-                <input type="password" class="form-control" id="confirm-password">
-            </div>
-            <div id="password-status" class="form-text mb-2"></div>
-            <button type="submit" class="btn btn-success" id="password-submit-btn">Set/Update Password</button>
-        </form>
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>Username</th>
+                    <th>Role</th>
+                    <th class="text-end">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="user-list-table">
+                <!-- User rows will be populated by JS -->
+            </tbody>
+        </table>
     </div>
 </div>
 
@@ -123,6 +129,51 @@
         <p>These actions can interrupt ongoing downloads and may require manual or automatic restarting of the application.</p>
         <button class="btn btn-danger" id="shutdown-btn"><i class="bi bi-power"></i> Shutdown Server</button>
         <div class="form-text mt-2">This will stop the server process. It will only restart if you have a service manager like systemd configured.</div>
+    </div>
+</div>
+
+<!-- NEW: User Editor Modal -->
+<div class="modal fade" id="userEditorModal" tabindex="-1">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="userEditorTitle">User Editor</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <form id="user-editor-form">
+            <input type="hidden" id="user-editor-original-username">
+            <div class="mb-3">
+              <label for="user-editor-username" class="form-label">Username</label>
+              <input type="text" class="form-control" id="user-editor-username" required>
+            </div>
+            <div class="mb-3">
+              <label for="user-editor-password" class="form-label">Password</label>
+              <input type="password" class="form-control" id="user-editor-password">
+              <div class="form-text" id="password-help-text">Leave blank to keep the current password.</div>
+            </div>
+            <hr>
+            <h5>Permissions</h5>
+            <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" role="switch" id="perm-can_add_to_queue" name="can_add_to_queue">
+                <label class="form-check-label" for="perm-can_add_to_queue">Allow adding to download queue</label>
+            </div>
+            <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" role="switch" id="perm-can_manage_scythes" name="can_manage_scythes">
+                <label class="form-check-label" for="perm-can_manage_scythes">Allow managing Scythes</label>
+            </div>
+            <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" role="switch" id="perm-can_download_files" name="can_download_files">
+                <label class="form-check-label" for="perm-can_download_files">Allow downloading from File Manager</label>
+            </div>
+            <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" role="switch" id="perm-can_delete_files" name="can_delete_files">
+                <label class="form-check-label" for="perm-can_delete_files">Allow deleting from File Manager</label>
+            </div>
+            <button type="submit" class="btn btn-primary w-100 mt-3">Save User</button>
+          </form>
+        </div>
+      </div>
     </div>
 </div>
 {% endblock %}
