@@ -3,3 +3,4 @@ Flask-WTF
 waitress
 requests
 Werkzeug
+schedule

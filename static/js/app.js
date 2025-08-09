@@ -14,7 +14,6 @@
     let loginModalInstance = null;
     let toastInstance = null;
     
-    // CHANGE: CSRF token is now read from the meta tag on page load.
     let csrfToken = null;
     let requestToRetry = null; 
 
@@ -90,7 +89,6 @@
         }
 
         if (method !== 'GET' && method !== 'HEAD') {
-            // CHANGE: Use pre-loaded token, with a fallback to fetch if it's missing.
             if (!csrfToken) {
                 await fetchCsrfToken();
             }
@@ -102,10 +100,12 @@
         try {
             const res = await fetch(endpoint, fetchOptions);
 
-            if (res.status === 401) { // Unauthorized
+            // CHANGE: Trigger login modal for both 401 (Unauthorized) and 403 (Forbidden).
+            if (res.status === 401 || res.status === 403) {
                 requestToRetry = { endpoint, options };
                 showLoginModal();
-                throw new Error("AUTH_REQUIRED");
+                const errorData = await res.json().catch(() => ({ error: "Authentication required." }));
+                throw new Error(errorData.error || "AUTH_REQUIRED");
             }
 
             if (!res.ok) {
@@ -124,7 +124,8 @@
             return res.text();
 
         } catch (error) {
-            if (error.message !== "AUTH_REQUIRED") {
+            // Show a toast for errors unless it's an auth error (which shows a modal).
+            if (error.message !== "AUTH_REQUIRED" && !error.message.includes("Permission denied")) {
                 showToast(error.message, 'API Error', 'danger');
             }
             throw error;
@@ -138,7 +139,7 @@
         if (authStatus.logged_in) {
             if (authStatus.role === 'admin') {
                 userPerms = allPerms;
-            } else if (authStatus.permissions) { // Public user might not have a role but has perms
+            } else if (authStatus.permissions) {
                 userPerms = Object.keys(authStatus.permissions).filter(p => authStatus.permissions[p]);
             }
         }
@@ -147,7 +148,6 @@
             const elements = document.querySelectorAll(`.perm-${perm}`);
             const hasPerm = userPerms.includes(perm);
             elements.forEach(el => {
-                // Use inline-block for buttons and default for other elements
                 const displayStyle = el.tagName === 'BUTTON' || el.tagName === 'A' ? 'inline-block' : '';
                 el.style.display = hasPerm ? displayStyle : 'none';
             });
@@ -158,13 +158,10 @@
         const loginBtn = document.getElementById('login-btn');
         const logoutBtn = document.getElementById('logout-btn');
         
-        // CHANGE: Reworked to handle public sessions, showing Login even when a public user is "active".
         if (authStatus.manually_logged_in) {
-            // A real user is logged in, show Logout button.
             if (loginBtn) loginBtn.style.display = 'none';
             if (logoutBtn) logoutBtn.style.display = 'inline-block';
         } else {
-            // Not logged in, or in an implicit public session. Show Login button.
             if (loginBtn) loginBtn.style.display = 'inline-block';
             if (logoutBtn) logoutBtn.style.display = 'none';
         }
@@ -177,7 +174,6 @@
         window.apiRequest = apiRequest;
         window.showToast = showToast;
 
-        // CHANGE: Read the CSRF token from the meta tag on load.
         csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
 
         const themeToggle = document.getElementById('theme-toggle');
@@ -265,6 +261,10 @@
             updateAuthUI(status);
             updateUIPermissions(status);
         }).catch(() => {});
+
+        setTimeout(() => {
+            document.body.classList.add('loaded');
+        }, 50);
     };
 
     document.addEventListener('DOMContentLoaded', () => {

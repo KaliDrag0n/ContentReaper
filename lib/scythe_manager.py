@@ -6,7 +6,6 @@ import time
 import threading
 import logging
 
-# CHANGE: Get the root logger configured in web_tool.py
 logger = logging.getLogger()
 
 class ScytheManager:
@@ -18,18 +17,17 @@ class ScytheManager:
     def __init__(self, scythes_file_path: str):
         self.scythes_file = scythes_file_path
         self.lock_file = scythes_file_path + ".lock"
-        self._lock = threading.RLock() # Used for in-memory operations if we ever cache
-        self.file_lock = threading.RLock() # Used for file I/O
+        self._lock = threading.RLock()
+        self.file_lock = threading.RLock()
 
     def _acquire_lock(self, timeout=5):
         """Acquires an exclusive file lock, with a timeout."""
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
-                # CHANGE: Check for and handle stale lock files.
                 if os.path.exists(self.lock_file):
                     lock_age = time.time() - os.path.getmtime(self.lock_file)
-                    if lock_age > 60: # If lock is older than 60 seconds
+                    if lock_age > 60:
                         logger.warning(f"Found stale lock file older than 60s: {self.lock_file}. Removing it.")
                         self._release_lock()
 
@@ -110,12 +108,10 @@ class ScytheManager:
         """Adds a new scythe to the file."""
         scythes = self.get_all()
 
-        # Moved duplicate check into the manager for consistency and security.
         job_url = scythe_data.get("job_data", {}).get("url")
         if job_url:
             for scythe in scythes:
                 if scythe.get("job_data", {}).get("url") == job_url:
-                    # CHANGE: Provide a more descriptive error message.
                     return False, f"A Scythe for this URL already exists ('{scythe.get('name')}')"
 
         max_id = -1
@@ -135,7 +131,11 @@ class ScytheManager:
         updated = False
         for i, scythe in enumerate(scythes):
             if scythe.get("id") == scythe_id:
+                # CHANGE: Preserve ID and merge schedule data carefully.
                 scythe_data['id'] = scythe_id
+                # Ensure existing schedule is not wiped out if not provided
+                if 'schedule' not in scythe_data:
+                    scythe_data['schedule'] = scythe.get('schedule')
                 scythes[i] = scythe_data
                 updated = True
                 break

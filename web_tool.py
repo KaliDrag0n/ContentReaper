@@ -66,6 +66,9 @@ GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
 state_manager = None
 scythe_manager = None
 user_manager = None
+# CHANGE: Added scheduler and its thread
+scheduler = None
+SCHEDULER_THREAD = None
 update_status = {"update_available": False, "latest_version": "0.0.0", "release_url": "", "release_notes": ""}
 WORKER_THREAD = None
 STOP_EVENT = threading.Event()
@@ -101,10 +104,10 @@ def print_banner():
 
 # --- Import Flask and related libraries ---
 try:
-    import flask, waitress, requests
+    import flask, waitress, requests, schedule
     from werkzeug.security import generate_password_hash, check_password_hash
     from flask_wtf.csrf import CSRFProtect, generate_csrf
-    from lib import dependency_manager as dm, state_manager as sm, worker, sanitizer, scythe_manager as scm, user_manager as um
+    from lib import dependency_manager as dm, state_manager as sm, worker, sanitizer, scythe_manager as scm, user_manager as um, scheduler as sched
     from flask import Flask, request, render_template, jsonify, redirect, url_for, Response, send_file, session, flash
     from functools import wraps
 except ImportError:
@@ -139,7 +142,6 @@ def permission_required(permission):
         return decorated_function
     return decorator
 
-# CHANGE: New decorator for page routes that redirects on failure.
 def page_permission_required(permission):
     """Decorator for page routes that redirects and flashes a message on permission failure."""
     def decorator(f):
@@ -164,7 +166,6 @@ def page_permission_required(permission):
     return decorator
 
 def is_safe_path(basedir, path_to_check, allow_file=False):
-    # Use os.path.normcase for case-insensitive comparison, critical for Windows.
     real_basedir = os.path.normcase(os.path.realpath(basedir))
     try:
         real_path_to_check = os.path.normcase(os.path.realpath(path_to_check))
@@ -321,7 +322,7 @@ def trigger_update_and_restart():
 # --- Application Factory ---
 
 def create_app():
-    global state_manager, scythe_manager, user_manager, WORKER_THREAD, YT_DLP_PATH, FFMPEG_PATH
+    global state_manager, scythe_manager, user_manager, scheduler, WORKER_THREAD, SCHEDULER_THREAD, YT_DLP_PATH, FFMPEG_PATH
     print_banner()
     
     users_file = os.path.join(APP_ROOT, "users.json")
@@ -371,6 +372,11 @@ def create_app():
     WORKER_THREAD = threading.Thread(target=worker.yt_dlp_worker, args=(state_manager, CONFIG, log_dir, cookie_file, YT_DLP_PATH, FFMPEG_PATH, STOP_EVENT))
     WORKER_THREAD.start()
     
+    # CHANGE: Initialize and start the scheduler thread.
+    scheduler = sched.Scheduler(scythe_manager, state_manager)
+    SCHEDULER_THREAD = threading.Thread(target=scheduler.run_pending)
+    SCHEDULER_THREAD.start()
+    
     logger.info("--- Application Initialized Successfully ---")
     register_routes(app)
     return app
@@ -403,7 +409,10 @@ def _parse_job_data(form_data):
         "folder": form_data.get(f"{mode}_foldername", "").strip(),
         "archive": form_data.get("use_archive") == "yes",
         "proxy": form_data.get("proxy", "").strip(),
-        "rate_limit": form_data.get("rate_limit", "").strip()
+        "rate_limit": form_data.get("rate_limit", "").strip(),
+        # CHANGE: Add post-processing options.
+        "embed_lyrics": form_data.get("embed_lyrics") == "on",
+        "split_chapters": form_data.get("split_chapters") == "on"
     }
     try:
         p_start = form_data.get("playlist_start", "").strip()
@@ -431,11 +440,10 @@ def _parse_job_data(form_data):
 def register_routes(app):
     @app.context_processor
     def inject_globals():
-        # CHANGE: Embed CSRF token for faster first-time secure requests.
         return dict(
             app_name=APP_NAME, 
             app_version=APP_VERSION,
-            csrf_token=generate_csrf()
+            csrf_token=generate_csrf
         )
 
     def get_current_state():
@@ -462,7 +470,7 @@ def register_routes(app):
         return render_template("file_manager.html")
 
     @app.route("/settings")
-    @page_permission_required('admin') # CHANGE: Use page-specific decorator
+    @page_permission_required('admin')
     def settings_route():
         with state_manager._lock:
             current_update_status = update_status.copy()
@@ -522,7 +530,6 @@ def register_routes(app):
         admin_user = user_manager.get_user('admin')
         admin_pass_set = bool(admin_user and admin_user.get("password_hash"))
         
-        # CHANGE: Reworked logic to handle public sessions more gracefully.
         role = session.get('role')
         manually_logged_in = session.get('manual_login', False)
 
@@ -562,13 +569,13 @@ def register_routes(app):
         if not user_data or not user_data.get("password_hash"):
             if username == 'admin' and not (user_data and user_data.get("password_hash")):
                  session['role'] = 'admin'
-                 session['manual_login'] = True # CHANGE: Flag manual login
+                 session['manual_login'] = True
                  return jsonify({"message": "Login successful. Please set a password."})
             return jsonify({"error": "Invalid username or password."}), 401
         
         if check_password_hash(user_data["password_hash"], password):
             session['role'] = username
-            session['manual_login'] = True # CHANGE: Flag manual login
+            session['manual_login'] = True
             return jsonify({"message": "Login successful."})
         
         return jsonify({"error": "Invalid username or password."}), 401
@@ -576,7 +583,7 @@ def register_routes(app):
     @app.route('/api/auth/logout', methods=['POST'])
     def logout_route():
         session.pop('role', None)
-        session.pop('manual_login', None) # CHANGE: Clear manual login flag
+        session.pop('manual_login', None)
         return jsonify({"message": "Logged out."})
         
     @app.route('/api/settings', methods=['GET', 'POST'])
@@ -825,9 +832,10 @@ def register_routes(app):
                 return jsonify({"error": message}), 409
 
         elif (job_data := data.get("job_data")) and (name := data.get("name")):
-            scythe_data = {"name": name, "job_data": job_data}
+            scythe_data = {"name": name, "job_data": job_data, "schedule": data.get("schedule")}
             result, message = scythe_manager.add(scythe_data)
             if result:
+                scheduler._load_and_schedule_jobs() # Reload scheduler
                 return jsonify({"message": message, "newState": get_current_state()}), 201
             else:
                 return jsonify({"error": message}), 409
@@ -842,6 +850,7 @@ def register_routes(app):
             return jsonify({"error": "Invalid payload for updating a Scythe."}), 400
         
         if scythe_manager.update(scythe_id, data):
+            scheduler._load_and_schedule_jobs() # Reload scheduler
             return jsonify({"message": "Scythe updated.", "newState": get_current_state()})
         return jsonify({"error": "Scythe not found."}), 404
 
@@ -849,6 +858,7 @@ def register_routes(app):
     @permission_required('can_manage_scythes')
     def delete_scythe_route(scythe_id):
         if scythe_manager.delete(scythe_id):
+            scheduler._load_and_schedule_jobs() # Reload scheduler
             return jsonify({"message": "Scythe deleted.", "newState": get_current_state()})
         return jsonify({"error": "Scythe not found."}), 404
 
@@ -945,6 +955,8 @@ if __name__ == "__main__":
         finally:
             logger.info("Server is shutting down. Signaling threads to stop.")
             STOP_EVENT.set()
+            if scheduler:
+                scheduler.stop()
             if state_manager:
                 state_manager.queue.put(None)
             if WORKER_THREAD:
@@ -952,6 +964,9 @@ if __name__ == "__main__":
                 WORKER_THREAD.join(timeout=15)
                 if WORKER_THREAD.is_alive():
                     logger.warning("Worker thread did not exit gracefully.")
+            if SCHEDULER_THREAD:
+                logger.info("Waiting for scheduler thread to finish...")
+                SCHEDULER_THREAD.join(timeout=5)
             logger.info("Saving final state before exit.")
             if state_manager:
                 state_manager.save_state()

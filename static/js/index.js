@@ -330,10 +330,14 @@
 
     function createScytheItemHTML(scythe) {
         const jobData = scythe.job_data || {};
+        const scheduleIcon = scythe.schedule && scythe.schedule.enabled 
+            ? '<i class="bi bi-clock-history ms-2" title="Scheduled"></i>' 
+            : '';
+
         return `
             <div class="d-flex justify-content-between align-items-center">
                 <div class="flex-grow-1" style="min-width: 0;">
-                    <strong class="word-break">${scythe.name || "Untitled Scythe"}</strong>
+                    <strong class="word-break">${scythe.name || "Untitled Scythe"}</strong>${scheduleIcon}
                     <br>
                     <small class="text-muted word-break">${jobData.url || "No URL"}</small>
                 </div>
@@ -445,6 +449,13 @@
         const nameInput = document.getElementById('scythe-editor-name');
         const urlInput = document.getElementById('scythe-editor-url');
         const archiveInput = document.getElementById('scythe-editor-use-archive');
+        
+        const scheduleEnabled = document.getElementById('schedule-enabled');
+        const scheduleOptionsContainer = document.getElementById('schedule-options-container');
+        const scheduleInterval = document.getElementById('schedule-interval');
+        const scheduleWeeklyOptions = document.getElementById('schedule-options-weekly');
+        const scheduleWeekday = document.getElementById('schedule-weekday');
+        const scheduleTime = document.getElementById('schedule-time');
 
         const optionsContainer = document.getElementById('scythe-editor-options-container');
         const mainForm = document.getElementById('add-job-form');
@@ -461,6 +472,7 @@
             <div data-options-for="clip" class="mode-options">${mainForm.querySelector('[data-options-for="clip"]').innerHTML}</div>
             <div data-options-for="custom" class="mode-options">${mainForm.querySelector('[data-options-for="custom"]').innerHTML}</div>
             <div class="row mb-3 playlist-range-options" style="display: none;">${mainForm.querySelector('.playlist-range-options').innerHTML}</div>
+            <hr><h5>Post-Processing</h5><div class="form-check form-switch mb-2"><input class="form-check-input" type="checkbox" role="switch" name="embed_lyrics"><label class="form-check-label">Embed Lyrics</label></div><div class="form-check form-switch"><input class="form-check-input" type="checkbox" role="switch" name="split_chapters"><label class="form-check-label">Split by Chapters</label></div>
         `;
         
         optionsContainer.querySelectorAll('.mode-selector .btn').forEach(btn => {
@@ -476,31 +488,37 @@
             const jobData = scythe.job_data || {};
             urlInput.value = jobData.url || '';
             archiveInput.checked = jobData.archive || false;
+            
+            const scheduleData = scythe.schedule || {};
+            scheduleEnabled.checked = scheduleData.enabled || false;
+            scheduleInterval.value = scheduleData.interval || 'daily';
+            scheduleWeekday.value = scheduleData.weekday || '0';
+            scheduleTime.value = scheduleData.time || '03:00';
 
             const mode = jobData.mode || 'clip';
             switchMode(mode, 'scythe-editor-options-container');
             
             const folderInput = form.querySelector(`[data-options-for="${mode}"] [name="${mode}_foldername"]`);
-            if (folderInput) {
-                folderInput.value = jobData.folder || '';
-            }
+            if (folderInput) folderInput.value = jobData.folder || '';
 
             Object.keys(jobData).forEach(key => {
                 const input = form.querySelector(`[name="${key}"]`);
                 if (input && key !== 'folder') {
-                    if (input.type === 'checkbox') {
-                        input.checked = !!jobData[key];
-                    } else {
-                        input.value = jobData[key];
-                    }
+                    if (input.type === 'checkbox') input.checked = !!jobData[key];
+                    else input.value = jobData[key];
                 }
             });
 
         } else { // Creating new Scythe
             titleEl.textContent = 'New Scythe';
             idInput.value = '';
+            scheduleEnabled.checked = false;
+            scheduleTime.value = '03:00';
             switchMode('clip', 'scythe-editor-options-container');
         }
+        
+        scheduleOptionsContainer.style.display = scheduleEnabled.checked ? 'block' : 'none';
+        scheduleWeeklyOptions.style.display = scheduleInterval.value === 'weekly' ? 'block' : 'none';
         
         handleUrlInput(urlInput);
         scytheModalInstance.show();
@@ -613,7 +631,7 @@
                     window.showToast(data.message, 'Scythe Created', 'success');
                     renderState(data.newState);
                 })
-                .catch(err => { /* apiRequest already shows a toast */ })
+                .catch(err => {})
                 .finally(() => {
                     actionBtn.disabled = false;
                 });
@@ -657,52 +675,80 @@
 
         document.getElementById('scythe-editor-form').addEventListener('submit', async function(e) {
             e.preventDefault();
-            const id = this.querySelector('#scythe-editor-id').value;
-            const name = this.querySelector('#scythe-editor-name').value;
-            const url = this.querySelector('#scythe-editor-url').value;
+            const submitBtn = this.querySelector('button[type="submit"]');
             
-            const formData = new FormData(this);
-            const rawData = Object.fromEntries(formData.entries());
-            const mode = rawData.download_mode;
-            
-            const jobData = {
-                url: url,
-                mode: mode,
-                folder: rawData[`${mode}_foldername`] || '',
-                archive: !!rawData.use_archive,
-                playlist_start: rawData.playlist_start || null,
-                playlist_end: rawData.playlist_end || null,
-            };
-
-            if (mode === 'music') {
-                jobData.format = rawData.music_audio_format;
-                jobData.quality = rawData.music_audio_quality;
-            } else if (mode === 'video') {
-                jobData.quality = rawData.video_quality;
-                jobData.format = rawData.video_format;
-                jobData.embed_subs = !!rawData.video_embed_subs;
-                jobData.codec = rawData.video_codec_preference;
-            } else if (mode === 'clip') {
-                jobData.format = rawData.clip_format;
-            } else if (mode === 'custom') {
-                jobData.custom_args = rawData.custom_args;
-            }
-            
-            const payload = { name: name, job_data: jobData };
-            
-            const endpoint = id ? window.API.updateScythe(id) : window.API.scythes;
-            const method = id ? 'PUT' : 'POST';
-
+            // CHANGE: Wrapped entire function in try/finally to ensure button is re-enabled.
             try {
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Saving...`;
+
+                const id = this.querySelector('#scythe-editor-id').value;
+                const name = this.querySelector('#scythe-editor-name').value;
+                const url = this.querySelector('#scythe-editor-url').value;
+                
+                // CHANGE: Reworked data collection to be direct and robust, fixing the save bug.
+                const optionsContainer = this.querySelector('#scythe-editor-options-container');
+                const mode = optionsContainer.querySelector('input[name="download_mode"]').value;
+                const modeOptions = optionsContainer.querySelector(`[data-options-for="${mode}"]`);
+
+                const jobData = {
+                    url: url,
+                    mode: mode,
+                    folder: modeOptions.querySelector(`[name="${mode}_foldername"]`)?.value || '',
+                    archive: this.querySelector('#scythe-editor-use-archive').checked,
+                    playlist_start: optionsContainer.querySelector('[name="playlist_start"]')?.value || null,
+                    playlist_end: optionsContainer.querySelector('[name="playlist_end"]')?.value || null,
+                    embed_lyrics: optionsContainer.querySelector('[name="embed_lyrics"]')?.checked || false,
+                    split_chapters: optionsContainer.querySelector('[name="split_chapters"]')?.checked || false,
+                };
+
+                if (mode === 'music') {
+                    jobData.format = modeOptions.querySelector('[name="music_audio_format"]')?.value;
+                    jobData.quality = modeOptions.querySelector('[name="music_audio_quality"]')?.value;
+                } else if (mode === 'video') {
+                    jobData.quality = modeOptions.querySelector('[name="video_quality"]')?.value;
+                    jobData.format = modeOptions.querySelector('[name="video_format"]')?.value;
+                    jobData.embed_subs = modeOptions.querySelector('[name="video_embed_subs"]')?.checked || false;
+                    jobData.codec = modeOptions.querySelector('[name="video_codec_preference"]')?.value;
+                } else if (mode === 'clip') {
+                    jobData.format = modeOptions.querySelector('[name="clip_format"]')?.value;
+                } else if (mode === 'custom') {
+                    jobData.custom_args = modeOptions.querySelector('[name="custom_args"]')?.value;
+                }
+                
+                const schedule = {
+                    enabled: this.querySelector('#schedule-enabled').checked,
+                    interval: this.querySelector('#schedule-interval').value,
+                    weekday: parseInt(this.querySelector('#schedule-weekday').value, 10),
+                    time: this.querySelector('#schedule-time').value
+                };
+                
+                const payload = { name, job_data: jobData, schedule };
+                
+                const endpoint = id ? window.API.updateScythe(id) : window.API.scythes;
+                const method = id ? 'PUT' : 'POST';
+
                 const data = await window.apiRequest(endpoint, {
                     method: method,
                     body: JSON.stringify(payload)
                 });
-                // --- CHANGE: Added success toast ---
                 window.showToast(data.message, 'Success', 'success');
                 renderState(data.newState);
                 scytheModalInstance.hide();
-            } catch(err) { /* apiRequest shows toast on error */ }
+
+            } catch(err) {
+                // apiRequest already shows a toast for failures.
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = 'Save Scythe';
+            }
+        });
+        
+        document.getElementById('schedule-enabled').addEventListener('change', (e) => {
+            document.getElementById('schedule-options-container').style.display = e.target.checked ? 'block' : 'none';
+        });
+        document.getElementById('schedule-interval').addEventListener('change', (e) => {
+            document.getElementById('schedule-options-weekly').style.display = e.target.value === 'weekly' ? 'block' : 'none';
         });
 
         document.addEventListener('login-modal-shown', () => {

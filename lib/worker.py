@@ -14,7 +14,6 @@ import signal
 import logging
 from .sanitizer import sanitize_filename
 
-# CHANGE: Get the root logger configured in web_tool.py
 logger = logging.getLogger()
 
 # --- Helper Functions ---
@@ -94,6 +93,10 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
     if job.get('proxy'): cmd.extend(['--proxy', job['proxy']])
     if job.get('rate_limit'): cmd.extend(['--limit-rate', job['rate_limit']])
     
+    # CHANGE: Add post-processing options.
+    if job.get('embed_lyrics'): cmd.append('--embed-lyrics')
+    if job.get('split_chapters'): cmd.append('--split-chapters')
+
     # Mode-specific settings
     if mode == 'music': cmd.extend(_get_music_args(job, is_playlist))
     elif mode == 'video': cmd.extend(_get_video_args(job))
@@ -118,7 +121,6 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
     if os.path.exists(cookie_file_path) and os.path.getsize(cookie_file_path) > 0:
         cmd.extend(['--cookies', cookie_file_path])
     if job.get("archive"):
-        # yt-dlp will now only read the archive once at the start of the job.
         cmd.extend(['--download-archive', os.path.join(temp_dir_path, "archive.temp.txt")])
         
     cmd.append(job["url"])
@@ -172,9 +174,9 @@ def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name
                 files_in_temp = os.listdir(temp_dir_path)
                 files_to_move = []
 
-                if target_ext:
+                if target_ext and not job.get("split_chapters"):
                     files_to_move = [f for f in files_in_temp if f.endswith(f'.{target_ext}')]
-                else:
+                else: # For custom jobs, split chapters, or when format is unknown, move everything.
                     files_to_move = [f for f in files_in_temp if not f.endswith('.temp.txt')]
 
                 if files_to_move:
@@ -281,7 +283,7 @@ def _process_yt_dlp_output(line, state_manager, job):
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
             
-    elif any(s in line for s in ("[ExtractAudio]", "[Merger]", "[Fixup")):
+    elif any(s in line for s in ("[ExtractAudio]", "[Merger]", "[Fixup", "[Split]")):
         state_manager.update_current_download({"status": 'Processing...'})
         
     return None
