@@ -6,7 +6,7 @@
 
 /* 2. Color Palette & Core Variables */
 :root {
-    --cr-bg-primary: #181818;
+    --cr-bg-primary: #030303;
     --cr-bg-panel: #1F1F1F;
     --cr-accent-primary: #7B1E1E; /* Blood Red */
     --cr-accent-secondary: #1FA87A; /* Ethereal Green */
@@ -14,6 +14,11 @@
     --cr-text-primary: #D7C9A6; /* Aged Bone */
     --cr-text-secondary: #A0A0A0; /* Slate Grey */
     --cr-border-color: #333;
+}
+
+main, .container {
+    position: relative;
+    z-index: 1;
 }
 
 /* Override Bootstrap's dark theme to enforce our theme */
@@ -32,7 +37,58 @@
 /* 3. Typography */
 body {
     font-family: 'Inter', sans-serif;
-    background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%232a2a2a' fill-opacity='0.1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+    background-color: var(--cr-bg-primary);
+
+    background-image:
+        /* Soft spotlight column with blurred edges (for desktop) */
+        radial-gradient(
+            ellipse 45% 250% at center,
+            rgba(38, 38, 49, 0.5) 25%,
+            rgba(38, 38, 49, 0.3) 35%,
+            rgba(38, 38, 49, 0.1) 55%,
+            transparent 70%
+        ),
+        /* Base background */
+        radial-gradient(ellipse at center, #262631 0%, #09090B 70%);
+
+    background-size:
+        100% 100%, /* Spotlight needs full size to fade correctly */
+        100% 100%; /* Base bg covers whole screen */
+
+    background-position:
+        center center, /* Spotlight */
+        center center; /* Base bg */
+
+    background-repeat: no-repeat;
+    min-height: 100vh;
+}
+
+body::before {
+    content: "";
+    position: fixed;
+    top: -2.5%;
+    left: -10%;
+    width: 110%;
+    height: 110%;
+    background: url('/static/img/scythe.png') no-repeat center center;
+    background-size: contain;
+    opacity: 0.6;
+    pointer-events: none;
+    z-index: 0;
+    filter: invert(1) brightness(0.1);
+    transform: rotate(25deg);
+}
+
+body::after {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle, transparent 75%, rgba(0,0,0,0.6) 100%);
+    pointer-events: none;
+    z-index: 0;
 }
 
 h1, h2, h3, h4, h5, h6, .cr-header-font {
@@ -44,7 +100,7 @@ h1, h2, h3, h4, h5, h6, .cr-header-font {
 
 /* 4. Layout & Component Styling */
 
-/* Main Header - CHANGE: Converted to responsive Flexbox layout */
+/* Main Header */
 .cr-main-header {
     display: flex;
     flex-wrap: wrap;
@@ -55,14 +111,13 @@ h1, h2, h3, h4, h5, h6, .cr-header-font {
 }
 .cr-main-header-title {
     font-size: 2.5rem;
-    flex-grow: 1; /* Allow title to take available space */
+    flex-grow: 1;
 }
 .cr-main-header-actions {
     display: flex;
     align-items: center;
     gap: 0.5rem;
 }
-/* On medium screens and up, push actions to the right */
 @media (min-width: 768px) {
     .cr-main-header {
         justify-content: space-between;
@@ -83,6 +138,7 @@ h1, h2, h3, h4, h5, h6, .cr-header-font {
     background-color: rgba(0,0,0,0.2);
     border-bottom: 1px solid var(--cr-border-color);
     text-transform: uppercase;
+    text-shadow: 1px 1px 2px #000, -1px -1px 2px rgba(255,255,255,0.1);
     letter-spacing: 0.1em;
     font-size: 0.9rem;
 }
@@ -179,4 +235,21 @@ h1, h2, h3, h4, h5, h6, .cr-header-font {
     background: linear-gradient(to bottom, #4a2b6d, #3A2B4D);
     color: #fff;
     filter: drop-shadow(0 0 8px var(--cr-accent-tertiary));
+}
+
+/* 5. Mobile Adjustments */
+@media (max-width: 767px) {
+    body {
+        background-image:
+            /* Adjusted spotlight for portrait/mobile screens */
+            radial-gradient(
+                ellipse 75% 120% at center,
+                rgba(38, 38, 49, 0.6) 20%,
+                rgba(38, 38, 49, 0.4) 35%,
+                rgba(38, 38, 49, 0.2) 55%,
+                transparent 75%
+            ),
+            /* Base background */
+            radial-gradient(ellipse at center, #262631 0%, #09090B 70%);
+    }
 }

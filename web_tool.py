@@ -60,7 +60,7 @@ banner_logger.setLevel(logging.INFO)
 banner_logger.propagate = False
 
 # --- App Constants ---
-APP_VERSION = "4.4.0"
+APP_VERSION = "4.3.1"
 APP_NAME = "ContentReaper"
 GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
 
@@ -166,7 +166,6 @@ def migrate_legacy_data():
             else:
                 logger.warning(f"Legacy directory '{dirname}' found, but destination already exists. Skipping migration.")
     
-    # CHANGE: If state.json was moved, fix the absolute log paths inside it.
     if state_json_was_migrated:
         logger.info("Checking for legacy log paths in migrated state.json...")
         state_json_path = os.path.join(DATA_DIR, "state.json")
@@ -181,7 +180,6 @@ def migrate_legacy_data():
 
                 for item in history:
                     if log_path := item.get("log_path"):
-                        # Check if the path is an absolute path pointing to the old location
                         if log_path.startswith(old_log_dir):
                             new_log_path = log_path.replace(old_log_dir, new_log_dir, 1)
                             item["log_path"] = new_log_path
@@ -548,9 +546,11 @@ def register_routes(app):
         state["scythes"] = scythe_manager.get_all()
         return state
 
+    # CHANGE: Removed the old SVG favicon route. Flask will now serve the static file.
     @app.route('/favicon.ico')
     def favicon():
-        return '', 204
+        return send_file(os.path.join(app.static_folder, 'img/icon', 'favicon.ico'))
+
 
     @app.route("/")
     def index_route():
