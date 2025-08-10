@@ -407,7 +407,7 @@ def run_update_script():
     time.sleep(2)  # Give the server a moment to respond to the API request
 
     # Path to the new universal updater script
-    updater_script_path = os.path.join(APP_ROOT, 'updater.py')
+    updater_script_path = os.path.join(APP_ROOT, 'lib', 'updater.py')
     
     # The command to execute the updater. We use sys.executable to ensure
     # we're using the same Python interpreter (e.g., from the venv).
