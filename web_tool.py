@@ -125,14 +125,16 @@ except ImportError:
 def migrate_legacy_data():
     """
     Checks for data files in the root directory and moves them to the new
-    'data' subdirectory for better organization and security.
+    'data' subdirectory for better organization and security. Also updates
+    log paths within the state file after migration.
     """
     legacy_files = [
         "config.json", "state.json", "scythes.json", "users.json", "cookies.txt",
         "state.json.bak", "scythes.json.bak", "users.json.bak"
     ]
     legacy_dirs = ["logs"]
-    migrated = False
+    migrated_something = False
+    state_json_was_migrated = False
 
     for filename in legacy_files:
         old_path = os.path.join(APP_ROOT, filename)
@@ -142,7 +144,9 @@ def migrate_legacy_data():
                 try:
                     shutil.move(old_path, new_path)
                     logger.info(f"Migrated legacy file '{filename}' to data directory.")
-                    migrated = True
+                    migrated_something = True
+                    if filename == "state.json":
+                        state_json_was_migrated = True
                 except Exception as e:
                     logger.error(f"Failed to migrate '{filename}': {e}")
             else:
@@ -156,13 +160,45 @@ def migrate_legacy_data():
                 try:
                     shutil.move(old_path, new_path)
                     logger.info(f"Migrated legacy directory '{dirname}' to data directory.")
-                    migrated = True
+                    migrated_something = True
                 except Exception as e:
                     logger.error(f"Failed to migrate '{dirname}': {e}")
             else:
                 logger.warning(f"Legacy directory '{dirname}' found, but destination already exists. Skipping migration.")
     
-    if migrated:
+    # CHANGE: If state.json was moved, fix the absolute log paths inside it.
+    if state_json_was_migrated:
+        logger.info("Checking for legacy log paths in migrated state.json...")
+        state_json_path = os.path.join(DATA_DIR, "state.json")
+        try:
+            with open(state_json_path, 'r+', encoding='utf-8') as f:
+                state_data = json.load(f)
+                history = state_data.get("history", [])
+                paths_updated = 0
+                
+                old_log_dir = os.path.join(APP_ROOT, "logs")
+                new_log_dir = os.path.join(DATA_DIR, "logs")
+
+                for item in history:
+                    if log_path := item.get("log_path"):
+                        # Check if the path is an absolute path pointing to the old location
+                        if log_path.startswith(old_log_dir):
+                            new_log_path = log_path.replace(old_log_dir, new_log_dir, 1)
+                            item["log_path"] = new_log_path
+                            paths_updated += 1
+                
+                if paths_updated > 0:
+                    f.seek(0)
+                    json.dump(state_data, f, indent=4)
+                    f.truncate()
+                    logger.info(f"Updated {paths_updated} log path(s) inside state.json.")
+                else:
+                    logger.info("No legacy log paths needed updating in state.json.")
+
+        except Exception as e:
+            logger.error(f"Could not update log paths in state.json after migration: {e}")
+
+    if migrated_something:
         logger.info("Data migration complete.")
 
 # --- Role-based Security System ---
@@ -398,18 +434,15 @@ def create_app():
     app.config['WTF_CSRF_HEADERS'] = ['X-CSRF-Token']
     csrf = CSRFProtect(app)
 
-    # CHANGE: Add request hook for unsecured admin mode.
     @app.before_request
     def apply_unsecured_admin_session():
-        # If a user is properly logged in, do nothing.
         if session.get('manual_login'):
             return
         
-        # Check if the admin account is unsecured.
         admin_user = user_manager.get_user('admin')
         if admin_user and not admin_user.get('password_hash'):
             session['role'] = 'admin'
-            session['manual_login'] = False # Mark as an automatic session
+            session['manual_login'] = False
 
     logger.info("--- [4/4] Loading state and starting background threads ---")
     log_dir = os.path.join(DATA_DIR, "logs")
@@ -597,7 +630,7 @@ def register_routes(app):
         manually_logged_in = session.get('manual_login', False)
 
         public_user = CONFIG.get('public_user')
-        if public_user and not role:
+        if public_user and not manually_logged_in:
             user_data = user_manager.get_user(public_user)
             if user_data:
                 session['role'] = public_user
@@ -629,7 +662,6 @@ def register_routes(app):
         
         user_data = user_manager.get_user(username)
         
-        # CHANGE: Simplified login logic. The unsecured case is handled by the request hook.
         if not user_data or not user_data.get("password_hash"):
             return jsonify({"error": "Invalid username or password."}), 401
         
