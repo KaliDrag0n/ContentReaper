@@ -392,10 +392,42 @@ def scheduled_update_check():
         _run_update_check()
         STOP_EVENT.wait(3600)
 
-def trigger_update_and_restart():
-    logger.info("Update triggered. Saving state and restarting...")
-    state_manager.save_state()
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+def shutdown_server():
+    """Triggers a graceful shutdown of the application."""
+    logger.info("Shutdown initiated.")
+    STOP_EVENT.set()
+    # Use a thread to send the kill signal after a short delay to allow the API response to be sent
+    threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGINT)).start()
+
+def run_update_script():
+    """
+    Launches the external updater script in a new process and then shuts down.
+    This is now a universal, cross-platform function.
+    """
+    time.sleep(2)  # Give the server a moment to respond to the API request
+
+    # Path to the new universal updater script
+    updater_script_path = os.path.join(APP_ROOT, 'updater.py')
+    
+    # The command to execute the updater. We use sys.executable to ensure
+    # we're using the same Python interpreter (e.g., from the venv).
+    command = [sys.executable, updater_script_path]
+    
+    logger.info(f"Starting update process with command: {' '.join(command)}")
+    
+    # Use Popen to run the updater in a new, detached process.
+    # This allows the current script to exit while the updater continues to run.
+    if platform.system() == "Windows":
+        # On Windows, CREATE_NEW_CONSOLE ensures it runs in a new window
+        # and is fully detached from the parent process.
+        subprocess.Popen(command, creationflags=subprocess.CREATE_NEW_CONSOLE)
+    else:
+        # On Linux/macOS, a simple Popen is sufficient. The new process
+        # will not be a child of this script once this script exits.
+        subprocess.Popen(command)
+
+    # Gracefully shutdown the current server to release the port
+    shutdown_server()
 
 # --- Application Factory ---
 
@@ -815,15 +847,15 @@ def register_routes(app):
     @permission_required('admin')
     def shutdown_route():
         logger.info("Shutdown requested via API.")
-        STOP_EVENT.set()
-        threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGINT)).start()
+        shutdown_server()
         return jsonify({"message": "Server is shutting down."})
 
     @app.route('/api/install_update', methods=['POST'])
     @permission_required('admin')
     def install_update_route():
-        threading.Thread(target=trigger_update_and_restart).start()
-        return jsonify({"message": "Update process initiated."})
+        logger.info("Update requested via API.")
+        threading.Thread(target=run_update_script).start()
+        return jsonify({"message": "Update process initiated. Server will restart."})
 
     @app.route('/queue/delete/by-id/<int:job_id>', methods=['POST'])
     @permission_required('can_add_to_queue')
