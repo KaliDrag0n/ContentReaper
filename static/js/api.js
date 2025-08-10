@@ -52,9 +52,8 @@ const API_ENDPOINTS = {
     forceUpdateCheck: '/api/force_update_check',
     installUpdate: '/api/install_update',
     
-    // Logging
+    // Logging - Enhanced with new endpoints
     liveLog: '/api/log/live/content',
-    // CHANGE: Add new endpoints for the log viewer.
     listLogs: '/api/logs',
     getLogContent: (filename) => `/api/logs/${filename}`,
 };
