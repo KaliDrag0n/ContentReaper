@@ -60,7 +60,7 @@ banner_logger.setLevel(logging.INFO)
 banner_logger.propagate = False
 
 # --- App Constants ---
-APP_VERSION = "4.5.0"
+APP_VERSION = "4.5.4"
 APP_NAME = "ContentReaper"
 GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
 
