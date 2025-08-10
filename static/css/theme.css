@@ -1,0 +1,182 @@
+/* static/css/theme.css */
+/* ContentReaper Thematic Stylesheet */
+
+/* 1. Font Imports */
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@700&family=Inter:wght@400;700&display=swap');
+
+/* 2. Color Palette & Core Variables */
+:root {
+    --cr-bg-primary: #181818;
+    --cr-bg-panel: #1F1F1F;
+    --cr-accent-primary: #7B1E1E; /* Blood Red */
+    --cr-accent-secondary: #1FA87A; /* Ethereal Green */
+    --cr-accent-tertiary: #3A2B4D; /* Deep Violet */
+    --cr-text-primary: #D7C9A6; /* Aged Bone */
+    --cr-text-secondary: #A0A0A0; /* Slate Grey */
+    --cr-border-color: #333;
+}
+
+/* Override Bootstrap's dark theme to enforce our theme */
+[data-bs-theme="dark"] {
+    --bs-body-bg: var(--cr-bg-primary);
+    --bs-body-color: var(--cr-text-secondary);
+    --bs-border-color: var(--cr-border-color);
+    --bs-card-bg: var(--cr-bg-panel);
+    --bs-secondary-bg: var(--cr-bg-panel);
+    --bs-tertiary-bg: #111;
+    --bs-primary-rgb: 123, 30, 30;
+    --bs-secondary-rgb: 68, 68, 68;
+    --bs-success-rgb: 31, 168, 122;
+}
+
+/* 3. Typography */
+body {
+    font-family: 'Inter', sans-serif;
+    background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%232a2a2a' fill-opacity='0.1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+}
+
+h1, h2, h3, h4, h5, h6, .cr-header-font {
+    font-family: 'Cinzel', serif;
+    color: var(--cr-text-primary);
+    letter-spacing: 0.05em;
+    text-shadow: 0 0 5px rgba(0,0,0,0.5);
+}
+
+/* 4. Layout & Component Styling */
+
+/* Main Header - CHANGE: Converted to responsive Flexbox layout */
+.cr-main-header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 1rem;
+    text-align: center;
+}
+.cr-main-header-title {
+    font-size: 2.5rem;
+    flex-grow: 1; /* Allow title to take available space */
+}
+.cr-main-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+/* On medium screens and up, push actions to the right */
+@media (min-width: 768px) {
+    .cr-main-header {
+        justify-content: space-between;
+        text-align: left;
+    }
+}
+
+
+/* Cards & Panels */
+.card {
+    border: 1px solid var(--cr-border-color);
+    box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
+    background-color: var(--cr-bg-panel);
+}
+.card-header {
+    font-family: 'Cinzel', serif;
+    color: var(--cr-text-primary);
+    background-color: rgba(0,0,0,0.2);
+    border-bottom: 1px solid var(--cr-border-color);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 0.9rem;
+}
+
+/* Buttons */
+.btn {
+    border-width: 2px;
+    border-style: solid;
+    border-color: #111 #555 #555 #111;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.1), 0 1px 2px rgba(0,0,0,0.5);
+    transition: all 0.2s ease-in-out;
+}
+.btn:hover {
+    transform: translateY(-1px);
+}
+
+/* Primary Action Button (Neutral Metal) */
+.btn-primary {
+    background: linear-gradient(to bottom, #4a4a4a, #333);
+    color: var(--cr-text-primary);
+    border-color: #222 #666 #666 #222;
+}
+.btn-primary:hover {
+    background: linear-gradient(to bottom, #5a5a5a, #444);
+    color: #fff;
+    filter: drop-shadow(0 0 5px var(--cr-text-secondary));
+}
+.btn-secondary {
+    background: linear-gradient(to bottom, #4a4a4a, #333);
+    color: var(--cr-text-primary);
+    border-color: #222 #666 #666 #222;
+}
+.btn-secondary:hover {
+    background: linear-gradient(to bottom, #5a5a5a, #444);
+    color: #fff;
+    filter: drop-shadow(0 0 5px var(--cr-text-secondary));
+}
+
+/* Danger Button (Blood Red) */
+.btn-danger {
+    background: linear-gradient(to bottom, var(--cr-accent-primary), #5a1616);
+    color: var(--cr-text-primary);
+    border-color: #4a0e0e #9c2e2e #9c2e2e #4a0e0e;
+}
+.btn-danger:hover {
+    background: linear-gradient(to bottom, #8b2e2e, #6a1616);
+    color: #fff;
+    filter: drop-shadow(0 0 8px var(--cr-accent-primary));
+}
+
+/* Success/Info Button (Ethereal Green) */
+.btn-success, .btn-info, .btn-warning {
+    background: linear-gradient(to bottom, var(--cr-accent-secondary), #168a6a);
+    color: #fff;
+    text-shadow: 0 0 5px rgba(0,0,0,0.7);
+    border-color: #166a5a #3fd8aA #3fd8aA #166a5a;
+}
+.btn-success:hover, .btn-info:hover, .btn-warning:hover {
+    background: linear-gradient(to bottom, #2fc89a, #1fa87a);
+    color: #fff;
+    filter: drop-shadow(0 0 8px var(--cr-accent-secondary));
+}
+
+/* Tabs */
+.nav-tabs .nav-link {
+    color: var(--cr-text-secondary);
+    background-color: transparent;
+    border-color: transparent transparent var(--cr-border-color) transparent;
+}
+.nav-tabs .nav-link:hover {
+    border-color: transparent transparent var(--cr-text-secondary) transparent;
+    color: var(--cr-text-primary);
+}
+.nav-tabs .nav-link.active {
+    color: var(--cr-text-primary);
+    background-color: var(--cr-bg-panel);
+    border-color: var(--cr-border-color) var(--cr-border-color) transparent var(--cr-border-color);
+    box-shadow: 0 -5px 10px -5px var(--cr-accent-secondary);
+}
+
+/* Progress Bars */
+.progress {
+    background-color: #111;
+    border: 1px solid #000;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.5);
+}
+.progress-bar {
+    background-color: var(--cr-accent-secondary);
+    box-shadow: 0 0 10px var(--cr-accent-secondary);
+}
+
+/* Mode selector active state */
+.mode-selector .btn.active {
+    background: linear-gradient(to bottom, #4a2b6d, #3A2B4D);
+    color: #fff;
+    filter: drop-shadow(0 0 8px var(--cr-accent-tertiary));
+}

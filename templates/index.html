@@ -12,26 +12,31 @@
     .mode-selector .btn { width: 100%; }
     .queue-handle { cursor: move; color: #6c757d; }
     .sortable-ghost { opacity: 0.4; background: #c8ebfb; }
-    .paused-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0, 0, 0, 0.5); color: white; display: none; justify-content: center; align-items: center; font-size: 1.5rem; font-weight: bold; z-index: 10; border-radius: var(--bs-card-border-radius); }
+    .paused-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0, 0, 0, 0.5); color: white; display: none; justify-content: center; align-items-center; font-size: 1.5rem; font-weight: bold; z-index: 10; border-radius: var(--bs-card-border-radius); }
     #queue-header { position: relative; z-index: 11; }
     .now-downloading-thumbnail { width: 120px; height: 90px; object-fit: cover; border-radius: var(--bs-border-radius); }
     .scythe-icon { transform: rotate(45deg); }
     #schedule-options-weekly { display: none; }
-    /* CHANGE: Added flex-wrap to ensure the selector is responsive on mobile. */
     .weekday-selector { display: flex; flex-wrap: wrap; justify-content: space-around; padding: 0.5rem; border-radius: var(--bs-border-radius); background-color: var(--bs-tertiary-bg); }
+{% endblock %}
+
+{# CHANGE: Added the update notification button back into the restored nav_buttons block. #}
+{% block nav_buttons %}
+  <button id="update-notification-btn" class="btn btn-warning me-3" style="display: none;" title="A new update is available!"><i class="bi bi-bell-fill"></i> <span class="d-none d-sm-inline">Update</span></button>
 {% endblock %}
 
 {% block content %}
   <!-- Add Job Form -->
   <div class="card mb-4">
     <div class="card-body">
-        <div class="row text-center mode-selector mb-4 g-2">
-          <div class="col"><button class="btn btn-outline-primary" data-mode="music"><i class="bi bi-music-note-beamed"></i> Music</button></div>
-          <div class="col"><button class="btn btn-outline-primary" data-mode="video"><i class="bi bi-film"></i> Video</button></div>
-          <div class="col"><button class="btn btn-outline-primary" data-mode="clip"><i class="bi bi-scissors"></i> Clip</button></div>
-          <div class="col"><button class="btn btn-outline-primary" data-mode="custom"><i class="bi bi-terminal"></i> Custom</button></div>
-        </div>
+        {# CHANGE: Moved mode selector inside the form to fix event listeners. #}
         <form id="add-job-form">
+          <div class="row text-center mode-selector mb-4 g-2">
+            <div class="col"><button type="button" class="btn btn-secondary" data-mode="music"><i class="bi bi-music-note-beamed"></i> Music</button></div>
+            <div class="col"><button type="button" class="btn btn-secondary" data-mode="video"><i class="bi bi-film"></i> Video</button></div>
+            <div class="col"><button type="button" class="btn btn-secondary" data-mode="clip"><i class="bi bi-scissors"></i> Clip</button></div>
+            <div class="col"><button type="button" class="btn btn-secondary" data-mode="custom"><i class="bi bi-terminal"></i> Custom</button></div>
+          </div>
           <input type="hidden" name="download_mode" id="download_mode_input">
           <div class="mb-3"><label class="form-label">URL(s) <small>(one per line)</small></label><textarea name="urls" class="form-control" placeholder="https://..." required rows="2"></textarea></div>
           
@@ -52,28 +57,28 @@
   </div>
 
   <!-- Status Panels -->
-  <div class="card mb-4"><div class="card-header bg-info-subtle text-emphasis-info">Now Downloading</div><div class="card-body" id="current-status"><p class="m-0">No active download.</p></div></div>
+  <div class="card mb-4"><div class="card-header">Now Downloading</div><div class="card-body" id="current-status"><p class="m-0">No active download.</p></div></div>
   
   <div class="card mb-4 position-relative">
       <div id="paused-overlay" class="paused-overlay"><i class="bi bi-pause-circle-fill me-2"></i> PAUSED</div>
-      <div class="card-header bg-warning-subtle text-emphasis-warning d-flex justify-content-between align-items-center" id="queue-header">
+      <div class="card-header d-flex justify-content-between align-items-center" id="queue-header">
           <span>Download Queue</span>
-          <div id="queue-controls" class="btn-group"><button class="btn btn-sm btn-secondary" id="pause-resume-btn" data-action="pause"><i class="bi bi-pause-fill"></i> Pause</button><button class="btn btn-sm btn-danger" id="clear-queue-btn">Clear All</button></div>
+          <div id="queue-controls" class="btn-group"><button class="btn btn-secondary" id="pause-resume-btn" data-action="pause"><i class="bi bi-pause-fill"></i> Pause</button><button class="btn btn-danger" id="clear-queue-btn">Clear All</button></div>
       </div>
       <ul class="list-group list-group-flush" id="queue-list"><li class='list-group-item fst-italic text-muted'>Queue is empty.</li></ul>
   </div>
 
   <div class="card mb-4">
-    <div class="card-header bg-primary-subtle text-emphasis-primary d-flex justify-content-between align-items-center">
+    <div class="card-header d-flex justify-content-between align-items-center">
       <span><i class="bi bi-scissors scythe-icon"></i> Scythes</span>
-      <button class="btn btn-sm btn-primary" id="new-scythe-btn"><i class="bi bi-plus-lg"></i> New Scythe</button>
+      <button class="btn btn-secondary" id="new-scythe-btn"><i class="bi bi-plus-lg"></i> New Scythe</button>
     </div>
     <ul class="list-group list-group-flush" id="scythes-list">
       <li class='list-group-item fst-italic text-muted'>No Scythes saved yet.</li>
     </ul>
   </div>
 
-  <div class="card mb-4"><div class="card-header bg-success-subtle text-emphasis-success d-flex justify-content-between align-items-center"><span>Download History</span><button class="btn btn-danger btn-sm" id="clear-history-btn" style="display: none;">Clear History</button></div><ul class="list-group list-group-flush" id="history-list"><li class='list-group-item fst-italic text-muted'>History is empty.</li></ul></div>
+  <div class="card mb-4"><div class="card-header d-flex justify-content-between align-items-center"><span>Download History</span><button class="btn btn-danger" id="clear-history-btn" style="display: none;">Clear History</button></div><ul class="list-group list-group-flush" id="history-list"><li class='list-group-item fst-italic text-muted'>History is empty.</li></ul></div>
 
   <!-- Additional Modals -->
   <div class="modal fade" id="logModal" tabindex="-1"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Job Log</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><pre id="logModalContent"></pre></div></div></div></div>
@@ -123,7 +128,6 @@
                 <div id="schedule-options-weekly">
                     <label class="form-label">Days of the Week</label>
                     <div class="weekday-selector">
-                        {# CHANGE: Added mb-2 for better spacing when wrapped. #}
                         <div class="form-check form-check-inline mb-2"><input class="form-check-input" type="checkbox" value="0" id="weekday-0"><label class="form-check-label" for="weekday-0">Mon</label></div>
                         <div class="form-check form-check-inline mb-2"><input class="form-check-input" type="checkbox" value="1" id="weekday-1"><label class="form-check-label" for="weekday-1">Tue</label></div>
                         <div class="form-check form-check-inline mb-2"><input class="form-check-input" type="checkbox" value="2" id="weekday-2"><label class="form-check-label" for="weekday-2">Wed</label></div>
