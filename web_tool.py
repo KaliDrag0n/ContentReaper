@@ -398,6 +398,19 @@ def create_app():
     app.config['WTF_CSRF_HEADERS'] = ['X-CSRF-Token']
     csrf = CSRFProtect(app)
 
+    # CHANGE: Add request hook for unsecured admin mode.
+    @app.before_request
+    def apply_unsecured_admin_session():
+        # If a user is properly logged in, do nothing.
+        if session.get('manual_login'):
+            return
+        
+        # Check if the admin account is unsecured.
+        admin_user = user_manager.get_user('admin')
+        if admin_user and not admin_user.get('password_hash'):
+            session['role'] = 'admin'
+            session['manual_login'] = False # Mark as an automatic session
+
     logger.info("--- [4/4] Loading state and starting background threads ---")
     log_dir = os.path.join(DATA_DIR, "logs")
     os.makedirs(log_dir, exist_ok=True)
@@ -521,7 +534,6 @@ def register_routes(app):
             current_update_status = update_status.copy()
         return render_template("settings.html", update_info=current_update_status)
     
-    # CHANGE: Add new route for the log viewer page.
     @app.route("/logs")
     @page_permission_required('admin')
     def logs_route():
@@ -617,11 +629,8 @@ def register_routes(app):
         
         user_data = user_manager.get_user(username)
         
+        # CHANGE: Simplified login logic. The unsecured case is handled by the request hook.
         if not user_data or not user_data.get("password_hash"):
-            if username == 'admin' and not (user_data and user_data.get("password_hash")):
-                 session['role'] = 'admin'
-                 session['manual_login'] = True
-                 return jsonify({"message": "Login successful. Please set a password."})
             return jsonify({"error": "Invalid username or password."}), 401
         
         if check_password_hash(user_data["password_hash"], password):
@@ -987,19 +996,16 @@ def register_routes(app):
         zip_buffer.seek(0)
         return send_file(zip_buffer, as_attachment=True, download_name=zip_name, mimetype='application/zip')
 
-    # CHANGE: Add API endpoints for the log viewer.
     @app.route('/api/logs', methods=['GET'])
     @permission_required('admin')
     def list_logs_route():
         log_dir = os.path.join(DATA_DIR, "logs")
         logs = []
         
-        # Add main startup log
         startup_log = os.path.join(DATA_DIR, 'startup.log')
         if os.path.exists(startup_log):
             logs.append({"filename": "startup.log", "display_name": "Application Log (startup.log)"})
 
-        # Add job logs
         job_logs = sorted(glob.glob(os.path.join(log_dir, "job_*.log")), reverse=True)
         for log_path in job_logs:
             filename = os.path.basename(log_path)
@@ -1010,7 +1016,6 @@ def register_routes(app):
     @app.route('/api/logs/<path:filename>', methods=['GET'])
     @permission_required('admin')
     def get_log_content_route(filename):
-        # Prevent path traversal
         if '..' in filename or filename.startswith('/'):
             return jsonify({"error": "Invalid filename."}), 400
             
@@ -1021,7 +1026,6 @@ def register_routes(app):
             
         try:
             with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
-                # Read last 1MB for performance
                 f.seek(0, os.SEEK_END)
                 size = f.tell()
                 f.seek(max(0, size - (1024 * 1024)), os.SEEK_SET)

@@ -14,6 +14,7 @@
     const populateSettings = async () => {
         try {
             const data = await window.apiRequest(window.API.settings);
+            const authStatus = await window.apiRequest(window.API.authStatus);
             
             // General Settings
             document.getElementById('download_dir').value = data.config.download_dir;
@@ -31,6 +32,12 @@
             allUsers = data.users || {};
             renderUserTable(allUsers);
             populatePublicUserDropdown(allUsers, data.config.public_user);
+
+            // CHANGE: Show the setup alert if the admin password is not set.
+            const setupAlert = document.getElementById('setup-alert');
+            if (setupAlert && !authStatus.admin_password_set) {
+                setupAlert.style.display = 'block';
+            }
 
         } catch (error) {
             if (error.message !== "AUTH_REQUIRED") {
@@ -211,7 +218,12 @@
                 });
                 window.showToast(response.message, 'Success', 'success');
                 userEditorModalInstance.hide();
-                populateSettings(); // Refresh the list
+                // Refresh page if we just set the admin password for the first time
+                if (username === 'admin' && password) {
+                    window.location.reload();
+                } else {
+                    populateSettings(); // Refresh the list
+                }
             } catch (error) {
                 console.error("Failed to save user:", error);
             } finally {

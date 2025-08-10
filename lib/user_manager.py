@@ -7,7 +7,6 @@ import threading
 import logging
 from werkzeug.security import generate_password_hash
 
-# CHANGE: Get the root logger configured in web_tool.py
 logger = logging.getLogger()
 
 class UserManager:
@@ -19,15 +18,33 @@ class UserManager:
         self.users_file = users_file_path
         self.lock_file = users_file_path + ".lock"
         self.file_lock = threading.RLock()
+        # CHANGE: Ensure a default admin user exists on first run.
+        self._ensure_default_admin_user()
+
+    def _ensure_default_admin_user(self):
+        """
+        Checks if the users file exists. If not, it creates one with a default,
+        password-less admin user. This simplifies the first-run experience.
+        """
+        with self.file_lock:
+            if not os.path.exists(self.users_file):
+                logger.info("Users file not found. Creating a new one with a default admin account.")
+                default_users = {
+                    "admin": {
+                        "password_hash": None,
+                        "permissions": {} # Admin has all permissions implicitly
+                    }
+                }
+                self._save_users(default_users)
 
     def _acquire_lock(self, timeout=5):
+        """Acquires an exclusive file lock, with a timeout."""
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
-                # CHANGE: Check for and handle stale lock files.
                 if os.path.exists(self.lock_file):
                     lock_age = time.time() - os.path.getmtime(self.lock_file)
-                    if lock_age > 60: # If lock is older than 60 seconds
+                    if lock_age > 60:
                         logger.warning(f"Found stale lock file older than 60s: {self.lock_file}. Removing it.")
                         self._release_lock()
                 
