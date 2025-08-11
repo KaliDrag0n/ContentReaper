@@ -4,6 +4,7 @@ import time
 import logging
 import schedule
 import watchdog
+import os
 from datetime import datetime
 
 logger = logging.getLogger()
@@ -78,7 +79,11 @@ class Scheduler:
                 except Exception as e:
                     logger.error(f"Failed to schedule Scythe '{scythe.get('name')}': {e}")
         
-        logger.info(f"Successfully scheduled {count} Scythe(s). Next run at: {schedule.next_run}")
+        # CHANGE: Corrected the call to schedule.next_run by adding parentheses.
+        # This treats it as a function, which resolves the AttributeError.
+        next_run_datetime = schedule.next_run() if schedule.jobs else None
+        next_run_time = next_run_datetime.strftime('%Y-%m-%d %H:%M:%S') if next_run_datetime else "Not scheduled"
+        logger.info(f"Successfully scheduled {count} Scythe(s). Next run at: {next_run_time}")
 
     def _reap_scythe(self, scythe_id):
         """
@@ -97,28 +102,46 @@ class Scheduler:
 
         job_to_reap = scythe["job_data"]
         job_to_reap["resolved_folder"] = job_to_reap.get("folder")
+        
+        # CHANGE: Add notification without saving state immediately.
+        self.state_manager.add_notification_to_history(
+            f"Scythe '{scythe.get('name')}' was automatically reaped.",
+            save=False
+        )
+        # The following call to add_to_queue will trigger the state save,
+        # persisting both the new job and the notification in one go.
         self.state_manager.add_to_queue(job_to_reap)
         
-        self.state_manager.add_notification_to_history(
-            f"Scythe '{scythe.get('name')}' was automatically reaped."
-        )
 
     def run_pending(self):
         """The main loop for the scheduler thread."""
         if WATCHDOG_AVAILABLE:
             event_handler = ScythesChangeHandler(self)
             self.observer = Observer()
-            self.observer.schedule(event_handler, path=self.scythe_manager.scythes_file.rsplit('/', 1)[0], recursive=False)
-            self.observer.start()
-            logger.info("File watcher for scythes.json started.")
+            # Ensure the path exists before scheduling
+            scythes_dir = os.path.dirname(self.scythe_manager.scythes_file)
+            if os.path.exists(scythes_dir):
+                self.observer.schedule(event_handler, path=scythes_dir, recursive=False)
+                self.observer.start()
+                logger.info("File watcher for scythes.json started.")
+            else:
+                logger.warning(f"Scythes directory not found at {scythes_dir}. File watcher not started.")
         else:
             logger.info("Watchdog library not found. Falling back to hourly polling for Scythe schedule changes.")
 
         while not self.stop_event.is_set():
             schedule.run_pending()
-            time.sleep(1)
+            # CHANGE: Sleep intelligently to reduce CPU usage.
+            # If jobs are scheduled, sleep until the next one is due. Otherwise, sleep for a minute.
+            # CHANGE: Corrected the call to schedule.idle_seconds by adding parentheses.
+            # This resolves the TypeError from the traceback.
+            idle_seconds = schedule.idle_seconds()
+            if idle_seconds is not None and idle_seconds > 0:
+                time.sleep(min(idle_seconds, 60))
+            else:
+                time.sleep(1)
         
-        if self.observer:
+        if self.observer and self.observer.is_alive():
             self.observer.stop()
             self.observer.join()
 

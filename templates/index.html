@@ -12,12 +12,22 @@
     .mode-selector .btn { width: 100%; }
     .queue-handle { cursor: move; color: #6c757d; }
     .sortable-ghost { opacity: 0.4; background: #c8ebfb; }
-    .paused-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0, 0, 0, 0.5); color: white; display: none; justify-content: center; align-items-center; font-size: 1.5rem; font-weight: bold; z-index: 10; border-radius: var(--bs-card-border-radius); }
+    .paused-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0, 0, 0, 0.5); color: white; display: none; justify-content: center; align-items: center; font-size: 1.5rem; font-weight: bold; z-index: 10; border-radius: var(--bs-card-border-radius); }
     #queue-header { position: relative; z-index: 11; }
     .now-downloading-thumbnail { width: 120px; height: 90px; object-fit: cover; border-radius: var(--bs-border-radius); }
     .scythe-icon { transform: rotate(45deg); }
     #schedule-options-weekly { display: none; }
     .weekday-selector { display: flex; flex-wrap: wrap; justify-content: space-around; padding: 0.5rem; border-radius: var(--bs-border-radius); background-color: var(--bs-tertiary-bg); }
+    
+    /* CHANGE: Added animation for Scythe reaping feedback */
+    @keyframes reap-flash {
+      0% { background-color: rgba(31, 168, 122, 0); }
+      50% { background-color: rgba(31, 168, 122, 0.3); }
+      100% { background-color: rgba(31, 168, 122, 0); }
+    }
+    .list-group-item.reaping {
+        animation: reap-flash 1.5s ease-out;
+    }
 {% endblock %}
 
 {# CHANGE: Added the update notification button back into the restored nav_buttons block. #}

@@ -668,6 +668,10 @@
                 if (scythe) openScytheEditor(scythe);
             } else if (action === 'reap') {
                 actionBtn.disabled = true;
+                // CHANGE: Add visual feedback for reaping a scythe.
+                li.classList.add('reaping');
+                setTimeout(() => li.classList.remove('reaping'), 1500);
+
                  window.apiRequest(window.API.reapScythe(scytheId), { method: 'POST' })
                     .then(data => {
                         window.showToast(data.message, 'Success', 'success');

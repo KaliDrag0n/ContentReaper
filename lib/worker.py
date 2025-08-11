@@ -153,7 +153,7 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
 
 # --- Finalization and Cleanup ---
 
-def _generate_error_summary(log_path):
+def _generate_error_summary(log_path, return_code):
     """Creates a more intelligent error summary from the log file by reading it in reverse for efficiency."""
     error_lines = []
     try:
@@ -173,11 +173,14 @@ def _generate_error_summary(log_path):
         return f"Could not read log file to generate error summary: {e}"
         
     if not error_lines:
+        # CHANGE: Add check for non-zero return code to provide better feedback.
+        if return_code != 0:
+            return f"Process exited with a non-zero status code ({return_code}) but no specific error was found in the log. This could indicate a network issue or an external problem."
         return "No specific errors found in log. The process may have been terminated unexpectedly."
     return "\n".join(error_lines)
 
 
-def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name):
+def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name, return_code):
     """Handles moving files, cleaning up, and determining the final state for a job."""
     temp_dir_path = os.path.join(config["temp_dir"], f"job_{job['id']}")
     final_folder_name = sanitize_filename(resolved_folder_name) or "Misc Downloads"
@@ -239,7 +242,7 @@ def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name
                 log("Status updated to PARTIAL due to partial success.")
             
             if final_status in ["FAILED", "ERROR", "ABANDONED", "PARTIAL"]:
-                error_summary = _generate_error_summary(temp_log_path)
+                error_summary = _generate_error_summary(temp_log_path, return_code)
 
     except Exception as e:
         logger.error(f"ERROR during job finalization: {e}")
@@ -326,20 +329,45 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
     status = "PENDING"
     resolved_folder_name = job.get("folder")
     
-    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if platform.system() == "Windows" else 0
-    
-    process = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding='utf-8', errors='replace',
-        creationflags=creationflags, bufsize=1
-    )
+    # CHANGE: Use start_new_session on Linux/macOS to create a new process group.
+    # This allows us to terminate yt-dlp and all its children (like ffmpeg) reliably.
+    popen_kwargs = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "encoding": 'utf-8',
+        "errors": 'replace',
+        "bufsize": 1
+    }
+    if platform.system() != "Windows":
+        popen_kwargs["start_new_session"] = True
+    else:
+        # On Windows, CREATE_NEW_PROCESS_GROUP is used to allow killing the whole tree.
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
+    process = subprocess.Popen(cmd, **popen_kwargs)
+    state_manager.update_current_download({"pid": process.pid})
     
     output_q = queue.Queue()
     reader_thread = threading.Thread(target=_enqueue_output, args=(process.stdout, output_q), daemon=True)
     reader_thread.start()
 
     with open(temp_log_path, 'w', encoding='utf-8') as log_file:
-        safe_cmd_str = ' '.join(shlex.quote(c) for c in cmd)
+        # CHANGE: Redact sensitive info like proxy from the logged command.
+        safe_cmd_for_log = []
+        skip_next = False
+        for i, arg in enumerate(cmd):
+            if skip_next:
+                skip_next = False
+                continue
+            if arg == '--proxy':
+                safe_cmd_for_log.append('--proxy')
+                safe_cmd_for_log.append("'REDACTED'")
+                skip_next = True
+            else:
+                safe_cmd_for_log.append(shlex.quote(arg))
+        
+        safe_cmd_str = ' '.join(safe_cmd_for_log)
         log_file.write(f"--- Job {job['id']} Started ---\nCommand: {safe_cmd_str}\n\n")
         log_file.flush()
         
@@ -361,29 +389,37 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
             if line: log_file.write(line)
 
     if state_manager.cancel_event.is_set() and process.poll() is None:
+        logger.info(f"Cancellation requested. Terminating process tree for PID: {process.pid}")
         try:
+            # CHANGE: More robust process tree termination.
             if platform.system() == "Windows":
-                process.send_signal(signal.CTRL_BREAK_EVENT)
+                # /T kills child processes, /F forces it.
+                subprocess.run(['taskkill', '/F', '/T', '/PID', str(process.pid)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
-                process.terminate()
+                # Kill the entire process group.
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            
             process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Process {process.pid} did not terminate gracefully. Killing.")
-            process.kill()
+        except (subprocess.TimeoutExpired, ProcessLookupError):
+            logger.warning(f"Process {process.pid} did not terminate gracefully after SIGTERM. Killing.")
+            if platform.system() != "Windows":
+                try: os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except ProcessLookupError: pass # Already dead
             process.wait()
         except Exception as e:
             logger.error(f"Error during process termination: {e}")
-            process.kill()
+            process.kill() # Fallback
             process.wait()
 
+    return_code = process.returncode
     if state_manager.cancel_event.is_set():
         status = "STOPPED" if state_manager.stop_mode == "SAVE" else "CANCELLED"
-    elif process.returncode == 0:
+    elif return_code == 0:
         status = "COMPLETED"
     else:
         status = "FAILED"
         
-    return status, resolved_folder_name
+    return status, resolved_folder_name, return_code
 
 # --- Main Worker Thread ---
 
@@ -405,12 +441,14 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
         
         state_manager.update_current_download({
             "url": job["url"], "progress": 0, "status": "Preparing...",
-            "title": job.get("folder") or job["url"], "job_data": job
+            "title": job.get("folder") or job["url"], "job_data": job,
+            "pid": None
         })
         
         status = "PENDING"
         temp_log_path = ""
         resolved_folder_name = job.get("folder")
+        return_code = -1
         
         try:
             temp_dir_path, temp_log_path = _prepare_job_environment(job, config, log_dir)
@@ -418,7 +456,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
             
             cmd = build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmpeg_path)
             
-            status, resolved_folder_name = _run_download_process(state_manager, job, cmd, temp_log_path)
+            status, resolved_folder_name, return_code = _run_download_process(state_manager, job, cmd, temp_log_path)
             
         except Exception as e:
             status = "ERROR"
@@ -429,7 +467,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                         log_file.write(f"\n--- WORKER THREAD EXCEPTION ---\n{e}\n-------------------------------\n")
                 except: pass
         finally:
-            final_status, final_folder, final_filenames, error_summary = _finalize_job(job, status, temp_log_path, config, resolved_folder_name)
+            final_status, final_folder, final_filenames, error_summary = _finalize_job(job, status, temp_log_path, config, resolved_folder_name, return_code)
             
             state_manager.reset_current_download()
             

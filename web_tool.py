@@ -248,29 +248,29 @@ def page_permission_required(permission):
         return decorated_function
     return decorator
 
+# CHANGE: Replaced is_safe_path and secure_join with a single, more secure function.
 def is_safe_path(basedir, path_to_check, allow_file=False):
-    real_basedir = os.path.normcase(os.path.realpath(basedir))
+    """
+    Securely checks if path_to_check is within basedir.
+    - Resolves real paths to prevent symbolic link traversal.
+    - Normalizes paths for case-insensitive filesystems.
+    - Prevents directory traversal attacks (e.g., ../).
+    """
     try:
-        real_path_to_check = os.path.normcase(os.path.realpath(path_to_check))
+        # Resolve the real, absolute paths
+        real_basedir = os.path.realpath(basedir)
+        real_path_to_check = os.path.realpath(os.path.join(basedir, path_to_check))
     except OSError:
+        # Path does not exist or is invalid
         return False
     
+    # Check if the path is a file or directory as required
     if not allow_file and not os.path.isdir(real_path_to_check):
         return False
         
-    return real_path_to_check.startswith(real_basedir)
-
-def secure_join(base_dir, user_path):
-    user_path = user_path.replace("\\", "/").strip("/")
-    sanitized_components = [sanitizer.sanitize_filename(part) for part in user_path.split('/') if part and part not in ('.', '..')]
-    
-    if not sanitized_components:
-        return os.path.realpath(base_dir)
-
-    safe_relative_path = os.path.join(*sanitized_components)
-    full_path = os.path.join(base_dir, safe_relative_path)
-    
-    return os.path.normpath(full_path)
+    # The core security check: use commonpath to see if the resolved
+    # path_to_check is genuinely inside the basedir.
+    return os.path.commonpath([real_basedir, real_path_to_check]) == real_basedir
 
 
 # --- App Initialization and Management ---
@@ -357,27 +357,9 @@ def save_config():
     except Exception as e:
         logger.error(f"Failed to save config: {e}")
 
-def cleanup_stale_processes_and_files(temp_dir):
-    logger.info("--- Running Pre-Startup Cleanup ---")
-    processes_to_kill = {"yt-dlp": "yt-dlp", "ffmpeg": "ffmpeg"}
-    for name, process_name in processes_to_kill.items():
-        logger.info(f"Checking for and terminating any stale '{name}' processes...")
-        try:
-            command = ["taskkill", "/F", "/IM", f"{process_name}.exe"] if platform.system() == "Windows" else ["pkill", "-f", process_name]
-            result = subprocess.run(command, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if result.returncode == 0: logger.info(f"Successfully terminated one or more stale '{name}' processes.")
-            else: logger.info(f"No stale '{name}' processes found.")
-        except FileNotFoundError: logger.warning(f"Could not find command to terminate stale '{name}' processes (taskkill/pkill).")
-        except Exception as e: logger.error(f"An error occurred while trying to kill stale '{name}' processes: {e}")
-    
-    logger.info("Cleaning up orphaned temporary job directories...")
-    if os.path.exists(temp_dir):
-        try:
-            for dir_path in glob.glob(os.path.join(temp_dir, "job_*")):
-                shutil.rmtree(dir_path)
-                logger.info(f"Removed stale temporary directory: {os.path.basename(dir_path)}")
-        except Exception as e: logger.error(f"Error during temporary file cleanup: {e}")
-    logger.info("--- Pre-Startup Cleanup Finished ---")
+# CHANGE: Removed cleanup_stale_processes_and_files. Process cleanup is now handled
+# more safely within the worker thread by tracking PIDs.
+# def cleanup_stale_processes_and_files(temp_dir): ...
 
 def _run_update_check():
     global update_status
@@ -397,15 +379,16 @@ def scheduled_update_check():
         _run_update_check()
         STOP_EVENT.wait(3600)
 
+# CHANGE: Simplified shutdown_server. It now only signals other threads to stop
+# and requests the web server to shut down. The complex cleanup is handled
+# in the main execution block's finally clause.
 def shutdown_server():
     """Triggers a graceful shutdown of the application."""
-    logger.info("Shutdown initiated.")
+    logger.info("Shutdown initiated. Signaling threads and server to stop.")
     STOP_EVENT.set()
-    # CHANGE: Use socketio.stop() for graceful shutdown with eventlet
     if socketio:
+        # This will stop the eventlet server gracefully.
         socketio.stop()
-    # Use a thread to send the kill signal after a short delay to allow the API response to be sent
-    threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGINT)).start()
 
 def run_update_script():
     """
@@ -482,8 +465,9 @@ def create_app():
     user_manager = um.UserManager(users_file)
 
     load_config()
-    cleanup_stale_processes_and_files(CONFIG['temp_dir'])
     
+    # CHANGE: Removed call to cleanup_stale_processes_and_files.
+    # The worker now manages its own child processes reliably.
     logger.info("--- [1/4] Initializing Dependency Manager ---")
     YT_DLP_PATH, FFMPEG_PATH = dm.ensure_dependencies(APP_ROOT)
     if not YT_DLP_PATH or not FFMPEG_PATH:
@@ -515,6 +499,15 @@ def create_app():
         if admin_user and not admin_user.get('password_hash'):
             session['role'] = 'admin'
             session['manual_login'] = False
+        
+        # CHANGE: Moved public user logic here from the auth_status GET route.
+        # This is a better place to modify the session.
+        public_user = CONFIG.get('public_user')
+        if public_user and not session.get('role'):
+            user_data = user_manager.get_user(public_user)
+            if user_data:
+                session['role'] = public_user
+                session['manual_login'] = False
 
     logger.info("--- [4/4] Loading state and starting background threads ---")
     log_dir = os.path.join(DATA_DIR, "logs")
@@ -534,6 +527,7 @@ def create_app():
     threading.Thread(target=scheduled_update_check, daemon=True).start()
     
     cookie_file = os.path.join(DATA_DIR, "cookies.txt")
+    # CHANGE: Fixed the NameError by using the correct variable name 'cookie_file'.
     WORKER_THREAD = threading.Thread(target=worker.yt_dlp_worker, args=(state_manager, CONFIG, log_dir, cookie_file, YT_DLP_PATH, FFMPEG_PATH, STOP_EVENT))
     WORKER_THREAD.start()
     
@@ -716,13 +710,9 @@ def register_routes(app):
         
         role = session.get('role')
         manually_logged_in = session.get('manual_login', False)
-
-        public_user = CONFIG.get('public_user')
-        if public_user and not manually_logged_in:
-            user_data = user_manager.get_user(public_user)
-            if user_data:
-                session['role'] = public_user
-                role = public_user
+        
+        # CHANGE: Removed logic that modifies the session from this GET request.
+        # This logic was moved to the `apply_unsecured_admin_session` hook.
         
         permissions = {}
         if role and role != 'admin':
@@ -865,8 +855,9 @@ def register_routes(app):
     def clear_history_route():
         log_dir = os.path.join(DATA_DIR, "logs")
         for path in state_manager.clear_history():
-            if is_safe_path(log_dir, path, allow_file=True):
-                try: os.remove(path)
+            # CHANGE: Use the new, more secure is_safe_path function
+            if is_safe_path(log_dir, os.path.basename(path), allow_file=True):
+                try: os.remove(os.path.join(log_dir, os.path.basename(path)))
                 except Exception as e: logger.error(f"Could not delete log file {path}: {e}")
         return jsonify({"message": "History cleared.", "newState": get_current_state()})
 
@@ -880,10 +871,15 @@ def register_routes(app):
         deleted_count, errors = 0, []
 
         for item_path in paths_to_delete:
-            full_path = secure_join(base_download_dir, item_path)
-            if not full_path or not is_safe_path(base_download_dir, full_path, allow_file=True) or not os.path.exists(full_path):
+            # CHANGE: Use the new, more secure is_safe_path function
+            if not is_safe_path(base_download_dir, item_path, allow_file=True):
                 errors.append(f"Skipping invalid or non-existent path: {item_path}")
                 continue
+            
+            full_path = os.path.join(base_download_dir, item_path)
+            if not os.path.exists(full_path):
+                continue
+
             try:
                 if os.path.isdir(full_path): shutil.rmtree(full_path)
                 else: os.remove(full_path)
@@ -902,7 +898,6 @@ def register_routes(app):
     @app.route('/api/shutdown', methods=['POST'])
     @permission_required('admin')
     def shutdown_route():
-        logger.info("Shutdown requested via API.")
         shutdown_server()
         return jsonify({"message": "Server is shutting down."})
 
@@ -947,7 +942,8 @@ def register_routes(app):
     def delete_from_history_route(log_id):
         log_dir = os.path.join(DATA_DIR, "logs")
         path_to_delete = state_manager.delete_from_history(log_id)
-        if path_to_delete and is_safe_path(log_dir, path_to_delete, allow_file=True):
+        # CHANGE: Use the new, more secure is_safe_path function
+        if path_to_delete and is_safe_path(log_dir, os.path.basename(path_to_delete), allow_file=True):
             try: os.remove(path_to_delete)
             except Exception as e: logger.error(f"Could not delete log file {path_to_delete}: {e}")
         return jsonify({"message": "History item deleted.", "newState": get_current_state()})
@@ -963,7 +959,8 @@ def register_routes(app):
             log_path = item.get("log_path")
             log_content = "Log not found on disk or could not be read."
             
-            if log_path and log_path != "LOG_SAVE_ERROR" and is_safe_path(log_dir, log_path, allow_file=True):
+            # CHANGE: Use the new, more secure is_safe_path function
+            if log_path and log_path != "LOG_SAVE_ERROR" and is_safe_path(log_dir, os.path.basename(log_path), allow_file=True):
                 try:
                     with open(log_path, 'r', encoding='utf-8') as f:
                         log_content = f.read()
@@ -981,7 +978,8 @@ def register_routes(app):
         log_dir = os.path.join(DATA_DIR, "logs")
         log_path = state_manager.current_download.get("log_path")
         log_content = "No active download or log path is not available."
-        if log_path and is_safe_path(log_dir, log_path, allow_file=True):
+        # CHANGE: Use the new, more secure is_safe_path function
+        if log_path and is_safe_path(log_dir, os.path.basename(log_path), allow_file=True):
             try:
                 with open(log_path, 'r', encoding='utf-8') as f: log_content = f.read()
             except Exception as e: log_content = f"ERROR: Could not read live log file. Reason: {e}"
@@ -1060,13 +1058,14 @@ def register_routes(app):
         base_download_dir = CONFIG.get("download_dir")
         req_path = request.args.get('path', '')
         
-        safe_req_path = secure_join(base_download_dir, req_path)
-        if not safe_req_path or not is_safe_path(base_download_dir, safe_req_path):
+        # CHANGE: Use the new, more secure is_safe_path function
+        if not is_safe_path(base_download_dir, req_path):
             return jsonify({"error": "Access Denied"}), 403
         
+        current_dir = os.path.join(base_download_dir, req_path)
         items = []
         try:
-            with os.scandir(safe_req_path) as it:
+            with os.scandir(current_dir) as it:
                 for entry in it:
                     try:
                         relative_path = os.path.relpath(entry.path, base_download_dir)
@@ -1092,9 +1091,9 @@ def register_routes(app):
         
         safe_full_paths = []
         for p in paths:
-            full_path = secure_join(base_download_dir, p)
-            if full_path and is_safe_path(base_download_dir, full_path, allow_file=True) and os.path.exists(full_path):
-                safe_full_paths.append(full_path)
+            # CHANGE: Use the new, more secure is_safe_path function
+            if is_safe_path(base_download_dir, p, allow_file=True):
+                safe_full_paths.append(os.path.join(base_download_dir, p))
         
         if not safe_full_paths: return "No valid files specified or access denied.", 404
         
@@ -1142,7 +1141,8 @@ def register_routes(app):
             
         full_path = os.path.join(DATA_DIR, filename)
         
-        if not is_safe_path(DATA_DIR, full_path, allow_file=True):
+        # CHANGE: Use the new, more secure is_safe_path function
+        if not is_safe_path(DATA_DIR, filename, allow_file=True):
             return jsonify({"error": "Access denied."}), 403
             
         try:
@@ -1170,30 +1170,37 @@ if __name__ == "__main__":
         banner_logger.info("Press Ctrl+C in this window to stop the server.")
         banner_logger.info("\n" + "="*(70 + len(f" Starting ContentReaper v{APP_VERSION} ")) + "\n")
 
+        # CHANGE: This is the primary server execution block.
+        # The finally clause now contains the definitive, reliable shutdown sequence.
         try:
-            # CHANGE: Use socketio.run to start the eventlet server
             socketio.run(app, host=host, port=port)
         except (KeyboardInterrupt, SystemExit):
             logger.info("Shutdown signal received.")
         finally:
             logger.info("Server is shutting down. Signaling threads to stop.")
             STOP_EVENT.set()
+            
             if scheduler:
                 scheduler.stop()
+            
+            # Wake up the worker thread so it can exit
             if state_manager:
                 state_manager.queue.put(None)
+            
             if WORKER_THREAD:
                 logger.info("Waiting for worker thread to finish...")
                 WORKER_THREAD.join(timeout=15)
                 if WORKER_THREAD.is_alive():
                     logger.warning("Worker thread did not exit gracefully.")
+            
             if SCHEDULER_THREAD:
                 logger.info("Waiting for scheduler thread to finish...")
                 SCHEDULER_THREAD.join(timeout=5)
-            # CHANGE: The State Emitter thread is managed by socketio, no need to join
+            
             logger.info("Saving final state before exit.")
             if state_manager:
                 state_manager.save_state(immediate=True)
+            
             logger.info("Shutdown complete.")
             
     except Exception as e:

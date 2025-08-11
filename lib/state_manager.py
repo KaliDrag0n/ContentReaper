@@ -47,9 +47,12 @@ class StateManager:
         while time.time() - start_time < timeout:
             try:
                 if os.path.exists(self.lock_file):
+                    # CHANGE: Increased stale lock timeout from 60s to 300s (5 minutes).
+                    # This is much safer for slow systems (like a Raspberry Pi)
+                    # and prevents a legitimate long-running save from being killed.
                     lock_age = time.time() - os.path.getmtime(self.lock_file)
-                    if lock_age > 60:
-                        logger.warning(f"Found stale lock file older than 60s: {self.lock_file}. Removing it.")
+                    if lock_age > 300:
+                        logger.warning(f"Found stale lock file older than 300s: {self.lock_file}. Removing it.")
                         self._release_lock()
                         time.sleep(random.uniform(0.05, 0.2)) # Brief random sleep to avoid race condition
                 
@@ -83,7 +86,8 @@ class StateManager:
             "url": None, "job_data": None, "progress": 0, "status": "", "title": None,
             "thumbnail": None, "playlist_title": None, "track_title": None,
             "playlist_count": 0, "playlist_index": 0,
-            "speed": None, "eta": None, "file_size": None, "log_path": None
+            "speed": None, "eta": None, "file_size": None, "log_path": None,
+            "pid": None
         }
 
     def reset_current_download(self):
@@ -188,14 +192,15 @@ class StateManager:
             self.save_state()
         return new_id
     
-    def add_notification_to_history(self, message: str):
+    def add_notification_to_history(self, message: str, save: bool = True):
         """Adds a non-job notification to the history for user feedback."""
         notification = {
             "title": message,
             "status": "INFO", # A special status for the UI to recognize
             "timestamp": time.time()
         }
-        self.add_to_history(notification)
+        # CHANGE: Pass the save flag through to add_to_history.
+        self.add_to_history(notification, save=save)
 
     def update_history_item(self, log_id: int, data_to_update: dict):
         """Updates an existing history item with new data."""
