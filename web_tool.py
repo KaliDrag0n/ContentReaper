@@ -60,7 +60,7 @@ banner_logger.setLevel(logging.INFO)
 banner_logger.propagate = False
 
 # --- App Constants ---
-APP_VERSION = "4.5.5"
+APP_VERSION = "4.6.4"
 APP_NAME = "ContentReaper"
 GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
 
@@ -70,6 +70,9 @@ scythe_manager = None
 user_manager = None
 scheduler = None
 SCHEDULER_THREAD = None
+# CHANGE: Add socketio global variable
+socketio = None
+STATE_EMITTER_THREAD = None
 update_status = {"update_available": False, "latest_version": "0.0.0", "release_url": "", "release_notes": ""}
 WORKER_THREAD = None
 STOP_EVENT = threading.Event()
@@ -105,9 +108,11 @@ def print_banner():
 
 # --- Import Flask and related libraries ---
 try:
-    import flask, waitress, requests, schedule
+    # CHANGE: Add flask_socketio and eventlet imports
+    import flask, waitress, requests, schedule, eventlet
     from werkzeug.security import generate_password_hash, check_password_hash
     from flask_wtf.csrf import CSRFProtect, generate_csrf
+    from flask_socketio import SocketIO
     from lib import dependency_manager as dm, state_manager as sm, worker, sanitizer, scythe_manager as scm, user_manager as um, scheduler as sched
     from flask import Flask, request, render_template, jsonify, redirect, url_for, Response, send_file, session, flash
     from functools import wraps
@@ -396,6 +401,9 @@ def shutdown_server():
     """Triggers a graceful shutdown of the application."""
     logger.info("Shutdown initiated.")
     STOP_EVENT.set()
+    # CHANGE: Use socketio.stop() for graceful shutdown with eventlet
+    if socketio:
+        socketio.stop()
     # Use a thread to send the kill signal after a short delay to allow the API response to be sent
     threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGINT)).start()
 
@@ -429,10 +437,42 @@ def run_update_script():
     # Gracefully shutdown the current server to release the port
     shutdown_server()
 
+# CHANGE: New background thread to emit state updates via WebSocket
+def state_emitter():
+    """
+    Monitors the state manager for changes and emits updates to clients.
+    This replaces the need for clients to poll the /api/status endpoint.
+    """
+    last_versions = {
+        "queue": -1, "history": -1, "current": -1
+    }
+    while not STOP_EVENT.is_set():
+        try:
+            with state_manager._lock:
+                q_ver = state_manager.queue_state_version
+                h_ver = state_manager.history_state_version
+                c_ver = state_manager.current_download_version
+
+            if (q_ver != last_versions["queue"] or
+                h_ver != last_versions["history"] or
+                c_ver != last_versions["current"]):
+                
+                last_versions["queue"] = q_ver
+                last_versions["history"] = h_ver
+                last_versions["current"] = c_ver
+                
+                state = get_current_state()
+                socketio.emit('state_update', state)
+
+            socketio.sleep(0.5) # Use socketio.sleep for cooperative multitasking
+        except Exception as e:
+            logger.error(f"Error in state_emitter thread: {e}")
+            socketio.sleep(5)
+
 # --- Application Factory ---
 
 def create_app():
-    global state_manager, scythe_manager, user_manager, scheduler, WORKER_THREAD, SCHEDULER_THREAD, YT_DLP_PATH, FFMPEG_PATH
+    global state_manager, scythe_manager, user_manager, scheduler, WORKER_THREAD, SCHEDULER_THREAD, YT_DLP_PATH, FFMPEG_PATH, socketio, STATE_EMITTER_THREAD
     
     migrate_legacy_data()
     
@@ -463,6 +503,8 @@ def create_app():
     app.secret_key = secrets.token_hex(16)
     app.config['WTF_CSRF_HEADERS'] = ['X-CSRF-Token']
     csrf = CSRFProtect(app)
+    # CHANGE: Initialize SocketIO
+    socketio = SocketIO(app, async_mode='eventlet')
 
     @app.before_request
     def apply_unsecured_admin_session():
@@ -498,6 +540,9 @@ def create_app():
     scheduler = sched.Scheduler(scythe_manager, state_manager)
     SCHEDULER_THREAD = threading.Thread(target=scheduler.run_pending)
     SCHEDULER_THREAD.start()
+
+    # CHANGE: Start the new state emitter thread
+    STATE_EMITTER_THREAD = socketio.start_background_task(target=state_emitter)
     
     logger.info("--- Application Initialized Successfully ---")
     register_routes(app)
@@ -558,6 +603,17 @@ def _parse_job_data(form_data):
 
     return job_base
 
+def get_current_state():
+    with state_manager._lock:
+        state = {
+            "queue": state_manager.get_queue_list(),
+            "current": state_manager.current_download if state_manager.current_download.get("url") else None,
+            "history": state_manager.get_history_summary(),
+            "is_paused": not state_manager.queue_paused_event.is_set()
+        }
+    state["scythes"] = scythe_manager.get_all()
+    return state
+
 def register_routes(app):
     @app.context_processor
     def inject_globals():
@@ -567,16 +623,21 @@ def register_routes(app):
             csrf_token=generate_csrf
         )
 
-    def get_current_state():
-        with state_manager._lock:
-            state = {
-                "queue": state_manager.get_queue_list(),
-                "current": state_manager.current_download if state_manager.current_download.get("url") else None,
-                "history": state_manager.get_history_summary(),
-                "is_paused": not state_manager.queue_paused_event.is_set()
-            }
-        state["scythes"] = scythe_manager.get_all()
-        return state
+    # CHANGE: Remove the old /api/status polling route
+    # @app.route("/api/status")
+    # def status_poll_route():
+    #     return jsonify(get_current_state())
+
+    # CHANGE: Add SocketIO event handlers
+    @socketio.on('connect')
+    def handle_connect():
+        logger.info(f"Client connected: {request.sid}")
+        # Send the initial state to the newly connected client
+        socketio.emit('state_update', get_current_state(), room=request.sid)
+
+    @socketio.on('disconnect')
+    def handle_disconnect():
+        logger.info(f"Client disconnected: {request.sid}")
 
     @app.route('/favicon.ico')
     def favicon():
@@ -602,10 +663,6 @@ def register_routes(app):
     @page_permission_required('admin')
     def logs_route():
         return render_template("logs.html")
-
-    @app.route("/api/status")
-    def status_poll_route():
-        return jsonify(get_current_state())
 
     @app.route("/api/update_check")
     def update_check_route():
@@ -1107,14 +1164,15 @@ if __name__ == "__main__":
         host = CONFIG.get("server_host", "0.0.0.0")
         port = CONFIG.get("server_port", 8080)
         
-        logger.info("Initialization complete. Starting production server with Waitress...")
+        logger.info("Initialization complete. Starting production server with Eventlet...")
         banner_logger.info(f"Server is running at: http://{host}:{port}")
         banner_logger.info("You can now open this address in your web browser.")
         banner_logger.info("Press Ctrl+C in this window to stop the server.")
         banner_logger.info("\n" + "="*(70 + len(f" Starting ContentReaper v{APP_VERSION} ")) + "\n")
 
         try:
-            waitress.serve(app, host=host, port=port, _quiet=True)
+            # CHANGE: Use socketio.run to start the eventlet server
+            socketio.run(app, host=host, port=port)
         except (KeyboardInterrupt, SystemExit):
             logger.info("Shutdown signal received.")
         finally:
@@ -1132,6 +1190,7 @@ if __name__ == "__main__":
             if SCHEDULER_THREAD:
                 logger.info("Waiting for scheduler thread to finish...")
                 SCHEDULER_THREAD.join(timeout=5)
+            # CHANGE: The State Emitter thread is managed by socketio, no need to join
             logger.info("Saving final state before exit.")
             if state_manager:
                 state_manager.save_state(immediate=True)

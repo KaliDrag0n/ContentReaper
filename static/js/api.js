@@ -13,7 +13,8 @@ const API_ENDPOINTS = {
     authSetPassword: '/api/auth/set-password',
 
     // Main Status and Control
-    status: '/api/status',
+    // CHANGE: Removed the status endpoint as it's replaced by WebSockets
+    // status: '/api/status',
     stop: '/api/stop',
     shutdown: '/api/shutdown',
 

@@ -17,6 +17,9 @@
     let csrfToken = null;
     let requestToRetry = null; 
 
+    // CHANGE: Add socket variable
+    let socket = null;
+
     // --- UTILITY FUNCTIONS ---
 
     const applyTheme = (theme) => {
@@ -146,12 +149,11 @@
             const elements = document.querySelectorAll(`.perm-${perm}`);
             const hasPerm = userPerms.includes(perm);
             elements.forEach(el => {
-                // CHANGE: Explicitly handle different tag types to ensure correct display property.
-                let displayStyle = ''; // Default to stylesheet
+                let displayStyle = ''; 
                 if (el.tagName === 'BUTTON' || el.tagName === 'A') {
                     displayStyle = 'inline-block';
                 } else if (el.tagName === 'LI') {
-                    displayStyle = 'block'; // Nav items are block-level elements
+                    displayStyle = 'block'; 
                 }
                 el.style.display = hasPerm ? displayStyle : 'none';
             });
@@ -169,6 +171,35 @@
             if (loginBtn) loginBtn.style.display = 'inline-block';
             if (logoutBtn) logoutBtn.style.display = 'none';
         }
+    };
+
+    // CHANGE: New function to initialize WebSocket connection
+    const initializeWebSocket = () => {
+        if (socket && socket.connected) {
+            return;
+        }
+        socket = io({
+            reconnection: true,
+            reconnectionAttempts: 5,
+            reconnectionDelay: 1000,
+        });
+
+        socket.on('connect', () => {
+            console.log('WebSocket connected successfully.');
+        });
+
+        socket.on('state_update', (data) => {
+            // Dispatch a custom event that page-specific scripts (like index.js) can listen for.
+            document.dispatchEvent(new CustomEvent('state-update', { detail: data }));
+        });
+
+        socket.on('disconnect', () => {
+            console.warn('WebSocket disconnected. Attempting to reconnect...');
+        });
+
+        socket.on('connect_error', (error) => {
+            console.error('WebSocket connection error:', error);
+        });
     };
 
     const initializeSharedComponents = () => {
@@ -265,6 +296,9 @@
             updateAuthUI(status);
             updateUIPermissions(status);
         }).catch(() => {});
+
+        // CHANGE: Initialize WebSocket connection
+        initializeWebSocket();
 
         setTimeout(() => {
             document.body.classList.add('loaded');

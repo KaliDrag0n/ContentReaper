@@ -9,7 +9,8 @@
 
     // --- STATE & CACHED ELEMENTS ---
     let logModalInstance, updateModalInstance, scytheModalInstance;
-    let statusPollTimeout;
+    // CHANGE: Removed statusPollTimeout
+    // let statusPollTimeout;
     let urlInputTimeout;
     let liveLogPollInterval = null;
     let sortableInstance = null;
@@ -241,7 +242,6 @@
     }
 
     function createHistoryItemHTML(item) {
-        // CHANGE: Handle the new "INFO" status for scheduler notifications.
         if (item.status === 'INFO') {
             return `
                 <div class="d-flex align-items-center text-muted">
@@ -399,17 +399,7 @@
         localState = newState;
     }
 
-    const pollStatus = async () => {
-        clearTimeout(statusPollTimeout);
-        try {
-            const data = await window.apiRequest(window.API.status);
-            renderState(data);
-        } catch (error) {
-            if (error.message !== "AUTH_REQUIRED") console.error("Status poll failed:", error);
-        } finally {
-            statusPollTimeout = setTimeout(pollStatus, 1500);
-        }
-    };
+    // CHANGE: Removed the pollStatus function entirely.
 
     const viewStaticLog = async (logId) => {
         try {
@@ -509,7 +499,6 @@
             scheduleInterval.value = scheduleData.interval || 'daily';
             scheduleTime.value = scheduleData.time || '03:00';
 
-            // CHANGE: Handle multiple weekdays
             form.querySelectorAll('.weekday-selector .form-check-input').forEach(cb => {
                 cb.checked = (scheduleData.weekdays || []).includes(parseInt(cb.value, 10));
             });
@@ -545,6 +534,11 @@
 
     // --- INITIALIZATION ---
     const initializePage = () => {
+        // CHANGE: Listen for the custom state-update event from app.js
+        document.addEventListener('state-update', (e) => {
+            renderState(e.detail);
+        });
+
         const savedMode = localStorage.getItem('downloader_mode') || 'clip';
         switchMode(savedMode);
         document.querySelectorAll('#add-job-form .mode-selector .btn').forEach(btn => btn.addEventListener('click', () => switchMode(btn.dataset.mode)));
@@ -566,7 +560,8 @@
                 this.reset();
                 switchMode(savedMode);
                 handleUrlInput(this.querySelector('textarea[name="urls"]'));
-                renderState(data.newState);
+                // CHANGE: No longer need to call renderState here, the WebSocket will push the update.
+                // renderState(data.newState);
             } catch(error) { 
                 if (error.message !== "AUTH_REQUIRED") console.error("Failed to add job:", error);
             } finally {
@@ -577,16 +572,16 @@
         document.querySelector('textarea[name="urls"]').addEventListener('input', (e) => handleUrlInput(e.target));
         
         document.getElementById('clear-queue-btn').addEventListener('click', () => window.showConfirmModal('Clear Queue?', 'Are you sure you want to remove all items from the queue?', () => {
-            window.apiRequest(window.API.queueClear, { method: 'POST' }).then(data => renderState(data.newState)).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
+            window.apiRequest(window.API.queueClear, { method: 'POST' }).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
         }));
         
         document.getElementById('clear-history-btn').addEventListener('click', () => window.showConfirmModal('Clear History?', 'Are you sure you want to clear the entire download history?', () => {
-            window.apiRequest(window.API.historyClear, { method: 'POST' }).then(data => renderState(data.newState)).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
+            window.apiRequest(window.API.historyClear, { method: 'POST' }).catch(err => { if(err.message !== "AUTH_REQUIRED") console.error(err) });
         }));
         
         document.getElementById('pause-resume-btn').addEventListener('click', (e) => {
             const endpoint = e.currentTarget.dataset.action === 'pause' ? window.API.queuePause : window.API.queueResume;
-            window.apiRequest(endpoint, { method: 'POST' }).then(data => renderState(data.newState)).catch(err => console.error(err));
+            window.apiRequest(endpoint, { method: 'POST' }).catch(err => console.error(err));
         });
         
         document.getElementById('logModal').addEventListener('hidden.bs.modal', () => {
@@ -600,11 +595,9 @@
                 const item = deleteBtn.closest('.list-group-item');
                 item.style.opacity = '0.5';
                 window.apiRequest(window.API.queueDelete(deleteBtn.dataset.jobId), {method: 'POST'})
-                    .then(data => renderState(data.newState))
                     .catch(err => {
                         if(err.message !== "AUTH_REQUIRED") console.error(err);
                         item.style.opacity = '1';
-                        pollStatus();
                     });
             }
         });
@@ -622,11 +615,9 @@
             } else if (action === 'delete') {
                 li.style.opacity = '0.5';
                 window.apiRequest(window.API.historyDelete(logId), { method: 'POST' })
-                    .then(data => renderState(data.newState))
                     .catch(err => {
                         console.error(err);
                         li.style.opacity = '1';
-                        pollStatus();
                     });
             } else if (action === 'requeue') {
                 actionBtn.disabled = true;
@@ -636,7 +627,6 @@
                 })
                 .then((data) => {
                     window.showToast(data.message, 'Success', 'success');
-                    renderState(data.newState);
                 })
                 .catch(err => console.error(err))
                 .finally(() => actionBtn.disabled = false);
@@ -648,7 +638,6 @@
                 })
                 .then((data) => {
                     window.showToast(data.message, 'Scythe Created', 'success');
-                    renderState(data.newState);
                 })
                 .catch(err => {})
                 .finally(() => {
@@ -672,7 +661,6 @@
                     window.apiRequest(window.API.deleteScythe(scytheId), { method: 'DELETE' })
                         .then(data => {
                             window.showToast(data.message, 'Success', 'success');
-                            renderState(data.newState);
                         })
                         .catch(err => { li.style.opacity = '1'; });
                 });
@@ -683,7 +671,6 @@
                  window.apiRequest(window.API.reapScythe(scytheId), { method: 'POST' })
                     .then(data => {
                         window.showToast(data.message, 'Success', 'success');
-                        renderState(data.newState);
                     })
                     .catch(err => console.error(err))
                     .finally(() => actionBtn.disabled = false);
@@ -733,7 +720,6 @@
                     jobData.custom_args = modeOptions.querySelector('[name="custom_args"]')?.value;
                 }
                 
-                // CHANGE: Collect multiple weekdays from checkboxes.
                 const weekdays = Array.from(this.querySelectorAll('.weekday-selector .form-check-input:checked'))
                                       .map(cb => parseInt(cb.value, 10));
 
@@ -754,7 +740,6 @@
                     body: JSON.stringify(payload)
                 });
                 window.showToast(data.message, 'Success', 'success');
-                renderState(data.newState);
                 scytheModalInstance.hide();
 
             } catch(err) {
@@ -795,15 +780,12 @@
                 const orderedIds = [...evt.to.children].map(li => li.dataset.jobId).filter(id => id);
                 if (orderedIds.length === 0) return;
                 window.apiRequest(window.API.queueReorder, { method: 'POST', body: JSON.stringify({ order: orderedIds }) })
-                .then(data => renderState(data.newState))
                 .catch(err => { 
                     console.error("Failed to reorder queue:", err);
-                    pollStatus();
                 });
             },
         });
 
-        pollStatus();
         checkForUpdates();
         setInterval(checkForUpdates, 900000);
     };
