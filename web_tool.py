@@ -60,7 +60,7 @@ banner_logger.setLevel(logging.INFO)
 banner_logger.propagate = False
 
 # --- App Constants ---
-APP_VERSION = "4.5.4"
+APP_VERSION = "4.5.5"
 APP_NAME = "ContentReaper"
 GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
 
@@ -578,7 +578,6 @@ def register_routes(app):
         state["scythes"] = scythe_manager.get_all()
         return state
 
-    # CHANGE: Removed the old SVG favicon route. Flask will now serve the static file.
     @app.route('/favicon.ico')
     def favicon():
         return send_file(os.path.join(app.static_folder, 'img/icon', 'favicon.ico'))
@@ -1135,7 +1134,7 @@ if __name__ == "__main__":
                 SCHEDULER_THREAD.join(timeout=5)
             logger.info("Saving final state before exit.")
             if state_manager:
-                state_manager.save_state()
+                state_manager.save_state(immediate=True)
             logger.info("Shutdown complete.")
             
     except Exception as e:

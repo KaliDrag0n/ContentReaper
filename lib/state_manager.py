@@ -37,6 +37,9 @@ class StateManager:
         self.queue_paused_event = threading.Event()
         self.queue_paused_event.set() # Set by default (not paused)
 
+        # CHANGE: Add a timer for debounced state saving.
+        self._save_timer = None
+
     def _acquire_lock(self, timeout=10):
         """Acquires an exclusive lock file, with a timeout."""
         start_time = time.time()
@@ -185,7 +188,6 @@ class StateManager:
             self.save_state()
         return new_id
     
-    # CHANGE: New method to add a system notification to the history panel.
     def add_notification_to_history(self, message: str):
         """Adds a non-job notification to the history for user feedback."""
         notification = {
@@ -247,8 +249,8 @@ class StateManager:
             item = next((h for h in self.history if h.get("log_id") == log_id), None)
             return item.copy() if item else None
 
-    def save_state(self):
-        """Saves the current state to a JSON file atomically with a backup."""
+    def _perform_save(self):
+        """Saves the current state to a JSON file atomically with a backup. This is the core save logic."""
         if not self._acquire_lock():
             logger.error("Could not acquire lock to save state. Skipping save.")
             return
@@ -286,6 +288,22 @@ class StateManager:
                 except Exception as e_clean: logger.error(f"ERROR: Could not clean up temp state file: {e_clean}")
         finally:
             self._release_lock()
+
+    def save_state(self, immediate=False):
+        """
+        Saves the state. By default, it debounces the save for 2 seconds.
+        If immediate=True, it cancels any pending save and saves right away.
+        """
+        with self._lock:
+            if self._save_timer:
+                self._save_timer.cancel()
+                self._save_timer = None
+
+            if immediate:
+                self._perform_save()
+            else:
+                self._save_timer = threading.Timer(2.0, self._perform_save)
+                self._save_timer.start()
 
     def load_state(self):
         """Loads state from JSON, with a fallback to a backup file."""
