@@ -290,13 +290,31 @@
         }
 
         updateStats() {
-            this.stats = {
+            const stats = {
                 total: this.processedLines.length,
-                errors: this.processedLines.filter(line => line.level === 'error').length,
-                warnings: this.processedLines.filter(line => line.level === 'warning').length,
-                info: this.processedLines.filter(line => line.level === 'info').length,
-                debug: this.processedLines.filter(line => line.level === 'debug').length
+                errors: 0,
+                warnings: 0,
+                info: 0,
+                debug: 0
             };
+
+            for (const line of this.processedLines) {
+                switch (line.level) {
+                    case 'error':
+                        stats.errors++;
+                        break;
+                    case 'warning':
+                        stats.warnings++;
+                        break;
+                    case 'info':
+                        stats.info++;
+                        break;
+                    case 'debug':
+                        stats.debug++;
+                        break;
+                }
+            }
+            this.stats = stats;
 
             this.elements.totalLines.textContent = this.stats.total;
             this.elements.errorCount.textContent = this.stats.errors;

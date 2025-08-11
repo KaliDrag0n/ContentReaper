@@ -4,3 +4,4 @@ waitress
 requests
 Werkzeug
 schedule
+watchdog

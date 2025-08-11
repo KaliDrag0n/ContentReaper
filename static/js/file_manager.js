@@ -42,6 +42,40 @@
     };
 
     // --- CORE LOGIC ---
+    
+    const renderFileList = (files, containerEl) => {
+        if (files.length === 0) {
+            containerEl.innerHTML = '<div class="list-group-item fst-italic text-muted">Folder is empty.</div>';
+            return;
+        }
+
+        const newFileMap = new Map(files.map(file => [file.path, file]));
+        const existingElements = new Map(Array.from(containerEl.children).map(child => [child.dataset.path, child]));
+
+        existingElements.forEach((el, path) => {
+            if (!newFileMap.has(path)) {
+                el.remove();
+            }
+        });
+
+        const fragment = document.createDocumentFragment();
+        files.forEach(item => {
+            if (existingElements.has(item.path)) {
+                const existingEl = existingElements.get(item.path);
+                const oldData = JSON.parse(existingEl.dataset.itemData || '{}');
+                if (JSON.stringify(oldData) !== JSON.stringify(item)) {
+                    const newEl = createFileItemElement(item);
+                    existingEl.replaceWith(newEl);
+                }
+            } else {
+                fragment.appendChild(createFileItemElement(item));
+            }
+        });
+
+        if (fragment.children.length > 0) {
+            containerEl.appendChild(fragment);
+        }
+    };
 
     const fetchAndRenderFiles = async (path = '', containerEl) => {
         containerEl.innerHTML = '<div class="list-group-item"><div class="spinner-border spinner-border-sm me-2" role="status"></div>Loading...</div>';
@@ -49,17 +83,7 @@
         try {
             const files = await window.apiRequest(window.API.files(path));
             containerEl.innerHTML = ''; // Clear loading indicator
-
-            if (files.length === 0) {
-                containerEl.innerHTML = '<div class="list-group-item fst-italic text-muted">Folder is empty.</div>';
-                return;
-            }
-
-            const fragment = document.createDocumentFragment();
-            files.forEach(item => {
-                fragment.appendChild(createFileItemElement(item));
-            });
-            containerEl.appendChild(fragment);
+            renderFileList(files, containerEl);
 
         } catch (error) {
             containerEl.innerHTML = `<div class="list-group-item text-danger">
@@ -82,6 +106,7 @@
         li.className = 'list-group-item file-item';
         li.dataset.path = item.path;
         li.dataset.name = item.name;
+        li.dataset.itemData = JSON.stringify(item);
         
         let sizeInfo = '';
         if (item.size != null) {

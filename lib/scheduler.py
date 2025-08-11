@@ -3,9 +3,29 @@ import threading
 import time
 import logging
 import schedule
+import watchdog
 from datetime import datetime
 
 logger = logging.getLogger()
+
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+    WATCHDOG_AVAILABLE = True
+except ImportError:
+    WATCHDOG_AVAILABLE = False
+
+class ScythesChangeHandler(FileSystemEventHandler):
+    def __init__(self, scheduler):
+        self.scheduler = scheduler
+        self.last_triggered = 0
+
+    def on_modified(self, event):
+        if "scythes.json" in event.src_path:
+            if time.time() - self.last_triggered > 5:
+                logger.info("Scythes file changed. Reloading schedule...")
+                self.scheduler._load_and_schedule_jobs()
+                self.last_triggered = time.time()
 
 class Scheduler:
     """
@@ -16,7 +36,7 @@ class Scheduler:
         self.scythe_manager = scythe_manager
         self.state_manager = state_manager
         self.stop_event = threading.Event()
-        self.last_reload_time = 0
+        self.observer = None
         self._load_and_schedule_jobs()
 
     def _load_and_schedule_jobs(self):
@@ -35,7 +55,6 @@ class Scheduler:
                     interval = schedule_info.get("interval")
                     at_time = schedule_info.get("time")
                     
-                    # CHANGE: Handle multiple weekdays
                     weekdays = schedule_info.get("weekdays", [])
 
                     if interval == "daily":
@@ -59,8 +78,7 @@ class Scheduler:
                 except Exception as e:
                     logger.error(f"Failed to schedule Scythe '{scythe.get('name')}': {e}")
         
-        self.last_reload_time = time.time()
-        logger.info(f"Successfully scheduled {count} Scythe(s).")
+        logger.info(f"Successfully scheduled {count} Scythe(s). Next run at: {schedule.next_run}")
 
     def _reap_scythe(self, scythe_id):
         """
@@ -81,22 +99,29 @@ class Scheduler:
         job_to_reap["resolved_folder"] = job_to_reap.get("folder")
         self.state_manager.add_to_queue(job_to_reap)
         
-        # CHANGE: Add a notification to the history panel.
         self.state_manager.add_notification_to_history(
             f"Scythe '{scythe.get('name')}' was automatically reaped."
         )
 
     def run_pending(self):
         """The main loop for the scheduler thread."""
+        if WATCHDOG_AVAILABLE:
+            event_handler = ScythesChangeHandler(self)
+            self.observer = Observer()
+            self.observer.schedule(event_handler, path=self.scythe_manager.scythes_file.rsplit('/', 1)[0], recursive=False)
+            self.observer.start()
+            logger.info("File watcher for scythes.json started.")
+        else:
+            logger.info("Watchdog library not found. Falling back to hourly polling for Scythe schedule changes.")
+
         while not self.stop_event.is_set():
             schedule.run_pending()
-            
-            # CHANGE: Periodically reload the schedule to pick up manual changes.
-            if time.time() - self.last_reload_time > 3600: # Reload every hour
-                logger.info("Performing hourly reload of scheduled jobs...")
-                self._load_and_schedule_jobs()
-
             time.sleep(1)
+        
+        if self.observer:
+            self.observer.stop()
+            self.observer.join()
+
         logger.info("Scheduler thread has gracefully exited.")
 
     def stop(self):

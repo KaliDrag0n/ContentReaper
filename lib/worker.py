@@ -30,6 +30,31 @@ def format_bytes(b):
     except (ValueError, TypeError):
         return "N/A"
 
+def _read_file_in_reverse(filename, buf_size=8192):
+    """A generator that reads a file line by line in reverse for efficiency."""
+    with open(filename, 'rb') as f:
+        segment = None
+        offset = 0
+        f.seek(0, os.SEEK_END)
+        file_size = remaining_size = f.tell()
+        while remaining_size > 0:
+            offset = min(file_size, offset + buf_size)
+            f.seek(file_size - offset)
+            buffer = f.read(min(remaining_size, buf_size))
+            remaining_size -= buf_size
+            lines = buffer.decode('utf-8', errors='replace').splitlines()
+            if segment is not None:
+                if buffer and buffer[-1] not in (b'\n', b'\r'):
+                    lines[-1] += segment
+                else:
+                    yield segment
+            segment = lines[0]
+            for index in range(len(lines) - 1, 0, -1):
+                if lines[index]:
+                    yield lines[index]
+        if segment is not None:
+            yield segment
+
 def _enqueue_output(stream, q):
     """Reads decoded text lines from a stream and puts them into a queue."""
     for line in iter(stream.readline, ''):
@@ -129,23 +154,27 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
 # --- Finalization and Cleanup ---
 
 def _generate_error_summary(log_path):
-    """Creates a more intelligent error summary from the log file."""
+    """Creates a more intelligent error summary from the log file by reading it in reverse for efficiency."""
     error_lines = []
     try:
         if not os.path.exists(log_path):
             return "Log file was not created."
-        with open(log_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if "ERROR:" in line or "WARNING:" in line:
-                    cleaned_line = re.sub(r'^\[yt-dlp\]\s*', '', line).strip()
-                    if cleaned_line:
-                        error_lines.append(cleaned_line)
+        
+        for line in _read_file_in_reverse(log_path):
+            if "ERROR:" in line or "WARNING:" in line:
+                cleaned_line = re.sub(r'^\[yt-dlp\]\s*', '', line).strip()
+                if cleaned_line:
+                    error_lines.append(cleaned_line)
+                    if len(error_lines) >= 10:
+                        break
+        error_lines.reverse()
+
     except Exception as e:
         return f"Could not read log file to generate error summary: {e}"
         
     if not error_lines:
         return "No specific errors found in log. The process may have been terminated unexpectedly."
-    return "\n".join(error_lines[-10:])
+    return "\n".join(error_lines)
 
 
 def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name):

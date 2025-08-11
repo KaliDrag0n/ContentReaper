@@ -1010,19 +1010,20 @@ def register_routes(app):
         
         items = []
         try:
-            for name in os.listdir(safe_req_path):
-                full_path = os.path.join(safe_req_path, name)
-                relative_path = os.path.relpath(full_path, base_download_dir)
-                item_data = {"name": name, "path": relative_path.replace("\\", "/")}
-                try:
-                    stat_info = os.stat(full_path)
-                    if os.path.isdir(full_path):
-                        item_data.update({"type": "directory", "item_count": len(os.listdir(full_path))})
-                    else:
-                        item_data.update({"type": "file", "size": stat_info.st_size})
-                    items.append(item_data)
-                except OSError: continue
-        except OSError as e: return jsonify({"error": f"Cannot access directory: {e.strerror}"}), 500
+            with os.scandir(safe_req_path) as it:
+                for entry in it:
+                    try:
+                        relative_path = os.path.relpath(entry.path, base_download_dir)
+                        item_data = {"name": entry.name, "path": relative_path.replace("\\", "/")}
+                        if entry.is_dir():
+                            item_data.update({"type": "directory", "item_count": len(os.listdir(entry.path))})
+                        else:
+                            item_data.update({"type": "file", "size": entry.stat().st_size})
+                        items.append(item_data)
+                    except OSError:
+                        continue
+        except OSError as e:
+            return jsonify({"error": f"Cannot access directory: {e.strerror}"}), 500
         
         return jsonify(sorted(items, key=lambda x: (x['type'] == 'file', x['name'].lower())))
 

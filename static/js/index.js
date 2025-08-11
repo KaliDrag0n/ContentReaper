@@ -318,21 +318,27 @@
         const newScythesMap = new Map(newScythes.map(item => [item.id, item]));
         const oldScythesMap = new Map(localState.scythes.map(item => [item.id, item]));
 
-        oldScythesMap.forEach((_, scytheId) => {
+        scythesList.querySelectorAll('.list-group-item[data-scythe-id]').forEach(li => {
+            const scytheId = parseInt(li.dataset.scytheId, 10);
             if (!newScythesMap.has(scytheId)) {
-                scythesList.querySelector(`[data-scythe-id='${scytheId}']`)?.remove();
+                li.remove();
             }
         });
 
         newScythes.forEach(scythe => {
             let li = scythesList.querySelector(`[data-scythe-id='${scythe.id}']`);
+            const oldScythe = oldScythesMap.get(scythe.id);
+            const needsUpdate = !oldScythe || JSON.stringify(scythe) !== JSON.stringify(oldScythe);
+
             if (!li) {
                 li = document.createElement('li');
                 li.className = 'list-group-item';
                 li.dataset.scytheId = scythe.id;
                 scythesList.appendChild(li);
+                li.innerHTML = createScytheItemHTML(scythe);
+            } else if (needsUpdate) {
+                li.innerHTML = createScytheItemHTML(scythe);
             }
-            li.innerHTML = createScytheItemHTML(scythe);
         });
 
         scythesList.querySelector('.fst-italic')?.remove();

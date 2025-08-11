@@ -6,6 +6,7 @@ import os
 import time
 import shutil
 import logging
+import random
 
 logger = logging.getLogger()
 
@@ -47,7 +48,8 @@ class StateManager:
                     if lock_age > 60:
                         logger.warning(f"Found stale lock file older than 60s: {self.lock_file}. Removing it.")
                         self._release_lock()
-
+                        time.sleep(random.uniform(0.05, 0.2)) # Brief random sleep to avoid race condition
+                
                 fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.close(fd)
                 return True
@@ -224,7 +226,7 @@ class StateManager:
         self.save_state()
         return paths_to_delete
 
-    def delete_from_history(self, log_id: int) -> str or None:
+    def delete_from_history(self, log_id: int) -> str | None:
         """Deletes a single item from history and returns its log path for cleanup."""
         path_to_delete = None
         with self._lock:
@@ -239,7 +241,7 @@ class StateManager:
         self.save_state()
         return path_to_delete
 
-    def get_history_item_by_log_id(self, log_id: int) -> dict or None:
+    def get_history_item_by_log_id(self, log_id: int) -> dict | None:
         """Retrieves a full history item by its log ID."""
         with self._lock:
             item = next((h for h in self.history if h.get("log_id") == log_id), None)
