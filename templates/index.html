@@ -3,7 +3,7 @@
 {% block title %}Downloader - {{ app_name }}{% endblock %}
 
 {% block scripts %}
-  <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
+  <script src="{{ url_for('static', filename='js/vendor/Sortable.min.js') }}"></script>
   <script src="{{ url_for('static', filename='js/index.js') }}" defer></script>
 {% endblock %}
 
@@ -19,7 +19,6 @@
     #schedule-options-weekly { display: none; }
     .weekday-selector { display: flex; flex-wrap: wrap; justify-content: space-around; padding: 0.5rem; border-radius: var(--bs-border-radius); background-color: var(--bs-tertiary-bg); }
     
-    /* CHANGE: Added animation for Scythe reaping feedback */
     @keyframes reap-flash {
       0% { background-color: rgba(31, 168, 122, 0); }
       50% { background-color: rgba(31, 168, 122, 0.3); }
@@ -30,16 +29,13 @@
     }
 {% endblock %}
 
-{# CHANGE: Added the update notification button back into the restored nav_buttons block. #}
 {% block nav_buttons %}
   <button id="update-notification-btn" class="btn btn-warning me-3" style="display: none;" title="A new update is available!"><i class="bi bi-bell-fill"></i> <span class="d-none d-sm-inline">Update</span></button>
 {% endblock %}
 
 {% block content %}
-  <!-- Add Job Form -->
   <div class="card mb-4">
     <div class="card-body">
-        {# CHANGE: Moved mode selector inside the form to fix event listeners. #}
         <form id="add-job-form">
           <div class="row text-center mode-selector mb-4 g-2">
             <div class="col"><button type="button" class="btn btn-secondary" data-mode="music"><i class="bi bi-music-note-beamed"></i> Music</button></div>
@@ -50,7 +46,6 @@
           <input type="hidden" name="download_mode" id="download_mode_input">
           <div class="mb-3"><label class="form-label">URL(s) <small>(one per line)</small></label><textarea name="urls" class="form-control" placeholder="https://..." required rows="2"></textarea></div>
           
-          <!-- Mode Specific Options -->
           <div id="music-options" class="mode-options" data-options-for="music"><div class="row"><div class="col-md-5 mb-3"><label class="form-label">Album/Playlist Name <small>(optional)</small></label><input type="text" name="music_foldername" class="form-control"></div><div class="col-md-4 mb-3"><label class="form-label">Audio Format</label><select name="music_audio_format" class="form-select"><option value="mp3">MP3 (VBR)</option><option value="flac">FLAC (Lossless)</option><option value="opus">Opus (High Efficiency)</option></select></div><div class="col-md-3 mb-3"><label class="form-label">Audio Quality</label><select name="music_audio_quality" class="form-select"><option value="0">Best (VBR ~245k)</option><option value="3">High (VBR ~190k)</option><option value="5">Standard (VBR ~165k)</option><option value="7">Low (VBR ~130k)</option><option value="9">Worst (VBR ~65k)</option></select></div></div></div>
           <div id="video-options" class="mode-options" data-options-for="video"><div class="row"><div class="col-md-6 mb-3"><label class="form-label">Folder Name <small>(optional)</small></label><input type="text" name="video_foldername" class="form-control"></div><div class="col-md-3 mb-3"><label class="form-label">Video Quality</label><select name="video_quality" class="form-select"><option value="best">Best Available</option><option value="1080p">1080p (Full HD)</option><option value="720p">720p (HD)</option></select></div><div class="col-md-3 mb-3"><label class="form-label">Format</label><select name="video_format" class="form-select"><option value="mp4" selected>MP4</option><option value="mkv">MKV</option></select></div></div><div class="row"><div class="col-md-6 mb-3"><label class="form-label">Codec Preference</label><select name="video_codec_preference" class="form-select"><option value="compatibility" selected>Best Compatibility (H.264/AAC)</option><option value="quality">Best Quality (Modern Codecs)</option></select><div class="form-text">Choose "Compatibility" for older devices.</div></div><div class="col-md-6 d-flex align-items-center pt-3"><div class="form-check"><input class="form-check-input" type="checkbox" name="video_embed_subs"><label class="form-check-label">Embed Subtitles</label></div></div></div></div>
           <div id="clip-options" class="mode-options" data-options-for="clip"><div class="mb-3"><label class="form-label">Format</label><select name="clip_format" class="form-select"><option value="video">Quick Video (Best)</option><option value="audio">Quick Audio (MP3)</option></select></div></div>
@@ -66,7 +61,6 @@
     </div>
   </div>
 
-  <!-- Status Panels -->
   <div class="card mb-4"><div class="card-header">Now Downloading</div><div class="card-body" id="current-status"><p class="m-0">No active download.</p></div></div>
   
   <div class="card mb-4 position-relative">
@@ -90,7 +84,6 @@
 
   <div class="card mb-4"><div class="card-header d-flex justify-content-between align-items-center"><span>Download History</span><button class="btn btn-danger" id="clear-history-btn" style="display: none;">Clear History</button></div><ul class="list-group list-group-flush" id="history-list"><li class='list-group-item fst-italic text-muted'>History is empty.</li></ul></div>
 
-  <!-- Additional Modals -->
   <div class="modal fade" id="logModal" tabindex="-1"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">Job Log</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><pre id="logModalContent"></pre></div></div></div></div>
   <div class="modal fade" id="updateModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5 class="modal-title"><i class="bi bi-gift-fill"></i> Update Available!</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><p>A new version, <strong id="update-version-text"></strong>, is available.</p><h5>Release Notes:</h5><div id="update-notes-content" style="max-height: 300px; overflow-y: auto;" class="p-2 border rounded bg-body-tertiary"></div></div><div class="modal-footer justify-content-between"><div><a href="#" id="update-release-link" target="_blank" rel="noopener noreferrer" class="btn btn-outline-secondary"><i class="bi bi-box-arrow-up-right"></i> View Release</a></div><div><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Later</button><a href="{{ url_for('settings_route') }}" class="btn btn-primary"><i class="bi bi-gear-fill"></i> Go to Settings</a></div></div></div></div></div>
   
@@ -132,7 +125,7 @@
                     <div class="col-md-6 mb-3">
                         <label for="schedule-time" class="form-label">Time</label>
                         <input type="time" id="schedule-time" class="form-control" required>
-                        <div class="form-text">All times are based on the server's clock.</div>
+                        <div class="form-text">Times are based on the timezone selected in Settings.</div>
                     </div>
                 </div>
                 <div id="schedule-options-weekly">

@@ -22,6 +22,7 @@
             document.getElementById('log_level').value = data.config.log_level || 'INFO';
             document.getElementById('server_host').value = data.config.server_host;
             document.getElementById('server_port').value = data.config.server_port;
+            document.getElementById('user_timezone').value = data.config.user_timezone || 'UTC';
             
             const cookieTextarea = document.getElementById('cookie_content');
             if (!cookieTextarea.disabled) {
@@ -33,10 +34,12 @@
             renderUserTable(allUsers);
             populatePublicUserDropdown(allUsers, data.config.public_user);
 
-            // CHANGE: Show the setup alert if the admin password is not set.
+            // CHANGE: Show the setup alert if the admin password is not set and it hasn't been ignored.
             const setupAlert = document.getElementById('setup-alert');
-            if (setupAlert && !authStatus.admin_password_set) {
+            if (setupAlert && !authStatus.admin_password_set && localStorage.getItem('hide_setup_alert') !== 'true') {
                 setupAlert.style.display = 'block';
+            } else if (setupAlert) {
+                setupAlert.style.display = 'none';
             }
 
         } catch (error) {
@@ -158,6 +161,14 @@
             });
         }
 
+        // CHANGE: Add event listener for the setup alert's close button.
+        const setupAlert = document.getElementById('setup-alert');
+        if (setupAlert) {
+            setupAlert.addEventListener('close.bs.alert', () => {
+                localStorage.setItem('hide_setup_alert', 'true');
+            });
+        }
+
         // User management event delegation
         document.getElementById('add-user-btn').addEventListener('click', () => openUserEditor());
         
@@ -220,6 +231,8 @@
                 userEditorModalInstance.hide();
                 // Refresh page if we just set the admin password for the first time
                 if (username === 'admin' && password) {
+                    // Also hide the alert permanently as it's been addressed.
+                    localStorage.setItem('hide_setup_alert', 'true');
                     window.location.reload();
                 } else {
                     populateSettings(); // Refresh the list

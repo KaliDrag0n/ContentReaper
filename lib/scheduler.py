@@ -6,6 +6,7 @@ import schedule
 import watchdog
 import os
 from datetime import datetime
+import pytz
 
 logger = logging.getLogger()
 
@@ -33,9 +34,10 @@ class Scheduler:
     Manages the scheduling and execution of automated Scythe reaping.
     Runs in its own thread to avoid blocking the main application.
     """
-    def __init__(self, scythe_manager, state_manager):
+    def __init__(self, scythe_manager, state_manager, config):
         self.scythe_manager = scythe_manager
         self.state_manager = state_manager
+        self.config = config
         self.stop_event = threading.Event()
         self.observer = None
         self._load_and_schedule_jobs()
@@ -49,28 +51,43 @@ class Scheduler:
         logger.info("Loading and scheduling automated Scythes...")
         scythes = self.scythe_manager.get_all()
         count = 0
+
+        try:
+            user_tz_str = self.config.get("user_timezone", "UTC")
+            user_tz = pytz.timezone(user_tz_str)
+        except pytz.UnknownTimeZoneError:
+            logger.error(f"Invalid timezone '{user_tz_str}' in config. Defaulting to UTC.")
+            user_tz = pytz.utc
+
         for scythe in scythes:
             schedule_info = scythe.get("schedule")
             if schedule_info and schedule_info.get("enabled"):
                 try:
                     interval = schedule_info.get("interval")
-                    at_time = schedule_info.get("time")
+                    at_time_user = schedule_info.get("time") # e.g., "14:30"
                     
+                    # Convert user's time to server's local time
+                    now_user_tz = datetime.now(user_tz)
+                    hour, minute = map(int, at_time_user.split(':'))
+                    user_time = now_user_tz.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                    server_time = user_time.astimezone(None) # Convert to system's local timezone
+                    at_time_server = server_time.strftime("%H:%M")
+
                     weekdays = schedule_info.get("weekdays", [])
 
                     if interval == "daily":
-                        schedule.every().day.at(at_time).do(self._reap_scythe, scythe_id=scythe.get("id"))
+                        schedule.every().day.at(at_time_server).do(self._reap_scythe, scythe_id=scythe.get("id"))
                         count += 1
                     elif interval == "weekly" and weekdays:
                         for day_index in weekdays:
                             job = None
-                            if day_index == 0: job = schedule.every().monday.at(at_time)
-                            elif day_index == 1: job = schedule.every().tuesday.at(at_time)
-                            elif day_index == 2: job = schedule.every().wednesday.at(at_time)
-                            elif day_index == 3: job = schedule.every().thursday.at(at_time)
-                            elif day_index == 4: job = schedule.every().friday.at(at_time)
-                            elif day_index == 5: job = schedule.every().saturday.at(at_time)
-                            elif day_index == 6: job = schedule.every().sunday.at(at_time)
+                            if day_index == 0: job = schedule.every().monday.at(at_time_server)
+                            elif day_index == 1: job = schedule.every().tuesday.at(at_time_server)
+                            elif day_index == 2: job = schedule.every().wednesday.at(at_time_server)
+                            elif day_index == 3: job = schedule.every().thursday.at(at_time_server)
+                            elif day_index == 4: job = schedule.every().friday.at(at_time_server)
+                            elif day_index == 5: job = schedule.every().saturday.at(at_time_server)
+                            elif day_index == 6: job = schedule.every().sunday.at(at_time_server)
                             
                             if job:
                                 job.do(self._reap_scythe, scythe_id=scythe.get("id"))
@@ -79,11 +96,9 @@ class Scheduler:
                 except Exception as e:
                     logger.error(f"Failed to schedule Scythe '{scythe.get('name')}': {e}")
         
-        # CHANGE: Corrected the call to schedule.next_run by adding parentheses.
-        # This treats it as a function, which resolves the AttributeError.
         next_run_datetime = schedule.next_run() if schedule.jobs else None
         next_run_time = next_run_datetime.strftime('%Y-%m-%d %H:%M:%S') if next_run_datetime else "Not scheduled"
-        logger.info(f"Successfully scheduled {count} Scythe(s). Next run at: {next_run_time}")
+        logger.info(f"Successfully scheduled {count} Scythe(s). Next run at (server time): {next_run_time}")
 
     def _reap_scythe(self, scythe_id):
         """
@@ -103,13 +118,10 @@ class Scheduler:
         job_to_reap = scythe["job_data"]
         job_to_reap["resolved_folder"] = job_to_reap.get("folder")
         
-        # CHANGE: Add notification without saving state immediately.
         self.state_manager.add_notification_to_history(
             f"Scythe '{scythe.get('name')}' was automatically reaped.",
             save=False
         )
-        # The following call to add_to_queue will trigger the state save,
-        # persisting both the new job and the notification in one go.
         self.state_manager.add_to_queue(job_to_reap)
         
 
@@ -118,7 +130,6 @@ class Scheduler:
         if WATCHDOG_AVAILABLE:
             event_handler = ScythesChangeHandler(self)
             self.observer = Observer()
-            # Ensure the path exists before scheduling
             scythes_dir = os.path.dirname(self.scythe_manager.scythes_file)
             if os.path.exists(scythes_dir):
                 self.observer.schedule(event_handler, path=scythes_dir, recursive=False)
@@ -131,10 +142,6 @@ class Scheduler:
 
         while not self.stop_event.is_set():
             schedule.run_pending()
-            # CHANGE: Sleep intelligently to reduce CPU usage.
-            # If jobs are scheduled, sleep until the next one is due. Otherwise, sleep for a minute.
-            # CHANGE: Corrected the call to schedule.idle_seconds by adding parentheses.
-            # This resolves the TypeError from the traceback.
             idle_seconds = schedule.idle_seconds()
             if idle_seconds is not None and idle_seconds > 0:
                 time.sleep(min(idle_seconds, 60))

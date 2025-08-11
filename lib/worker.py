@@ -162,7 +162,9 @@ def _generate_error_summary(log_path, return_code):
         
         for line in _read_file_in_reverse(log_path):
             if "ERROR:" in line or "WARNING:" in line:
-                cleaned_line = re.sub(r'^\[yt-dlp\]\s*', '', line).strip()
+                # CHANGE: Sanitize the line by removing control characters to prevent potential log injection.
+                safe_line = re.sub(r'[\x00-\x1f]', '', line)
+                cleaned_line = re.sub(r'^\[yt-dlp\]\s*', '', safe_line).strip()
                 if cleaned_line:
                     error_lines.append(cleaned_line)
                     if len(error_lines) >= 10:

@@ -9,12 +9,13 @@
 {# CHANGE: Removed the old header block as navigation is now handled in base.html #}
 
 {% block content %}
-<div class="alert alert-info" id="setup-alert" style="display: none;">
-    <h4 class="alert-heading">Welcome!</h4>
-    <p>To secure your application, please create an admin password. This will be required to change settings or perform sensitive actions in the future.</p>
+<div class="alert alert-warning alert-dismissible fade show" id="setup-alert" style="display: none;" role="alert">
+    <h4 class="alert-heading"><i class="bi bi-exclamation-triangle-fill"></i> Security Notice</h4>
+    <p>The admin account currently has no password set. For your security, especially if this server is accessible on a network, please set a strong password for the 'admin' user.</p>
+    <p class="mb-0">You can continue to use the application without a password, but all administrative features will be accessible to anyone who can reach this page.</p>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
 </div>
 
-<!-- General Settings Card -->
 <div class="card mb-4">
   <div class="card-header">General Settings</div>
   <div class="card-body" id="settings-form-body">
@@ -55,10 +56,18 @@
         <div class="col-md-6 mb-3">
             <label for="public_user" class="form-label">Public Access</label>
             <select class="form-select" id="public_user" name="public_user">
-                <!-- Options populated by JS -->
-            </select>
+                </select>
             <div class="form-text">Allow non-logged-in users to have the permissions of a specific account.</div>
         </div>
+      </div>
+      <div class="mb-3">
+        <label for="user_timezone" class="form-label">Your Timezone</label>
+        <select class="form-select" id="user_timezone" name="user_timezone">
+            {% for tz in timezones %}
+                <option value="{{ tz }}">{{ tz }}</option>
+            {% endfor %}
+        </select>
+        <div class="form-text">Used to ensure scheduled downloads run at the correct local time for you.</div>
       </div>
       <div class="mb-3">
         <label for="cookie_content" class="form-label">Cookies</label>
@@ -70,7 +79,6 @@
   </div>
 </div>
 
-<!-- NEW: User Management Card -->
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <span>User Management</span>
@@ -86,13 +94,11 @@
                 </tr>
             </thead>
             <tbody id="user-list-table">
-                <!-- User rows will be populated by JS -->
-            </tbody>
+                </tbody>
         </table>
     </div>
 </div>
 
-<!-- Version Information Card -->
 <div class="card mt-4">
     <div class="card-header d-flex justify-content-between align-items-center">
         <span>Version Information</span>
@@ -117,7 +123,6 @@
     </div>
 </div>
 
-<!-- Danger Zone Card -->
 <div class="card mt-4 border-danger">
     <div class="card-header bg-danger text-white"><i class="bi bi-exclamation-triangle-fill"></i> Danger Zone</div>
     <div class="card-body">
@@ -127,7 +132,6 @@
     </div>
 </div>
 
-<!-- NEW: User Editor Modal -->
 <div class="modal fade" id="userEditorModal" tabindex="-1">
     <div class="modal-dialog">
       <div class="modal-content">

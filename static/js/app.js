@@ -104,6 +104,8 @@
             const res = await fetch(endpoint, fetchOptions);
 
             if (res.status === 401 || res.status === 403) {
+                // CHANGE: Show a toast notification to provide context for the login modal.
+                showToast('Your session may have expired. Please log in again.', 'Authentication Required', 'info');
                 requestToRetry = { endpoint, options };
                 showLoginModal();
                 const errorData = await res.json().catch(() => ({ error: "Authentication required." }));

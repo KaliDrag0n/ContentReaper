@@ -9,12 +9,16 @@ import stat
 import tarfile
 
 # --- Constants ---
+# CHANGE: Added fallback URLs for known-good versions as a backup.
 FFMPEG_RELEASES = {
     "win64": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
     "linux64": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz",
     "macos64": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-macos64-gpl.zip"
 }
-YT_DLP_URL_TEMPLATE = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp{ext}"
+FFMPEG_FALLBACK_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2024-07-21-12-38/ffmpeg-n6.1.1-13-g753e632512-win64-gpl.zip" # Example fallback
+
+YT_DLP_API_URL = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
+YT_DLP_FALLBACK_URL_TEMPLATE = "https://github.com/yt-dlp/yt-dlp/releases/download/2023.12.30/yt-dlp{ext}"
 
 
 # --- Helper Functions ---
@@ -134,8 +138,23 @@ def ensure_yt_dlp(bin_dir, platform_info):
         return bundled_path
 
     print("No bundled version found. Downloading...")
-    url = YT_DLP_URL_TEMPLATE.format(ext=ext)
-    if download_file(url, bundled_path):
+    url = None
+    try:
+        response = requests.get(YT_DLP_API_URL, timeout=10)
+        response.raise_for_status()
+        assets = response.json().get('assets', [])
+        for asset in assets:
+            if asset['name'] == f'yt-dlp{ext}':
+                url = asset['browser_download_url']
+                break
+        if not url:
+             raise ValueError("Could not find a suitable asset in the latest release.")
+    except (requests.RequestException, ValueError) as e:
+        print(f"WARNING: Could not fetch latest yt-dlp release from GitHub API: {e}")
+        print("Falling back to a known-good version.")
+        url = YT_DLP_FALLBACK_URL_TEMPLATE.format(ext=ext)
+
+    if url and download_file(url, bundled_path):
         if platform_info != 'win64':
             make_executable(bundled_path)
         return bundled_path
@@ -171,7 +190,10 @@ def ensure_ffmpeg(bin_dir, platform_info):
     
     try:
         if not download_file(url, temp_archive_path):
-            return None
+            # CHANGE: Add fallback for ffmpeg download
+            print("Primary ffmpeg download failed. Attempting fallback...")
+            if not download_file(FFMPEG_FALLBACK_URL, temp_archive_path):
+                return None
 
         if os.path.exists(temp_extract_dir):
             shutil.rmtree(temp_extract_dir)

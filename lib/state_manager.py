@@ -47,12 +47,12 @@ class StateManager:
         while time.time() - start_time < timeout:
             try:
                 if os.path.exists(self.lock_file):
-                    # CHANGE: Increased stale lock timeout from 60s to 300s (5 minutes).
-                    # This is much safer for slow systems (like a Raspberry Pi)
-                    # and prevents a legitimate long-running save from being killed.
+                    # CHANGE: Reduced stale lock timeout from 300s to 60s.
+                    # This is safer for preventing indefinite hangs while still being
+                    # generous for slow systems like a Raspberry Pi.
                     lock_age = time.time() - os.path.getmtime(self.lock_file)
-                    if lock_age > 300:
-                        logger.warning(f"Found stale lock file older than 300s: {self.lock_file}. Removing it.")
+                    if lock_age > 60:
+                        logger.warning(f"Found stale lock file older than 60s: {self.lock_file}. Removing it.")
                         self._release_lock()
                         time.sleep(random.uniform(0.05, 0.2)) # Brief random sleep to avoid race condition
                 

@@ -70,7 +70,6 @@ scythe_manager = None
 user_manager = None
 scheduler = None
 SCHEDULER_THREAD = None
-# CHANGE: Add socketio global variable
 socketio = None
 STATE_EMITTER_THREAD = None
 update_status = {"update_available": False, "latest_version": "0.0.0", "release_url": "", "release_notes": ""}
@@ -79,6 +78,7 @@ STOP_EVENT = threading.Event()
 YT_DLP_PATH = None
 FFMPEG_PATH = None
 CONFIG = {}
+first_run_lock = threading.Lock()
 
 def print_banner():
     """Prints the stylized startup banner to the console."""
@@ -108,8 +108,7 @@ def print_banner():
 
 # --- Import Flask and related libraries ---
 try:
-    # CHANGE: Add flask_socketio and eventlet imports
-    import flask, waitress, requests, schedule, eventlet
+    import flask, waitress, requests, schedule, eventlet, pytz
     from werkzeug.security import generate_password_hash, check_password_hash
     from flask_wtf.csrf import CSRFProtect, generate_csrf
     from flask_socketio import SocketIO
@@ -248,7 +247,6 @@ def page_permission_required(permission):
         return decorated_function
     return decorator
 
-# CHANGE: Replaced is_safe_path and secure_join with a single, more secure function.
 def is_safe_path(basedir, path_to_check, allow_file=False):
     """
     Securely checks if path_to_check is within basedir.
@@ -257,19 +255,14 @@ def is_safe_path(basedir, path_to_check, allow_file=False):
     - Prevents directory traversal attacks (e.g., ../).
     """
     try:
-        # Resolve the real, absolute paths
         real_basedir = os.path.realpath(basedir)
         real_path_to_check = os.path.realpath(os.path.join(basedir, path_to_check))
     except OSError:
-        # Path does not exist or is invalid
         return False
     
-    # Check if the path is a file or directory as required
     if not allow_file and not os.path.isdir(real_path_to_check):
         return False
         
-    # The core security check: use commonpath to see if the resolved
-    # path_to_check is genuinely inside the basedir.
     return os.path.commonpath([real_basedir, real_path_to_check]) == real_basedir
 
 
@@ -287,7 +280,8 @@ def load_config():
         "server_host": "0.0.0.0",
         "server_port": 8080,
         "log_level": "INFO",
-        "public_user": None
+        "public_user": None,
+        "user_timezone": "UTC"
     }
     
     CONFIG = defaults.copy()
@@ -357,10 +351,6 @@ def save_config():
     except Exception as e:
         logger.error(f"Failed to save config: {e}")
 
-# CHANGE: Removed cleanup_stale_processes_and_files. Process cleanup is now handled
-# more safely within the worker thread by tracking PIDs.
-# def cleanup_stale_processes_and_files(temp_dir): ...
-
 def _run_update_check():
     global update_status
     try:
@@ -379,15 +369,11 @@ def scheduled_update_check():
         _run_update_check()
         STOP_EVENT.wait(3600)
 
-# CHANGE: Simplified shutdown_server. It now only signals other threads to stop
-# and requests the web server to shut down. The complex cleanup is handled
-# in the main execution block's finally clause.
 def shutdown_server():
     """Triggers a graceful shutdown of the application."""
     logger.info("Shutdown initiated. Signaling threads and server to stop.")
     STOP_EVENT.set()
     if socketio:
-        # This will stop the eventlet server gracefully.
         socketio.stop()
 
 def run_update_script():
@@ -395,32 +381,20 @@ def run_update_script():
     Launches the external updater script in a new process and then shuts down.
     This is now a universal, cross-platform function.
     """
-    time.sleep(2)  # Give the server a moment to respond to the API request
+    time.sleep(2)
 
-    # Path to the new universal updater script
     updater_script_path = os.path.join(APP_ROOT, 'lib', 'updater.py')
-    
-    # The command to execute the updater. We use sys.executable to ensure
-    # we're using the same Python interpreter (e.g., from the venv).
     command = [sys.executable, updater_script_path]
     
     logger.info(f"Starting update process with command: {' '.join(command)}")
     
-    # Use Popen to run the updater in a new, detached process.
-    # This allows the current script to exit while the updater continues to run.
     if platform.system() == "Windows":
-        # On Windows, CREATE_NEW_CONSOLE ensures it runs in a new window
-        # and is fully detached from the parent process.
         subprocess.Popen(command, creationflags=subprocess.CREATE_NEW_CONSOLE)
     else:
-        # On Linux/macOS, a simple Popen is sufficient. The new process
-        # will not be a child of this script once this script exits.
         subprocess.Popen(command)
 
-    # Gracefully shutdown the current server to release the port
     shutdown_server()
 
-# CHANGE: New background thread to emit state updates via WebSocket
 def state_emitter():
     """
     Monitors the state manager for changes and emits updates to clients.
@@ -447,12 +421,28 @@ def state_emitter():
                 state = get_current_state()
                 socketio.emit('state_update', state)
 
-            socketio.sleep(0.5) # Use socketio.sleep for cooperative multitasking
+            socketio.sleep(0.5)
         except Exception as e:
             logger.error(f"Error in state_emitter thread: {e}")
             socketio.sleep(5)
 
 # --- Application Factory ---
+
+def get_secret_key():
+    """
+    Loads the secret key from a file, or creates one if it doesn't exist.
+    This ensures user sessions are persistent across server restarts.
+    """
+    key_file = os.path.join(DATA_DIR, "secret_key.json")
+    try:
+        with open(key_file, 'r') as f:
+            return json.load(f)["secret_key"]
+    except (FileNotFoundError, json.JSONDecodeError):
+        logger.info("Secret key file not found or invalid. Generating a new one.")
+        new_key = secrets.token_hex(24)
+        with open(key_file, 'w') as f:
+            json.dump({"secret_key": new_key}, f)
+        return new_key
 
 def create_app():
     global state_manager, scythe_manager, user_manager, scheduler, WORKER_THREAD, SCHEDULER_THREAD, YT_DLP_PATH, FFMPEG_PATH, socketio, STATE_EMITTER_THREAD
@@ -466,8 +456,6 @@ def create_app():
 
     load_config()
     
-    # CHANGE: Removed call to cleanup_stale_processes_and_files.
-    # The worker now manages its own child processes reliably.
     logger.info("--- [1/4] Initializing Dependency Manager ---")
     YT_DLP_PATH, FFMPEG_PATH = dm.ensure_dependencies(APP_ROOT)
     if not YT_DLP_PATH or not FFMPEG_PATH:
@@ -484,10 +472,9 @@ def create_app():
 
     logger.info("--- [3/4] Initializing Flask Application ---")
     app = Flask(__name__)
-    app.secret_key = secrets.token_hex(16)
+    app.secret_key = get_secret_key()
     app.config['WTF_CSRF_HEADERS'] = ['X-CSRF-Token']
     csrf = CSRFProtect(app)
-    # CHANGE: Initialize SocketIO
     socketio = SocketIO(app, async_mode='eventlet')
 
     @app.before_request
@@ -495,13 +482,12 @@ def create_app():
         if session.get('manual_login'):
             return
         
-        admin_user = user_manager.get_user('admin')
-        if admin_user and not admin_user.get('password_hash'):
-            session['role'] = 'admin'
-            session['manual_login'] = False
+        with first_run_lock:
+            admin_user = user_manager.get_user('admin')
+            if admin_user and not admin_user.get('password_hash'):
+                session['role'] = 'admin'
+                session['manual_login'] = False
         
-        # CHANGE: Moved public user logic here from the auth_status GET route.
-        # This is a better place to modify the session.
         public_user = CONFIG.get('public_user')
         if public_user and not session.get('role'):
             user_data = user_manager.get_user(public_user)
@@ -527,15 +513,13 @@ def create_app():
     threading.Thread(target=scheduled_update_check, daemon=True).start()
     
     cookie_file = os.path.join(DATA_DIR, "cookies.txt")
-    # CHANGE: Fixed the NameError by using the correct variable name 'cookie_file'.
     WORKER_THREAD = threading.Thread(target=worker.yt_dlp_worker, args=(state_manager, CONFIG, log_dir, cookie_file, YT_DLP_PATH, FFMPEG_PATH, STOP_EVENT))
     WORKER_THREAD.start()
     
-    scheduler = sched.Scheduler(scythe_manager, state_manager)
+    scheduler = sched.Scheduler(scythe_manager, state_manager, CONFIG)
     SCHEDULER_THREAD = threading.Thread(target=scheduler.run_pending)
     SCHEDULER_THREAD.start()
 
-    # CHANGE: Start the new state emitter thread
     STATE_EMITTER_THREAD = socketio.start_background_task(target=state_emitter)
     
     logger.info("--- Application Initialized Successfully ---")
@@ -617,16 +601,9 @@ def register_routes(app):
             csrf_token=generate_csrf
         )
 
-    # CHANGE: Remove the old /api/status polling route
-    # @app.route("/api/status")
-    # def status_poll_route():
-    #     return jsonify(get_current_state())
-
-    # CHANGE: Add SocketIO event handlers
     @socketio.on('connect')
     def handle_connect():
         logger.info(f"Client connected: {request.sid}")
-        # Send the initial state to the newly connected client
         socketio.emit('state_update', get_current_state(), room=request.sid)
 
     @socketio.on('disconnect')
@@ -651,7 +628,8 @@ def register_routes(app):
     def settings_route():
         with state_manager._lock:
             current_update_status = update_status.copy()
-        return render_template("settings.html", update_info=current_update_status)
+        timezones = pytz.common_timezones
+        return render_template("settings.html", update_info=current_update_status, timezones=timezones)
     
     @app.route("/logs")
     @page_permission_required('admin')
@@ -674,8 +652,7 @@ def register_routes(app):
             for url in urls:
                 state_manager.add_to_queue({**job_base, "url": url})
             return jsonify({
-                "message": f"Added {len(urls)} job(s) to the queue.",
-                "newState": get_current_state()
+                "message": f"Added {len(urls)} job(s) to the queue."
             })
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -699,8 +676,7 @@ def register_routes(app):
         
         state_manager.add_to_queue(job_to_continue)
         return jsonify({
-            "message": f"Re-queued job for URL: {job_to_continue['url']}",
-            "newState": get_current_state()
+            "message": f"Re-queued job for URL: {job_to_continue['url']}"
         })
 
     @app.route('/api/auth/status')
@@ -710,9 +686,6 @@ def register_routes(app):
         
         role = session.get('role')
         manually_logged_in = session.get('manual_login', False)
-        
-        # CHANGE: Removed logic that modifies the session from this GET request.
-        # This logic was moved to the `apply_unsecured_admin_session` hook.
         
         permissions = {}
         if role and role != 'admin':
@@ -769,6 +742,7 @@ def register_routes(app):
             CONFIG["log_level"] = data.get("log_level", CONFIG["log_level"]).strip().upper()
             CONFIG["server_host"] = data.get("server_host", CONFIG["server_host"]).strip()
             CONFIG["public_user"] = data.get("public_user") if data.get("public_user") != "None" else None
+            CONFIG["user_timezone"] = data.get("user_timezone", "UTC")
             try:
                 CONFIG["server_port"] = int(data.get("server_port", CONFIG["server_port"]))
             except (ValueError, TypeError):
@@ -848,18 +822,17 @@ def register_routes(app):
     @permission_required('can_add_to_queue')
     def clear_queue_route():
         state_manager.clear_queue()
-        return jsonify({"message": "Queue cleared.", "newState": get_current_state()})
+        return jsonify({"message": "Queue cleared."})
 
     @app.route('/history/clear', methods=['POST'])
     @permission_required('admin')
     def clear_history_route():
         log_dir = os.path.join(DATA_DIR, "logs")
         for path in state_manager.clear_history():
-            # CHANGE: Use the new, more secure is_safe_path function
             if is_safe_path(log_dir, os.path.basename(path), allow_file=True):
                 try: os.remove(os.path.join(log_dir, os.path.basename(path)))
                 except Exception as e: logger.error(f"Could not delete log file {path}: {e}")
-        return jsonify({"message": "History cleared.", "newState": get_current_state()})
+        return jsonify({"message": "History cleared."})
 
     @app.route("/api/delete_item", methods=['POST'])
     @permission_required('can_delete_files')
@@ -871,7 +844,6 @@ def register_routes(app):
         deleted_count, errors = 0, []
 
         for item_path in paths_to_delete:
-            # CHANGE: Use the new, more secure is_safe_path function
             if not is_safe_path(base_download_dir, item_path, allow_file=True):
                 errors.append(f"Skipping invalid or non-existent path: {item_path}")
                 continue
@@ -912,7 +884,7 @@ def register_routes(app):
     @permission_required('can_add_to_queue')
     def delete_from_queue_route(job_id):
         state_manager.delete_from_queue(job_id)
-        return jsonify({"message": "Queue item removed.", "newState": get_current_state()})
+        return jsonify({"message": "Queue item removed."})
 
     @app.route('/queue/reorder', methods=['POST'])
     @permission_required('can_add_to_queue')
@@ -923,30 +895,29 @@ def register_routes(app):
         except (ValueError, TypeError):
             return jsonify({"error": "Invalid job IDs provided."}), 400
         state_manager.reorder_queue(ordered_ids)
-        return jsonify({"message": "Queue reordered.", "newState": get_current_state()})
+        return jsonify({"message": "Queue reordered."})
 
     @app.route('/queue/pause', methods=['POST'])
     @permission_required('can_add_to_queue')
     def pause_queue_route():
         state_manager.pause_queue()
-        return jsonify({"message": "Queue paused.", "newState": get_current_state()})
+        return jsonify({"message": "Queue paused."})
 
     @app.route('/queue/resume', methods=['POST'])
     @permission_required('can_add_to_queue')
     def resume_queue_route():
         state_manager.resume_queue()
-        return jsonify({"message": "Queue resumed.", "newState": get_current_state()})
+        return jsonify({"message": "Queue resumed."})
 
     @app.route('/history/delete/<int:log_id>', methods=['POST'])
     @permission_required('admin')
     def delete_from_history_route(log_id):
         log_dir = os.path.join(DATA_DIR, "logs")
         path_to_delete = state_manager.delete_from_history(log_id)
-        # CHANGE: Use the new, more secure is_safe_path function
         if path_to_delete and is_safe_path(log_dir, os.path.basename(path_to_delete), allow_file=True):
             try: os.remove(path_to_delete)
             except Exception as e: logger.error(f"Could not delete log file {path_to_delete}: {e}")
-        return jsonify({"message": "History item deleted.", "newState": get_current_state()})
+        return jsonify({"message": "History item deleted."})
 
     @app.route('/api/history/item/<int:log_id>')
     def get_history_item_route(log_id):
@@ -959,7 +930,6 @@ def register_routes(app):
             log_path = item.get("log_path")
             log_content = "Log not found on disk or could not be read."
             
-            # CHANGE: Use the new, more secure is_safe_path function
             if log_path and log_path != "LOG_SAVE_ERROR" and is_safe_path(log_dir, os.path.basename(log_path), allow_file=True):
                 try:
                     with open(log_path, 'r', encoding='utf-8') as f:
@@ -978,7 +948,6 @@ def register_routes(app):
         log_dir = os.path.join(DATA_DIR, "logs")
         log_path = state_manager.current_download.get("log_path")
         log_content = "No active download or log path is not available."
-        # CHANGE: Use the new, more secure is_safe_path function
         if log_path and is_safe_path(log_dir, os.path.basename(log_path), allow_file=True):
             try:
                 with open(log_path, 'r', encoding='utf-8') as f: log_content = f.read()
@@ -1005,7 +974,7 @@ def register_routes(app):
             
             result, message = scythe_manager.add(scythe_data)
             if result:
-                return jsonify({"message": message, "newState": get_current_state()}), 201
+                return jsonify({"message": message}), 201
             else:
                 return jsonify({"error": message}), 409
 
@@ -1014,7 +983,7 @@ def register_routes(app):
             result, message = scythe_manager.add(scythe_data)
             if result:
                 scheduler._load_and_schedule_jobs()
-                return jsonify({"message": message, "newState": get_current_state()}), 201
+                return jsonify({"message": message}), 201
             else:
                 return jsonify({"error": message}), 409
         
@@ -1029,7 +998,7 @@ def register_routes(app):
         
         if scythe_manager.update(scythe_id, data):
             scheduler._load_and_schedule_jobs()
-            return jsonify({"message": "Scythe updated.", "newState": get_current_state()})
+            return jsonify({"message": "Scythe updated."})
         return jsonify({"error": "Scythe not found."}), 404
 
     @app.route('/api/scythes/<int:scythe_id>', methods=['DELETE'])
@@ -1037,7 +1006,7 @@ def register_routes(app):
     def delete_scythe_route(scythe_id):
         if scythe_manager.delete(scythe_id):
             scheduler._load_and_schedule_jobs()
-            return jsonify({"message": "Scythe deleted.", "newState": get_current_state()})
+            return jsonify({"message": "Scythe deleted."})
         return jsonify({"error": "Scythe not found."}), 404
 
     @app.route('/api/scythes/<int:scythe_id>/reap', methods=['POST'])
@@ -1051,14 +1020,13 @@ def register_routes(app):
         job_to_reap["resolved_folder"] = job_to_reap.get("folder")
 
         state_manager.add_to_queue(job_to_reap)
-        return jsonify({"message": f"Added '{scythe.get('name')}' to queue.", "newState": get_current_state()})
+        return jsonify({"message": f"Added '{scythe.get('name')}' to queue."})
 
     @app.route("/api/files")
     def list_files_route():
         base_download_dir = CONFIG.get("download_dir")
         req_path = request.args.get('path', '')
         
-        # CHANGE: Use the new, more secure is_safe_path function
         if not is_safe_path(base_download_dir, req_path):
             return jsonify({"error": "Access Denied"}), 403
         
@@ -1091,7 +1059,6 @@ def register_routes(app):
         
         safe_full_paths = []
         for p in paths:
-            # CHANGE: Use the new, more secure is_safe_path function
             if is_safe_path(base_download_dir, p, allow_file=True):
                 safe_full_paths.append(os.path.join(base_download_dir, p))
         
@@ -1141,7 +1108,6 @@ def register_routes(app):
             
         full_path = os.path.join(DATA_DIR, filename)
         
-        # CHANGE: Use the new, more secure is_safe_path function
         if not is_safe_path(DATA_DIR, filename, allow_file=True):
             return jsonify({"error": "Access denied."}), 403
             
@@ -1170,8 +1136,6 @@ if __name__ == "__main__":
         banner_logger.info("Press Ctrl+C in this window to stop the server.")
         banner_logger.info("\n" + "="*(70 + len(f" Starting ContentReaper v{APP_VERSION} ")) + "\n")
 
-        # CHANGE: This is the primary server execution block.
-        # The finally clause now contains the definitive, reliable shutdown sequence.
         try:
             socketio.run(app, host=host, port=port)
         except (KeyboardInterrupt, SystemExit):
@@ -1183,7 +1147,6 @@ if __name__ == "__main__":
             if scheduler:
                 scheduler.stop()
             
-            # Wake up the worker thread so it can exit
             if state_manager:
                 state_manager.queue.put(None)
             

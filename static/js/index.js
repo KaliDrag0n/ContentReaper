@@ -9,8 +9,6 @@
 
     // --- STATE & CACHED ELEMENTS ---
     let logModalInstance, updateModalInstance, scytheModalInstance;
-    // CHANGE: Removed statusPollTimeout
-    // let statusPollTimeout;
     let urlInputTimeout;
     let liveLogPollInterval = null;
     let sortableInstance = null;
@@ -279,16 +277,17 @@
                     <small class="text-muted word-break">${item.folder ? `Folder: ${item.folder}` : `URL: ${item.url}`}</small>
                 </div>
                 <div class="btn-group ms-2">
-                    <button class="btn btn-sm btn-outline-primary history-action-btn" data-action="scythe" title="Add to Scythes">
+                    <button class="btn btn-sm btn-outline-primary history-action-btn" data-action="scythe" title="Add to Scythes" aria-label="Add to Scythes">
                         <i class="bi bi-plus-lg"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-success history-action-btn" data-action="requeue" title="${requeueButtonTitle}">
+                    <button class="btn btn-sm btn-outline-success history-action-btn" data-action="requeue" title="${requeueButtonTitle}" aria-label="${requeueButtonTitle}">
                         <i class="bi ${requeueButtonIcon}"></i>
+                        <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
                     </button>
-                    <button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log">
+                    <button class="btn btn-sm btn-outline-info history-action-btn" data-action="log" title="View Log" aria-label="View Log">
                         <i class="bi bi-file-text"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete">
+                    <button class="btn btn-sm btn-outline-danger history-action-btn" data-action="delete" title="Delete" aria-label="Delete">
                         <i class="bi bi-trash-fill"></i>
                     </button>
                 </div>
@@ -358,13 +357,13 @@
                     <small class="text-muted word-break">${jobData.url || "No URL"}</small>
                 </div>
                 <div class="btn-group ms-2">
-                    <button class="btn btn-sm btn-success scythe-action-btn" data-action="reap" title="Reap Now">
+                    <button class="btn btn-sm btn-success scythe-action-btn" data-action="reap" title="Reap Now" aria-label="Reap Now">
                         <i class="bi bi-scissors scythe-icon"></i>
                     </button>
-                    <button class="btn btn-sm btn-secondary scythe-action-btn" data-action="edit" title="Edit">
+                    <button class="btn btn-sm btn-secondary scythe-action-btn" data-action="edit" title="Edit" aria-label="Edit Scythe">
                         <i class="bi bi-pencil-fill"></i>
                     </button>
-                    <button class="btn btn-sm btn-danger scythe-action-btn" data-action="delete" title="Delete">
+                    <button class="btn btn-sm btn-danger scythe-action-btn" data-action="delete" title="Delete" aria-label="Delete Scythe">
                         <i class="bi bi-trash-fill"></i>
                     </button>
                 </div>
@@ -398,8 +397,6 @@
         renderPauseState(newState.is_paused);
         localState = newState;
     }
-
-    // CHANGE: Removed the pollStatus function entirely.
 
     const viewStaticLog = async (logId) => {
         try {
@@ -534,7 +531,6 @@
 
     // --- INITIALIZATION ---
     const initializePage = () => {
-        // CHANGE: Listen for the custom state-update event from app.js
         document.addEventListener('state-update', (e) => {
             renderState(e.detail);
         });
@@ -560,8 +556,6 @@
                 this.reset();
                 switchMode(savedMode);
                 handleUrlInput(this.querySelector('textarea[name="urls"]'));
-                // CHANGE: No longer need to call renderState here, the WebSocket will push the update.
-                // renderState(data.newState);
             } catch(error) { 
                 if (error.message !== "AUTH_REQUIRED") console.error("Failed to add job:", error);
             } finally {
@@ -621,6 +615,8 @@
                     });
             } else if (action === 'requeue') {
                 actionBtn.disabled = true;
+                actionBtn.querySelector('.spinner-border').classList.remove('d-none');
+                actionBtn.querySelector('i').classList.add('d-none');
                 window.apiRequest(window.API.queueContinue, { 
                     method: 'POST', 
                     body: JSON.stringify({ log_id: logId }) 
@@ -629,7 +625,11 @@
                     window.showToast(data.message, 'Success', 'success');
                 })
                 .catch(err => console.error(err))
-                .finally(() => actionBtn.disabled = false);
+                .finally(() => {
+                    actionBtn.disabled = false;
+                    actionBtn.querySelector('.spinner-border').classList.add('d-none');
+                    actionBtn.querySelector('i').classList.remove('d-none');
+                });
             } else if (action === 'scythe') {
                 actionBtn.disabled = true;
                 window.apiRequest(window.API.scythes, {
@@ -668,7 +668,6 @@
                 if (scythe) openScytheEditor(scythe);
             } else if (action === 'reap') {
                 actionBtn.disabled = true;
-                // CHANGE: Add visual feedback for reaping a scythe.
                 li.classList.add('reaping');
                 setTimeout(() => li.classList.remove('reaping'), 1500);
 
