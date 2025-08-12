@@ -62,7 +62,7 @@ banner_logger.propagate = False
 # --- App Constants ---
 APP_VERSION = "4.6.4"
 APP_NAME = "ContentReaper"
-GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
+GITHUB_REPO_SLUG = "KaliDrag0n/ContentReaper"
 
 # --- Global Variables (will be initialized in create_app) ---
 state_manager = None
