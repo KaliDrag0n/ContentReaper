@@ -7,7 +7,7 @@ import zipfile
 import shutil
 import io
 
-GITHUB_REPO_SLUG = "KaliDrag0n/Downloader-Web-UI"
+GITHUB_REPO_SLUG = "KaliDrag0n/ContentReaper"
 
 def update_via_git(project_root):
     """Performs an update using git commands."""

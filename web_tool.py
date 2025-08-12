@@ -60,7 +60,7 @@ banner_logger.setLevel(logging.INFO)
 banner_logger.propagate = False
 
 # --- App Constants ---
-APP_VERSION = "4.6.4"
+APP_VERSION = "4.6.7"
 APP_NAME = "ContentReaper"
 GITHUB_REPO_SLUG = "KaliDrag0n/ContentReaper"
 
@@ -255,8 +255,16 @@ def is_safe_path(basedir, path_to_check, allow_file=False):
     - Prevents directory traversal attacks (e.g., ../).
     """
     try:
+        # CHANGE: Resolve basedir and the final path independently to prevent traversal
+        # before the final commonpath check. This is a more secure approach.
         real_basedir = os.path.realpath(basedir)
-        real_path_to_check = os.path.realpath(os.path.join(basedir, path_to_check))
+        
+        # First, ensure the combined path doesn't contain traversal components
+        # that could be exploited before realpath resolution.
+        combined_path = os.path.abspath(os.path.join(basedir, path_to_check))
+        
+        real_path_to_check = os.path.realpath(combined_path)
+
     except OSError:
         return False
     

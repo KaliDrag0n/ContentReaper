@@ -126,7 +126,9 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
     if mode == 'music': cmd.extend(_get_music_args(job, is_playlist))
     elif mode == 'video': cmd.extend(_get_video_args(job))
     elif mode == 'clip': cmd.extend(_get_clip_args(job))
-    elif mode == 'custom': cmd.extend(shlex.split(job.get('custom_args', '')))
+    elif mode == 'custom':
+        custom_args_str = job.get('custom_args', '')
+        cmd.extend(custom_args_str.split())
     
     # Output and progress settings
     cmd.extend(['--progress', '--progress-template', '%(progress)j', '--print-json'])
@@ -160,6 +162,7 @@ def _generate_error_summary(log_path, return_code):
         if not os.path.exists(log_path):
             return "Log file was not created."
         
+        # CHANGE: Use the more memory-efficient reverse reader generator.
         for line in _read_file_in_reverse(log_path):
             if "ERROR:" in line or "WARNING:" in line:
                 # CHANGE: Sanitize the line by removing control characters to prevent potential log injection.
