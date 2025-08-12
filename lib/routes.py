@@ -72,7 +72,9 @@ def is_safe_path(basedir, path_to_check, allow_file=False):
         return False
     
     if not allow_file and not os.path.isdir(real_path_to_check):
-        return False
+        # If we allow files, we can't fail here. The final check will confirm it's within the basedir.
+        if not allow_file:
+            return False
         
     return os.path.commonpath([real_basedir, real_path_to_check]) == real_basedir
 
@@ -196,7 +198,7 @@ def register_routes(app):
         if not data or "log_id" not in data: return jsonify({"error": "Invalid request. Missing log_id."}), 400
         
         history_item = g.state_manager.get_history_item_by_log_id(data["log_id"])
-        if not history_item or "job_data" not in history_item: return jsonify({"error": "Could not find original job data."}), 404
+        if not history_item or not history_item.get("job_data"): return jsonify({"error": "Could not find original job data."}), 404
             
         job_to_continue = history_item["job_data"]
         job_to_continue["resolved_folder"] = history_item.get("folder")
@@ -245,9 +247,14 @@ def register_routes(app):
     def clear_history_route():
         log_dir = os.path.join(g.DATA_DIR, "logs")
         for path in g.state_manager.clear_history():
-            if is_safe_path(log_dir, os.path.basename(path), allow_file=True):
-                try: os.remove(os.path.join(log_dir, os.path.basename(path)))
-                except Exception as e: logger.error(f"Could not delete log file {path}: {e}")
+            # CHANGE: Add safeguard to only attempt deletion on valid file paths
+            if path and path not in ["LOG_SAVE_ERROR", "No log generated."]:
+                if is_safe_path(log_dir, os.path.basename(path), allow_file=True):
+                    try: 
+                        full_path = os.path.join(log_dir, os.path.basename(path))
+                        if os.path.exists(full_path):
+                            os.remove(full_path)
+                    except Exception as e: logger.error(f"Could not delete log file {path}: {e}")
         return jsonify({"message": "History cleared."})
 
     @app.route('/history/delete/<int:log_id>', methods=['POST'])
@@ -255,9 +262,13 @@ def register_routes(app):
     def delete_from_history_route(log_id):
         log_dir = os.path.join(g.DATA_DIR, "logs")
         path_to_delete = g.state_manager.delete_from_history(log_id)
-        if path_to_delete and is_safe_path(log_dir, os.path.basename(path_to_delete), allow_file=True):
-            try: os.remove(path_to_delete)
-            except Exception as e: logger.error(f"Could not delete log file {path_to_delete}: {e}")
+        # CHANGE: Add safeguard to only attempt deletion on valid file paths
+        if path_to_delete and path_to_delete not in ["LOG_SAVE_ERROR", "No log generated."]:
+            if is_safe_path(log_dir, os.path.basename(path_to_delete), allow_file=True):
+                try: 
+                    if os.path.exists(path_to_delete):
+                        os.remove(path_to_delete)
+                except Exception as e: logger.error(f"Could not delete log file {path_to_delete}: {e}")
         return jsonify({"message": "History item deleted."})
 
     @app.route('/api/history/item/<int:log_id>')
@@ -270,12 +281,13 @@ def register_routes(app):
             log_path = item.get("log_path")
             log_content = "Log not found or could not be read."
             
-            if log_path and log_path != "LOG_SAVE_ERROR" and is_safe_path(log_dir, os.path.basename(log_path), allow_file=True):
-                try:
-                    with open(log_path, 'r', encoding='utf-8') as f: log_content = f.read()
-                except Exception as e: log_content = f"ERROR: Could not read log file: {e}"
-            elif log_path == "LOG_SAVE_ERROR":
-                log_content = "There was an error saving the log file."
+            if log_path and log_path not in ["LOG_SAVE_ERROR", "No log generated."]:
+                if is_safe_path(log_dir, os.path.basename(log_path), allow_file=True):
+                    try:
+                        with open(log_path, 'r', encoding='utf-8') as f: log_content = f.read()
+                    except Exception as e: log_content = f"ERROR: Could not read log file: {e}"
+            elif log_path:
+                log_content = "There was an error saving or generating the log file for this job."
             
             item['log_content'] = log_content
         return jsonify(item)
@@ -289,7 +301,7 @@ def register_routes(app):
 
         if log_id := data.get("log_id"):
             history_item = g.state_manager.get_history_item_by_log_id(log_id)
-            if not history_item or "job_data" not in history_item: return jsonify({"error": "Could not find original job data."}), 404
+            if not history_item or not history_item.get("job_data"): return jsonify({"error": "Could not find original job data."}), 404
             scythe_data = {"name": history_item.get("title", "Untitled"), "job_data": history_item["job_data"]}
             scythe_data["job_data"]["resolved_folder"] = history_item.get("folder")
         elif (job_data := data.get("job_data")) and (name := data.get("name")):

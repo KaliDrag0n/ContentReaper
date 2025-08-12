@@ -3,31 +3,15 @@ import threading
 import time
 import logging
 import schedule
-import watchdog
 import os
 from datetime import datetime
 import pytz
+from . import app_globals as g # Import globals
 
 logger = logging.getLogger()
 
-try:
-    from watchdog.observers import Observer
-    from watchdog.events import FileSystemEventHandler
-    WATCHDOG_AVAILABLE = True
-except ImportError:
-    WATCHDOG_AVAILABLE = False
-
-class ScythesChangeHandler(FileSystemEventHandler):
-    def __init__(self, scheduler):
-        self.scheduler = scheduler
-        self.last_triggered = 0
-
-    def on_modified(self, event):
-        if "scythes.json" in event.src_path:
-            if time.time() - self.last_triggered > 5:
-                logger.info("Scythes file changed. Reloading schedule...")
-                self.scheduler._load_and_schedule_jobs()
-                self.last_triggered = time.time()
+# The ScythesChangeHandler and watchdog imports are no longer needed
+# as we are not monitoring a file for changes anymore.
 
 class Scheduler:
     """
@@ -39,16 +23,18 @@ class Scheduler:
         self.state_manager = state_manager
         self.config = config
         self.stop_event = threading.Event()
-        self.observer = None
+        # The observer for watchdog is no longer needed.
+        self.observer = None 
         self._load_and_schedule_jobs()
 
     def _load_and_schedule_jobs(self):
         """
-        Clears the current schedule and reloads all Scythes from disk,
+        Clears the current schedule and reloads all Scythes from the database,
         scheduling the ones that have automation enabled.
         """
         schedule.clear()
-        logger.info("Loading and scheduling automated Scythes...")
+        logger.info("Loading and scheduling automated Scythes from database...")
+        # Scythes are now fetched from the database via the manager
         scythes = self.scythe_manager.get_all()
         count = 0
 
@@ -60,17 +46,17 @@ class Scheduler:
             user_tz = pytz.utc
 
         for scythe in scythes:
+            # The schedule info is now a dictionary, not a JSON string
             schedule_info = scythe.get("schedule")
             if schedule_info and schedule_info.get("enabled"):
                 try:
                     interval = schedule_info.get("interval")
                     at_time_user = schedule_info.get("time") # e.g., "14:30"
                     
-                    # Convert user's time to server's local time
                     now_user_tz = datetime.now(user_tz)
                     hour, minute = map(int, at_time_user.split(':'))
                     user_time = now_user_tz.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                    server_time = user_time.astimezone(None) # Convert to system's local timezone
+                    server_time = user_time.astimezone(None)
                     at_time_server = server_time.strftime("%H:%M")
 
                     weekdays = schedule_info.get("weekdays", [])
@@ -118,40 +104,26 @@ class Scheduler:
         job_to_reap = scythe["job_data"]
         job_to_reap["resolved_folder"] = job_to_reap.get("folder")
         
-        self.state_manager.add_notification_to_history(
-            f"Scythe '{scythe.get('name')}' was automatically reaped.",
-            save=False
+        # Use the global state_manager
+        g.state_manager.add_notification_to_history(
+            f"Scythe '{scythe.get('name')}' was automatically reaped."
         )
-        self.state_manager.add_to_queue(job_to_reap)
+        g.state_manager.add_to_queue(job_to_reap)
         
 
     def run_pending(self):
         """The main loop for the scheduler thread."""
-        if WATCHDOG_AVAILABLE:
-            event_handler = ScythesChangeHandler(self)
-            self.observer = Observer()
-            scythes_dir = os.path.dirname(self.scythe_manager.scythes_file)
-            if os.path.exists(scythes_dir):
-                self.observer.schedule(event_handler, path=scythes_dir, recursive=False)
-                self.observer.start()
-                logger.info("File watcher for scythes.json started.")
-            else:
-                logger.warning(f"Scythes directory not found at {scythes_dir}. File watcher not started.")
-        else:
-            logger.info("Watchdog library not found. Falling back to hourly polling for Scythe schedule changes.")
+        # CHANGE: Removed all watchdog file monitoring logic.
+        # The scheduler no longer needs to watch a file for changes.
+        # It will only load the schedule on application start.
+        logger.info("Scheduler thread started. Running pending jobs...")
 
         while not self.stop_event.is_set():
             schedule.run_pending()
-            idle_seconds = schedule.idle_seconds()
-            if idle_seconds is not None and idle_seconds > 0:
-                time.sleep(min(idle_seconds, 60))
-            else:
-                time.sleep(1)
+            # Use a simple sleep instead of calculating idle_seconds
+            # This is sufficient for a scheduler that runs tasks at specific times.
+            time.sleep(1)
         
-        if self.observer and self.observer.is_alive():
-            self.observer.stop()
-            self.observer.join()
-
         logger.info("Scheduler thread has gracefully exited.")
 
     def stop(self):

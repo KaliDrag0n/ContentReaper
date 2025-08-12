@@ -1,14 +1,9 @@
 # web_tool.py
 import os
-import subprocess
 import sys
 import platform
 import logging
 from logging.handlers import RotatingFileHandler
-
-# --- Initial Setup: Define Paths and Logging ---
-# This must happen before any other application imports to ensure
-# paths and loggers are configured correctly from the start.
 
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(APP_ROOT, "data")
@@ -16,7 +11,10 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 class RelativePathFilter(logging.Filter):
     def filter(self, record):
-        record.relativepath = os.path.relpath(record.pathname, APP_ROOT)
+        try:
+            record.relativepath = os.path.relpath(record.pathname, APP_ROOT)
+        except ValueError:
+            record.relativepath = record.pathname
         return True
 
 # Configure standard logger
@@ -73,10 +71,14 @@ if __name__ == "__main__":
         
         # Check for dependencies before creating the app
         try:
-            from lib import dependency_manager
+            import flask, waitress, requests, schedule, eventlet, pytz
+            from werkzeug.security import generate_password_hash, check_password_hash
+            from flask_wtf.csrf import CSRFProtect, generate_csrf
+            from flask_socketio import SocketIO
         except ImportError:
             logger.critical("Core packages not found. Attempting to install from requirements.txt...")
             try:
+                import subprocess
                 subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt'])
                 logger.info("Dependencies installed successfully. Please restart the application.")
                 sys.exit(0)
@@ -111,10 +113,6 @@ if __name__ == "__main__":
             if g.SCHEDULER_THREAD:
                 logger.info("Waiting for scheduler thread to finish...")
                 g.SCHEDULER_THREAD.join(timeout=5)
-            
-            if g.state_manager:
-                logger.info("Saving final state before exit.")
-                g.state_manager.save_state(immediate=True)
             
             logger.info("Shutdown complete.")
             

@@ -1,154 +1,104 @@
 # lib/scythe_manager.py
 import json
-import os
-import shutil
-import time
-import threading
 import logging
+from .database import get_db_connection
+from . import app_globals as g # CHANGE: Import globals to access the state manager
 
 logger = logging.getLogger()
 
 class ScytheManager:
     """
-    A dedicated, thread-safe class to manage Scythes (saved job templates).
-    It handles loading from and saving to its own JSON file, separate from the main state.
-    This isolates Scythe data, improving robustness.
+    Manages Scythes (saved job templates) in the database.
     """
-    def __init__(self, scythes_file_path: str):
-        self.scythes_file = scythes_file_path
-        self.lock_file = scythes_file_path + ".lock"
-        self._lock = threading.RLock()
-        self.file_lock = threading.RLock()
-
-    def _acquire_lock(self, timeout=5):
-        """Acquires an exclusive file lock, with a timeout."""
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            try:
-                if os.path.exists(self.lock_file):
-                    lock_age = time.time() - os.path.getmtime(self.lock_file)
-                    if lock_age > 60:
-                        logger.warning(f"Found stale lock file older than 60s: {self.lock_file}. Removing it.")
-                        self._release_lock()
-
-                fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.close(fd)
-                return True
-            except FileExistsError:
-                time.sleep(0.1)
-            except Exception as e:
-                logger.error(f"Unexpected error acquiring scythes lock: {e}")
-                return False
-        logger.error(f"Could not acquire scythes lock file after {timeout} seconds.")
-        return False
-
-    def _release_lock(self):
-        """Releases the file lock."""
-        try:
-            if os.path.exists(self.lock_file):
-                os.remove(self.lock_file)
-        except Exception as e:
-            logger.error(f"Could not release scythes lock file: {e}")
-
-    def _load_scythes(self):
-        """Loads scythes from JSON, with a fallback to a backup file."""
-        if not os.path.exists(self.scythes_file):
-            return []
-        
-        try:
-            with open(self.scythes_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-                if not content.strip(): return []
-                return json.loads(content)
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning(f"Could not load main scythes file: {e}. Attempting backup.")
-            backup_file = self.scythes_file + ".bak"
-            if os.path.exists(backup_file):
-                try:
-                    with open(backup_file, 'r', encoding='utf-8') as f:
-                        return json.load(f)
-                except Exception as bak_e:
-                    logger.error(f"Could not load backup scythes file: {bak_e}. Returning empty list.")
-        return []
-
-    def _save_scythes(self, scythes_data):
-        """Saves the scythes list to a JSON file atomically with a backup."""
-        with self.file_lock:
-            if not self._acquire_lock():
-                logger.error("Could not acquire lock to save scythes. Aborting.")
-                return
-
-            try:
-                temp_file = self.scythes_file + ".tmp"
-                backup_file = self.scythes_file + ".bak"
-                
-                if os.path.exists(self.scythes_file):
-                    shutil.copy2(self.scythes_file, backup_file)
-
-                with open(temp_file, 'w', encoding='utf-8') as f:
-                    json.dump(scythes_data, f, indent=4)
-                
-                os.replace(temp_file, self.scythes_file)
-            except Exception as e:
-                logger.error(f"Could not save scythes file: {e}")
-            finally:
-                self._release_lock()
+    def __init__(self):
+        pass
 
     def get_all(self):
-        """Loads and returns all scythes."""
-        with self.file_lock:
-            return self._load_scythes()
+        """Loads and returns all scythes from the database."""
+        conn = get_db_connection()
+        scythes_raw = conn.execute("SELECT * FROM scythes ORDER BY id ASC").fetchall()
+        conn.close()
+        
+        for scythe in scythes_raw:
+            scythe['job_data'] = json.loads(scythe['job_data'])
+            if scythe['schedule']:
+                scythe['schedule'] = json.loads(scythe['schedule'])
+        return scythes_raw
 
     def get_by_id(self, scythe_id):
-        """Loads all scythes and returns the one with the matching ID."""
-        scythes = self.get_all()
-        return next((s for s in scythes if s.get("id") == scythe_id), None)
+        """Retrieves a specific scythe by its ID from the database."""
+        conn = get_db_connection()
+        scythe_raw = conn.execute("SELECT * FROM scythes WHERE id = ?", (scythe_id,)).fetchone()
+        conn.close()
+        
+        if scythe_raw:
+            scythe_raw['job_data'] = json.loads(scythe_raw['job_data'])
+            if scythe_raw['schedule']:
+                scythe_raw['schedule'] = json.loads(scythe_raw['schedule'])
+        return scythe_raw
 
     def add(self, scythe_data):
-        """Adds a new scythe to the file."""
-        scythes = self.get_all()
-
+        """Adds a new scythe to the database."""
         job_url = scythe_data.get("job_data", {}).get("url")
         if job_url:
-            for scythe in scythes:
+            all_scythes = self.get_all()
+            for scythe in all_scythes:
                 if scythe.get("job_data", {}).get("url") == job_url:
                     return False, f"A Scythe for this URL already exists ('{scythe.get('name')}')"
 
-        max_id = -1
-        for item in scythes:
-            if item.get('id', -1) > max_id:
-                max_id = item.get('id')
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO scythes (name, job_data, schedule) VALUES (?, ?, ?)",
+            (
+                scythe_data.get('name'),
+                json.dumps(scythe_data.get('job_data')),
+                json.dumps(scythe_data.get('schedule'))
+            )
+        )
+        conn.commit()
+        conn.close()
         
-        new_id = max_id + 1
-        scythe_data['id'] = new_id
-        scythes.append(scythe_data)
-        self._save_scythes(scythes)
+        # CHANGE: Notify the state manager that scythes have changed.
+        g.state_manager.increment_scythe_version()
         return True, f"Added Scythe: {scythe_data.get('name', 'Untitled')}"
 
     def update(self, scythe_id, scythe_data):
-        """Updates an existing scythe in the file."""
-        scythes = self.get_all()
-        updated = False
-        for i, scythe in enumerate(scythes):
-            if scythe.get("id") == scythe_id:
-                # CHANGE: Preserve ID and merge schedule data carefully.
-                scythe_data['id'] = scythe_id
-                # Ensure existing schedule is not wiped out if not provided
-                if 'schedule' not in scythe_data:
-                    scythe_data['schedule'] = scythe.get('schedule')
-                scythes[i] = scythe_data
-                updated = True
-                break
-        if updated:
-            self._save_scythes(scythes)
-        return updated
+        """Updates an existing scythe in the database."""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """UPDATE scythes SET
+               name = ?,
+               job_data = ?,
+               schedule = ?
+               WHERE id = ?""",
+            (
+                scythe_data.get('name'),
+                json.dumps(scythe_data.get('job_data')),
+                json.dumps(scythe_data.get('schedule')),
+                scythe_id
+            )
+        )
+        conn.commit()
+        conn.close()
+
+        if cursor.rowcount > 0:
+            # CHANGE: Notify the state manager that scythes have changed.
+            g.state_manager.increment_scythe_version()
+            return True
+        return False
 
     def delete(self, scythe_id):
-        """Deletes a scythe from the file."""
-        scythes = self.get_all()
-        original_length = len(scythes)
-        scythes = [s for s in scythes if s.get("id") != scythe_id]
-        if len(scythes) < original_length:
-            self._save_scythes(scythes)
+        """Deletes a scythe from the database."""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM scythes WHERE id = ?", (scythe_id,))
+        conn.commit()
+        conn.close()
+
+        if cursor.rowcount > 0:
+            # CHANGE: Notify the state manager that scythes have changed.
+            g.state_manager.increment_scythe_version()
             return True
         return False

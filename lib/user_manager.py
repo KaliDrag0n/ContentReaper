@@ -1,157 +1,89 @@
 # lib/user_manager.py
 import json
-import os
-import shutil
-import time
-import threading
 import logging
 from werkzeug.security import generate_password_hash
+from .database import get_db_connection
 
 logger = logging.getLogger()
 
 class UserManager:
     """
-    Manages user accounts and permissions in a dedicated users.json file.
-    Provides thread-safe methods for creating, reading, updating, and deleting users.
+    Manages user accounts and permissions in the database.
+    Provides methods for creating, reading, updating, and deleting users.
     """
-    def __init__(self, users_file_path: str):
-        self.users_file = users_file_path
-        self.lock_file = users_file_path + ".lock"
-        self.file_lock = threading.RLock()
-        # CHANGE: Ensure a default admin user exists on first run.
+    def __init__(self):
         self._ensure_default_admin_user()
 
     def _ensure_default_admin_user(self):
-        """
-        Checks if the users file exists. If not, it creates one with a default,
-        password-less admin user. This simplifies the first-run experience.
-        """
-        with self.file_lock:
-            if not os.path.exists(self.users_file):
-                logger.info("Users file not found. Creating a new one with a default admin account.")
-                default_users = {
-                    "admin": {
-                        "password_hash": None,
-                        "permissions": {} # Admin has all permissions implicitly
-                    }
-                }
-                self._save_users(default_users)
-
-    def _acquire_lock(self, timeout=5):
-        """Acquires an exclusive file lock, with a timeout."""
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            try:
-                if os.path.exists(self.lock_file):
-                    lock_age = time.time() - os.path.getmtime(self.lock_file)
-                    if lock_age > 60:
-                        logger.warning(f"Found stale lock file older than 60s: {self.lock_file}. Removing it.")
-                        self._release_lock()
-                
-                fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.close(fd)
-                return True
-            except FileExistsError:
-                time.sleep(0.1)
-            except Exception as e:
-                logger.error(f"Unexpected error acquiring users lock: {e}")
-                return False
-        logger.error(f"Could not acquire users lock file after {timeout} seconds.")
-        return False
-
-    def _release_lock(self):
-        try:
-            if os.path.exists(self.lock_file):
-                os.remove(self.lock_file)
-        except Exception as e:
-            logger.error(f"Could not release users lock file: {e}")
-
-    def _load_users(self):
-        """Loads users from JSON, with a fallback to a backup file."""
-        if not os.path.exists(self.users_file):
-            return {}
-        
-        try:
-            with open(self.users_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-                if not content.strip(): return {}
-                return json.loads(content)
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning(f"Could not load main users file: {e}. Attempting backup.")
-            backup_file = self.users_file + ".bak"
-            if os.path.exists(backup_file):
-                try:
-                    with open(backup_file, 'r', encoding='utf-8') as f:
-                        return json.load(f)
-                except Exception as bak_e:
-                    logger.error(f"Could not load backup users file: {bak_e}. Returning empty dict.")
-        return {}
-
-    def _save_users(self, users_data):
-        """Saves the users dictionary to a JSON file atomically with a backup."""
-        with self.file_lock:
-            if not self._acquire_lock():
-                logger.error("Could not acquire lock to save users. Aborting.")
-                return
-
-            try:
-                temp_file = self.users_file + ".tmp"
-                backup_file = self.users_file + ".bak"
-                
-                if os.path.exists(self.users_file):
-                    shutil.copy2(self.users_file, backup_file)
-
-                with open(temp_file, 'w', encoding='utf-8') as f:
-                    json.dump(users_data, f, indent=4)
-                
-                os.replace(temp_file, self.users_file)
-            except Exception as e:
-                logger.error(f"Could not save users file: {e}")
-            finally:
-                self._release_lock()
+        """Ensures a default, password-less admin user exists on first run."""
+        conn = get_db_connection()
+        admin = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
+        if not admin:
+            logger.info("Default admin account not found. Creating a new one.")
+            conn.execute(
+                "INSERT INTO users (username, password_hash, permissions) VALUES (?, ?, ?)",
+                ('admin', None, json.dumps({}))
+            )
+            conn.commit()
+        conn.close()
 
     def get_all_users(self):
         """Loads and returns all users, omitting password hashes for safety."""
-        users = self._load_users()
+        conn = get_db_connection()
+        users_raw = conn.execute("SELECT username, permissions FROM users").fetchall()
+        conn.close()
+        
         safe_users = {}
-        for username, data in users.items():
-            safe_users[username] = {k: v for k, v in data.items() if k != 'password_hash'}
+        for user in users_raw:
+            safe_users[user['username']] = {'permissions': json.loads(user['permissions'])}
         return safe_users
 
     def get_user(self, username):
-        """Loads all users and returns the data for a specific user."""
-        users = self._load_users()
-        return users.get(username.lower())
+        """Retrieves a specific user's data from the database."""
+        conn = get_db_connection()
+        user_raw = conn.execute("SELECT * FROM users WHERE username = ?", (username.lower(),)).fetchone()
+        conn.close()
+        
+        if user_raw:
+            user_raw['permissions'] = json.loads(user_raw['permissions'])
+        return user_raw
 
     def add_user(self, username, password, permissions=None):
         """Adds a new user. Returns False if user already exists."""
         username = username.lower()
-        users = self._load_users()
-        if username in users:
+        if self.get_user(username):
             return False
         
-        users[username] = {
-            "password_hash": generate_password_hash(password) if password else None,
-            "permissions": permissions or {}
-        }
-        self._save_users(users)
+        conn = get_db_connection()
+        conn.execute(
+            "INSERT INTO users (username, password_hash, permissions) VALUES (?, ?, ?)",
+            (
+                username,
+                generate_password_hash(password) if password else None,
+                json.dumps(permissions or {})
+            )
+        )
+        conn.commit()
+        conn.close()
         return True
 
     def update_user(self, username, password=None, permissions=None):
         """Updates a user's password and/or permissions."""
         username = username.lower()
-        users = self._load_users()
-        if username not in users:
-            # If user doesn't exist, create them. Useful for migration.
-            users[username] = {"password_hash": None, "permissions": {}}
-        
+        user = self.get_user(username)
+        if not user:
+            return False # Or create user if that's desired behavior
+
+        conn = get_db_connection()
         if password is not None:
-            users[username]["password_hash"] = generate_password_hash(password) if password else None
+            new_hash = generate_password_hash(password) if password else None
+            conn.execute("UPDATE users SET password_hash = ? WHERE username = ?", (new_hash, username))
         
         if permissions is not None:
-            users[username]["permissions"] = permissions
+            conn.execute("UPDATE users SET permissions = ? WHERE username = ?", (json.dumps(permissions), username))
 
-        self._save_users(users)
+        conn.commit()
+        conn.close()
         return True
 
     def delete_user(self, username):
@@ -160,9 +92,9 @@ class UserManager:
         if username == 'admin':
             return False # Safety check
             
-        users = self._load_users()
-        if username in users:
-            del users[username]
-            self._save_users(users)
-            return True
-        return False
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM users WHERE username = ?", (username,))
+        conn.commit()
+        conn.close()
+        return cursor.rowcount > 0

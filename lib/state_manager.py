@@ -6,82 +6,37 @@ import os
 import time
 import shutil
 import logging
-import random
+from .database import get_db_connection
 
 logger = logging.getLogger()
 
 class StateManager:
     """
-    A thread-safe class to manage the application's active state, including
-    the download queue, history, and current download status.
-    It handles loading from and saving to a JSON file with backup/recovery and file locking.
+    A thread-safe class to manage the application's active state.
+    History and Queue are persisted in the database, while the active queue
+    is managed in-memory for the worker thread.
     """
-    def __init__(self, state_file_path: str):
-        self.state_file = state_file_path
-        self.lock_file = state_file_path + ".lock"
+    def __init__(self):
         self._lock = threading.RLock()
         
         # Core state data
         self.queue = queue.Queue()
-        self.history = []
+        self.history = [] # This will be loaded from DB
         self.current_download = self._get_default_current_download()
         
         # State versioning for efficient frontend updates
         self.history_state_version = 0
         self.queue_state_version = 0
         self.current_download_version = 0
+        self.scythe_state_version = 0 # CHANGE: Added version counter for Scythes
         
         # Worker control events
         self.cancel_event = threading.Event()
-        self.stop_mode = "CANCEL" # "CANCEL" or "SAVE"
+        self.stop_mode = "CANCEL"
         self.queue_paused_event = threading.Event()
-        self.queue_paused_event.set() # Set by default (not paused)
+        self.queue_paused_event.set()
 
-        # CHANGE: Add a timer for debounced state saving.
-        self._save_timer = None
-
-    def _acquire_lock(self, timeout=10):
-        """Acquires an exclusive lock file, with a timeout."""
-        start_time = time.time()
-        lock_wait_logged = False
-        while time.time() - start_time < timeout:
-            try:
-                if os.path.exists(self.lock_file):
-                    # CHANGE: Reduced stale lock timeout from 300s to 60s.
-                    # This is safer for preventing indefinite hangs while still being
-                    # generous for slow systems like a Raspberry Pi.
-                    lock_age = time.time() - os.path.getmtime(self.lock_file)
-                    if lock_age > 60:
-                        logger.warning(f"Found stale lock file older than 60s: {self.lock_file}. Removing it.")
-                        self._release_lock()
-                        time.sleep(random.uniform(0.05, 0.2)) # Brief random sleep to avoid race condition
-                
-                fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.close(fd)
-                return True
-            except FileExistsError:
-                if not lock_wait_logged:
-                    logger.info(f"Waiting for lock file '{self.lock_file}' to be released...")
-                    lock_wait_logged = True
-                time.sleep(0.1)
-            except Exception as e:
-                logger.error(f"Unexpected error acquiring lock: {e}")
-                return False
-        
-        logger.warning(f"Lock file {self.lock_file} has been held for over {timeout} seconds. Breaking lock.")
-        self._release_lock()
-        return self._acquire_lock(timeout=1)
-
-    def _release_lock(self):
-        """Releases the lock file."""
-        try:
-            if os.path.exists(self.lock_file):
-                os.remove(self.lock_file)
-        except Exception as e:
-            logger.error(f"Could not release lock file: {e}")
-
-    def _get_default_current_download(self) -> dict:
-        """Returns a dictionary representing a clean 'current_download' state."""
+    def _get_default_current_download(self):
         return {
             "url": None, "job_data": None, "progress": 0, "status": "", "title": None,
             "thumbnail": None, "playlist_title": None, "track_title": None,
@@ -91,31 +46,42 @@ class StateManager:
         }
 
     def reset_current_download(self):
-        """Resets the current download state to its default and increments the version."""
         with self._lock:
             self.current_download = self._get_default_current_download()
             self.current_download_version += 1
 
     def update_current_download(self, data: dict):
-        """Updates the current download state with new data and increments the version."""
         with self._lock:
             self.current_download.update(data)
             self.current_download_version += 1
 
     def pause_queue(self):
-        """Pauses the download worker thread by clearing the event."""
         with self._lock:
             self.queue_paused_event.clear()
             self.current_download_version += 1
 
     def resume_queue(self):
-        """Resumes the download worker thread by setting the event."""
         with self._lock:
             self.queue_paused_event.set()
             self.current_download_version += 1
 
-    def add_to_queue(self, job_data: dict) -> int:
-        """Adds a new job to the queue with a unique ID."""
+    def _persist_queue(self):
+        """Saves the current in-memory queue state to the database."""
+        conn = get_db_connection()
+        with self._lock:
+            queue_items = list(self.queue.queue)
+            conn.execute("DELETE FROM queue") # Clear old queue
+            for i, item in enumerate(queue_items):
+                conn.execute(
+                    "INSERT INTO queue (job_data, queue_order) VALUES (?, ?)",
+                    (json.dumps(item), i)
+                )
+            conn.commit()
+            self.queue_state_version += 1
+        conn.close()
+
+    def add_to_queue(self, job_data: dict):
+        """Adds a new job to the in-memory queue with a unique ID and persists the change."""
         with self._lock:
             max_id = -1
             for item in list(self.queue.queue):
@@ -125,26 +91,22 @@ class StateManager:
             new_id = max_id + 1
             job_data['id'] = new_id
             self.queue.put(job_data)
-            self.queue_state_version += 1
-        self.save_state()
-        return new_id
 
-    def get_queue_list(self) -> list:
-        """Returns a copy of the current queue as a list."""
+        self._persist_queue()
+
+    def get_queue_list(self):
         with self._lock:
             return list(self.queue.queue)
 
     def clear_queue(self):
-        """Removes all items from the download queue."""
         with self._lock:
             if self.queue.empty(): return
             with self.queue.mutex:
                 self.queue.queue.clear()
-            self.queue_state_version += 1
-        self.save_state()
+        self._persist_queue()
 
     def delete_from_queue(self, job_id: int):
-        """Deletes a specific job from the queue by its ID."""
+        """Deletes a job by its 'id' key from the in-memory queue."""
         with self._lock:
             items = list(self.queue.queue)
             updated_queue = [job for job in items if job.get('id') != job_id]
@@ -153,276 +115,137 @@ class StateManager:
                     self.queue.queue.clear()
                     for job in updated_queue:
                         self.queue.put(job)
-                self.queue_state_version += 1
-                self.save_state()
+                self._persist_queue()
 
     def reorder_queue(self, ordered_ids: list[int]):
-        """Reorders the queue based on a new list of job IDs."""
         with self._lock:
             items = list(self.queue.queue)
             item_map = {item['id']: item for item in items}
-            
             new_queue_items = [item_map[job_id] for job_id in ordered_ids if job_id in item_map]
             
-            existing_ids_in_order = set(ordered_ids)
+            existing_ids = set(ordered_ids)
             for item in items:
-                if item['id'] not in existing_ids_in_order:
+                if item['id'] not in existing_ids:
                     new_queue_items.append(item)
 
             with self.queue.mutex:
                 self.queue.queue.clear()
                 for job in new_queue_items:
                     self.queue.put(job)
-            self.queue_state_version += 1
-        self.save_state()
-
-    def add_to_history(self, history_item: dict, save: bool = True) -> int:
-        """Adds a completed job to the history with a unique ID."""
-        with self._lock:
-            max_log_id = -1
-            for item in self.history:
-                if item.get('log_id', -1) > max_log_id:
-                    max_log_id = item.get('log_id')
-            
-            new_id = max_log_id + 1
-            history_item['log_id'] = new_id
-            self.history.append(history_item)
-            self.history_state_version += 1
-        if save:
-            self.save_state()
-        return new_id
+        self._persist_queue()
     
-    def add_notification_to_history(self, message: str, save: bool = True):
-        """Adds a non-job notification to the history for user feedback."""
+    # CHANGE: Added method to allow external modules to signal a change in Scythes.
+    def increment_scythe_version(self):
+        """Increments the version counter for Scythes to trigger UI updates."""
+        with self._lock:
+            self.scythe_state_version += 1
+
+    def add_to_history(self, history_item: dict):
+        """Adds a completed job to the history in the database."""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO history (url, title, folder, filenames, job_data, status, log_path, error_summary, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                history_item.get('url'), history_item.get('title'), history_item.get('folder'),
+                json.dumps(history_item.get('filenames', [])), json.dumps(history_item.get('job_data')),
+                history_item.get('status'), history_item.get('log_path'), history_item.get('error_summary'),
+                history_item.get('timestamp', time.time())
+            )
+        )
+        new_log_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        
+        with self._lock:
+            self.history_state_version += 1
+        return new_log_id
+    
+    def add_notification_to_history(self, message: str):
         notification = {
-            "title": message,
-            "status": "INFO", # A special status for the UI to recognize
-            "timestamp": time.time()
+            "title": message, "status": "INFO", "timestamp": time.time()
         }
-        # CHANGE: Pass the save flag through to add_to_history.
-        self.add_to_history(notification, save=save)
+        self.add_to_history(notification)
 
     def update_history_item(self, log_id: int, data_to_update: dict):
-        """Updates an existing history item with new data."""
+        """Updates an existing history item in the database."""
+        conn = get_db_connection()
+        conn.execute(
+            """UPDATE history SET
+               url = ?, title = ?, folder = ?, filenames = ?, job_data = ?,
+               status = ?, log_path = ?, error_summary = ?
+               WHERE log_id = ?""",
+            (
+                data_to_update.get('url'), data_to_update.get('title'), data_to_update.get('folder'),
+                json.dumps(data_to_update.get('filenames')), json.dumps(data_to_update.get('job_data')),
+                data_to_update.get('status'), data_to_update.get('log_path'), data_to_update.get('error_summary'),
+                log_id
+            )
+        )
+        conn.commit()
+        conn.close()
         with self._lock:
-            for item in self.history:
-                if item.get("log_id") == log_id:
-                    item.update(data_to_update)
-                    self.history_state_version += 1
-                    self.save_state()
-                    break
-
-    def get_history_summary(self) -> list:
-        """Returns a summary of the history, omitting sensitive/large data."""
-        with self._lock:
-            history_summary = [h.copy() for h in self.history]
-            for item in history_summary:
-                item.pop("log_path", None)
-        return history_summary
-
-    def clear_history(self) -> list:
-        """Clears the entire history and returns paths of logs to be deleted."""
-        paths_to_delete = []
-        with self._lock:
-            if not self.history: return []
-            for item in self.history:
-                if item.get("log_path") and item.get("log_path") != "LOG_SAVE_ERROR":
-                    paths_to_delete.append(item["log_path"])
-            self.history.clear()
             self.history_state_version += 1
-        self.save_state()
-        return paths_to_delete
 
-    def delete_from_history(self, log_id: int) -> str | None:
-        """Deletes a single item from history and returns its log path for cleanup."""
-        path_to_delete = None
+    def get_history_summary(self):
+        """Returns a summary of the history from the database."""
+        conn = get_db_connection()
+        history_raw = conn.execute("SELECT log_id, url, title, folder, filenames, job_data, status, error_summary, timestamp FROM history ORDER BY log_id DESC").fetchall()
+        conn.close()
+        
+        for item in history_raw:
+            item['filenames'] = json.loads(item['filenames'] or '[]')
+            item['job_data'] = json.loads(item['job_data'] or '{}')
+        return history_raw
+
+    def clear_history(self):
+        """Clears the history table and returns paths of logs to be deleted."""
+        conn = get_db_connection()
+        log_paths = [row['log_path'] for row in conn.execute("SELECT log_path FROM history WHERE log_path IS NOT NULL").fetchall()]
+        conn.execute("DELETE FROM history")
+        conn.commit()
+        conn.close()
+        
         with self._lock:
-            item_to_delete = next((h for h in self.history if h.get("log_id") == log_id), None)
-            if not item_to_delete: return None
-            
-            if item_to_delete.get("log_path") and item_to_delete.get("log_path") != "LOG_SAVE_ERROR":
-                path_to_delete = item_to_delete["log_path"]
-            
-            self.history[:] = [h for h in self.history if h.get("log_id") != log_id]
             self.history_state_version += 1
-        self.save_state()
+        return log_paths
+
+    def delete_from_history(self, log_id: int):
+        """Deletes a single item from history and returns its log path."""
+        conn = get_db_connection()
+        row = conn.execute("SELECT log_path FROM history WHERE log_id = ?", (log_id,)).fetchone()
+        path_to_delete = row['log_path'] if row else None
+        
+        conn.execute("DELETE FROM history WHERE log_id = ?", (log_id,))
+        conn.commit()
+        conn.close()
+        
+        with self._lock:
+            self.history_state_version += 1
         return path_to_delete
 
-    def get_history_item_by_log_id(self, log_id: int) -> dict | None:
-        """Retrieves a full history item by its log ID."""
-        with self._lock:
-            item = next((h for h in self.history if h.get("log_id") == log_id), None)
-            return item.copy() if item else None
-
-    def _perform_save(self):
-        """Saves the current state to a JSON file atomically with a backup. This is the core save logic."""
-        if not self._acquire_lock():
-            logger.error("Could not acquire lock to save state. Skipping save.")
-            return
+    def get_history_item_by_log_id(self, log_id: int):
+        """Retrieves a full history item by its log ID from the database."""
+        conn = get_db_connection()
+        item_raw = conn.execute("SELECT * FROM history WHERE log_id = ?", (log_id,)).fetchone()
+        conn.close()
         
-        try:
-            with self._lock:
-                state_to_save = {
-                    "queue": list(self.queue.queue),
-                    "history": self.history,
-                    "current_job": self.current_download.get("job_data"),
-                }
-            
-            temp_file_path = self.state_file + ".tmp"
-            backup_file_path = self.state_file + ".bak"
-            
-            if os.path.exists(self.state_file):
-                shutil.copy2(self.state_file, backup_file_path)
-
-            with open(temp_file_path, 'w', encoding='utf-8') as f:
-                json.dump(state_to_save, f, indent=4)
-            
-            os.replace(temp_file_path, self.state_file)
-
-        except Exception as e:
-            logger.error(f"Could not save state to file: {e}")
-            if os.path.exists(backup_file_path):
-                try:
-                    shutil.copy2(backup_file_path, self.state_file)
-                    logger.info("Restored state from backup due to save error.")
-                except Exception as e_restore:
-                    logger.critical(f"FATAL: Could not restore state from backup: {e_restore}")
-            
-            if os.path.exists(temp_file_path):
-                try: os.remove(temp_file_path)
-                except Exception as e_clean: logger.error(f"ERROR: Could not clean up temp state file: {e_clean}")
-        finally:
-            self._release_lock()
-
-    def save_state(self, immediate=False):
-        """
-        Saves the state. By default, it debounces the save for 2 seconds.
-        If immediate=True, it cancels any pending save and saves right away.
-        """
-        with self._lock:
-            if self._save_timer:
-                self._save_timer.cancel()
-                self._save_timer = None
-
-            if immediate:
-                self._perform_save()
-            else:
-                self._save_timer = threading.Timer(2.0, self._perform_save)
-                self._save_timer.start()
+        if item_raw:
+            item_raw['filenames'] = json.loads(item_raw['filenames'] or '[]')
+            item_raw['job_data'] = json.loads(item_raw['job_data'] or '{}')
+        return item_raw
 
     def load_state(self):
-        """Loads state from JSON, with a fallback to a backup file."""
-        if not self._acquire_lock():
-            logger.error("Could not acquire lock to load state. Starting fresh.")
-            self._reset_state_to_defaults()
-            return
-            
-        try:
-            backup_file_path = self.state_file + ".bak"
-            if not os.path.exists(self.state_file) and not os.path.exists(backup_file_path):
-                logger.info("State file and backup not found. Starting with a fresh state.")
-                return
+        """Loads the queue from the database into the in-memory queue."""
+        conn = get_db_connection()
+        queue_items_raw = conn.execute("SELECT job_data FROM queue ORDER BY queue_order ASC").fetchall()
+        conn.close()
 
-            loaded_successfully = False
-            if os.path.exists(self.state_file):
-                try:
-                    with open(self.state_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        if content.strip():
-                            state = json.loads(content)
-                            self._apply_loaded_state(state)
-                            loaded_successfully = True
-                            logger.info("Successfully loaded state from main file.")
-                        else:
-                            logger.warning("Main state file is empty. Trying backup.")
-                except (json.JSONDecodeError, OSError) as e:
-                    logger.warning(f"Could not load main state file: {e}. Attempting to use backup.")
-
-            if not loaded_successfully and os.path.exists(backup_file_path):
-                try:
-                    with open(backup_file_path, 'r', encoding='utf-8') as f:
-                        state = json.load(f)
-                        self._apply_loaded_state(state)
-                        shutil.copy2(backup_file_path, self.state_file)
-                        logger.info("Successfully loaded and restored state from backup file.")
-                        loaded_successfully = True
-                except (json.JSONDecodeError, OSError) as e:
-                    logger.error(f"Could not load backup state file: {e}. Starting fresh.")
-
-            if not loaded_successfully:
-                logger.critical("FATAL: Both state file and backup are corrupted or unreadable.")
-                corrupted_path = self.state_file + f".corrupted.{int(time.time())}.bak"
-                if os.path.exists(self.state_file):
-                    try:
-                        os.rename(self.state_file, corrupted_path)
-                        logger.info(f"Backed up corrupted state file to {corrupted_path}")
-                    except OSError as e_rename:
-                        logger.error(f"Could not back up corrupted state file. Error: {e_rename}")
-                self._reset_state_to_defaults()
-        finally:
-            self._release_lock()
-
-    def _reset_state_to_defaults(self):
-        """Resets the manager to a clean, empty state."""
         with self._lock:
-            self.history = []
-            with self.queue.mutex: self.queue.queue.clear()
-
-    def _apply_loaded_state(self, state: dict):
-        """Applies a loaded state dictionary to the manager."""
-        with self._lock:
-            self.history = [item for item in state.get("history", []) if isinstance(item, dict)]
-            queue_items = [job for job in state.get("queue", []) if isinstance(job, dict)]
-            
-            abandoned_job = state.get("current_job")
-            if isinstance(abandoned_job, dict):
-                logger.info(f"Found abandoned job: {abandoned_job.get('id', 'N/A')}. Moving to history.")
-                
-                app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                log_dir = os.path.join(app_root, "logs")
-                abandoned_job_id = abandoned_job.get('id')
-                temp_log_path = os.path.join(log_dir, f"job_active_{abandoned_job_id}.log")
-                
-                history_item = {
-                    "url": abandoned_job.get("url", "Unknown URL"),
-                    "title": abandoned_job.get("folder") or abandoned_job.get("url", "Unknown Title"),
-                    "folder": abandoned_job.get("folder"),
-                    "filenames": [],
-                    "job_data": abandoned_job,
-                    "status": "ABANDONED",
-                    "log_path": "No log generated.",
-                    "error_summary": "Job was interrupted by an application crash or ungraceful shutdown."
-                }
-                
-                new_log_id = self.add_to_history(history_item, save=False)
-                final_log_path = os.path.join(log_dir, f"job_{new_log_id}.log")
-
-                if os.path.exists(temp_log_path):
-                    try:
-                        shutil.move(temp_log_path, final_log_path)
-                        for h in self.history:
-                            if h.get("log_id") == new_log_id:
-                                h["log_path"] = final_log_path
-                                break
-                        logger.info(f"Preserved log for abandoned job {abandoned_job_id} at {final_log_path}")
-                    except Exception as e:
-                        logger.error(f"ERROR: Could not preserve log for abandoned job: {e}")
-
             with self.queue.mutex:
                 self.queue.queue.clear()
-                processed_ids = set()
-                max_id = -1
-                for job in queue_items:
-                    job_id = job.get('id')
-                    if not isinstance(job_id, int) or job_id in processed_ids:
-                        new_id = max_id + 1
-                        job['id'] = new_id
-                        max_id = new_id
-                    else:
-                        if job_id > max_id:
-                            max_id = job_id
-                    
-                    self.queue.put(job)
-                    processed_ids.add(job['id'])
-            
-            logger.info(f"Applied state: {self.queue.qsize()} item(s) in queue, {len(self.history)} history entries.")
+            for item in queue_items_raw:
+                self.queue.put(json.loads(item['job_data']))
+        
+        logger.info(f"Loaded {self.queue.qsize()} item(s) into the active queue from database.")

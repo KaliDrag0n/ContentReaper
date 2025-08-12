@@ -118,7 +118,6 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
     if job.get('proxy'): cmd.extend(['--proxy', job['proxy']])
     if job.get('rate_limit'): cmd.extend(['--limit-rate', job['rate_limit']])
     
-    # CHANGE: Add post-processing options.
     if job.get('embed_lyrics'): cmd.append('--embed-lyrics')
     if job.get('split_chapters'): cmd.append('--split-chapters')
 
@@ -162,10 +161,8 @@ def _generate_error_summary(log_path, return_code):
         if not os.path.exists(log_path):
             return "Log file was not created."
         
-        # CHANGE: Use the more memory-efficient reverse reader generator.
         for line in _read_file_in_reverse(log_path):
             if "ERROR:" in line or "WARNING:" in line:
-                # CHANGE: Sanitize the line by removing control characters to prevent potential log injection.
                 safe_line = re.sub(r'[\x00-\x1f]', '', line)
                 cleaned_line = re.sub(r'^\[yt-dlp\]\s*', '', safe_line).strip()
                 if cleaned_line:
@@ -178,7 +175,6 @@ def _generate_error_summary(log_path, return_code):
         return f"Could not read log file to generate error summary: {e}"
         
     if not error_lines:
-        # CHANGE: Add check for non-zero return code to provide better feedback.
         if return_code != 0:
             return f"Process exited with a non-zero status code ({return_code}) but no specific error was found in the log. This could indicate a network issue or an external problem."
         return "No specific errors found in log. The process may have been terminated unexpectedly."
@@ -201,52 +197,56 @@ def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name
             def log(message): log_file.write(message + '\n')
             log(f"\n--- Finalizing job with status: {final_status} ---")
             
-            if os.path.exists(temp_dir_path):
-                target_ext = None
-                mode = job.get('mode')
-                if mode == 'music': target_ext = job.get('format', 'mp3')
-                elif mode == 'video': target_ext = job.get('format', 'mp4')
-                elif mode == 'clip': target_ext = 'mp3' if job.get('format') == 'audio' else 'mp4'
+            # CHANGE: Added a conditional check. Files should only be moved if the job was not cancelled.
+            # This prevents partially downloaded files from being saved when the user intended to discard them.
+            if final_status != "CANCELLED":
+                if os.path.exists(temp_dir_path):
+                    target_ext = None
+                    mode = job.get('mode')
+                    if mode == 'music': target_ext = job.get('format', 'mp3')
+                    elif mode == 'video': target_ext = job.get('format', 'mp4')
+                    elif mode == 'clip': target_ext = 'mp3' if job.get('format') == 'audio' else 'mp4'
 
-                files_in_temp = os.listdir(temp_dir_path)
-                files_to_move = []
+                    files_in_temp = os.listdir(temp_dir_path)
+                    files_to_move = []
 
-                if target_ext and not job.get("split_chapters"):
-                    files_to_move = [f for f in files_in_temp if f.endswith(f'.{target_ext}')]
-                else: # For custom jobs, split chapters, or when format is unknown, move everything.
-                    files_to_move = [f for f in files_in_temp if not f.endswith('.temp.txt')]
+                    if target_ext and not job.get("split_chapters"):
+                        files_to_move = [f for f in files_in_temp if f.endswith(f'.{target_ext}')]
+                    else: # For custom jobs, split chapters, or when format is unknown, move everything.
+                        files_to_move = [f for f in files_in_temp if not f.endswith('.temp.txt')]
 
-                if files_to_move:
-                    os.makedirs(final_dest_dir, exist_ok=True)
-                    log(f"Moving {len(files_to_move)} file(s) to: {final_dest_dir}")
-                    for f in files_to_move:
-                        source_path = os.path.join(temp_dir_path, f)
-                        safe_f = sanitize_filename(f)
-                        dest_path = os.path.join(final_dest_dir, safe_f)
-                        try:
-                            shutil.move(source_path, dest_path)
-                            final_filenames.append(safe_f)
-                        except Exception as e:
-                            log(f"ERROR: Could not move file {f}: {e}")
-            
-            temp_archive_path = os.path.join(temp_dir_path, "archive.temp.txt")
-            if os.path.exists(temp_archive_path):
-                if final_status in ["COMPLETED", "PARTIAL", "STOPPED"]:
-                    final_archive_path = os.path.join(final_dest_dir, "archive.txt")
-                    try:
+                    if files_to_move:
                         os.makedirs(final_dest_dir, exist_ok=True)
-                        shutil.move(temp_archive_path, final_archive_path)
-                        log(f"Updated main archive file at: {final_archive_path}")
-                    except Exception as e:
-                        log(f"ERROR: Could not move and update archive file: {e}")
-                else:
-                    log(f"Job status is '{final_status}'. Discarding temporary archive to preserve the original.")
+                        log(f"Moving {len(files_to_move)} file(s) to: {final_dest_dir}")
+                        for f in files_to_move:
+                            source_path = os.path.join(temp_dir_path, f)
+                            safe_f = sanitize_filename(f)
+                            dest_path = os.path.join(final_dest_dir, safe_f)
+                            try:
+                                shutil.move(source_path, dest_path)
+                                final_filenames.append(safe_f)
+                            except Exception as e:
+                                log(f"ERROR: Could not move file {f}: {e}")
+                
+                temp_archive_path = os.path.join(temp_dir_path, "archive.temp.txt")
+                if os.path.exists(temp_archive_path):
+                    # The archive should only be updated on a successful or partially successful stop.
+                    if final_status in ["COMPLETED", "PARTIAL", "STOPPED"]:
+                        final_archive_path = os.path.join(final_dest_dir, "archive.txt")
+                        try:
+                            os.makedirs(final_dest_dir, exist_ok=True)
+                            shutil.move(temp_archive_path, final_archive_path)
+                            log(f"Updated main archive file at: {final_archive_path}")
+                        except Exception as e:
+                            log(f"ERROR: Could not move and update archive file: {e}")
+                    else:
+                        log(f"Job status is '{final_status}'. Discarding temporary archive to preserve the original.")
 
             if final_status == "FAILED" and final_filenames:
                 final_status = "PARTIAL"
                 log("Status updated to PARTIAL due to partial success.")
             
-            if final_status in ["FAILED", "ERROR", "ABANDONED", "PARTIAL"]:
+            if final_status in ["FAILED", "ERROR", "ABANDONED", "PARTIAL", "CANCELLED"]:
                 error_summary = _generate_error_summary(temp_log_path, return_code)
 
     except Exception as e:
@@ -334,8 +334,6 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
     status = "PENDING"
     resolved_folder_name = job.get("folder")
     
-    # CHANGE: Use start_new_session on Linux/macOS to create a new process group.
-    # This allows us to terminate yt-dlp and all its children (like ffmpeg) reliably.
     popen_kwargs = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
@@ -347,7 +345,6 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
     if platform.system() != "Windows":
         popen_kwargs["start_new_session"] = True
     else:
-        # On Windows, CREATE_NEW_PROCESS_GROUP is used to allow killing the whole tree.
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
 
     process = subprocess.Popen(cmd, **popen_kwargs)
@@ -358,7 +355,6 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
     reader_thread.start()
 
     with open(temp_log_path, 'w', encoding='utf-8') as log_file:
-        # CHANGE: Redact sensitive info like proxy from the logged command.
         safe_cmd_for_log = []
         skip_next = False
         for i, arg in enumerate(cmd):
@@ -396,12 +392,9 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
     if state_manager.cancel_event.is_set() and process.poll() is None:
         logger.info(f"Cancellation requested. Terminating process tree for PID: {process.pid}")
         try:
-            # CHANGE: More robust process tree termination.
             if platform.system() == "Windows":
-                # /T kills child processes, /F forces it.
                 subprocess.run(['taskkill', '/F', '/T', '/PID', str(process.pid)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
-                # Kill the entire process group.
                 os.killpg(os.getpgid(process.pid), signal.SIGTERM)
             
             process.wait(timeout=10)
@@ -465,7 +458,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
             
         except Exception as e:
             status = "ERROR"
-            logger.error(f"WORKER EXCEPTION for job {job.get('id')}: {e}", exc_info=True)
+            logger.error(f"WORKER EXCEPTION for job {job.get('id', 'N/A')}: {e}", exc_info=True)
             if temp_log_path and os.path.exists(temp_log_path):
                 try:
                     with open(temp_log_path, 'a', encoding='utf-8') as log_file:
@@ -476,7 +469,7 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
             
             state_manager.reset_current_download()
             
-            log_id_for_file = state_manager.add_to_history({}, save=False)
+            log_id_for_file = state_manager.add_to_history({})
             final_log_path = os.path.join(log_dir, f"job_{log_id_for_file}.log")
             log_path_for_history = "LOG_SAVE_ERROR"
             try:
