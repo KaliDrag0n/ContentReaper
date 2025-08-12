@@ -235,7 +235,11 @@ def ensure_dependencies(app_root):
     It ensures yt-dlp and ffmpeg are available and returns their paths.
     """
     bin_dir = os.path.join(app_root, "bin")
-    os.makedirs(bin_dir, exist_ok=True)
+    try:
+        os.makedirs(bin_dir, exist_ok=True)
+    except Exception as e:
+        print(f"FATAL: Could not create directory {bin_dir}: {e}")
+        return None, None
     
     platform_info = get_platform_info()
     if not platform_info:
