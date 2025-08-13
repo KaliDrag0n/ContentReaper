@@ -66,15 +66,15 @@ def is_safe_path(basedir, path_to_check, allow_file=False):
     """Securely checks if path_to_check is within basedir."""
     try:
         real_basedir = os.path.realpath(basedir)
+        # We must use abspath on the basedir join to handle path_to_check being absolute
         combined_path = os.path.abspath(os.path.join(basedir, path_to_check))
         real_path_to_check = os.path.realpath(combined_path)
     except OSError:
         return False
     
+    # For directories, check if it's a directory
     if not allow_file and not os.path.isdir(real_path_to_check):
-        # If we allow files, we can't fail here. The final check will confirm it's within the basedir.
-        if not allow_file:
-            return False
+        return False
         
     return os.path.commonpath([real_basedir, real_path_to_check]) == real_basedir
 
@@ -246,15 +246,22 @@ def register_routes(app):
     @permission_required('admin')
     def clear_history_route():
         log_dir = os.path.join(g.DATA_DIR, "logs")
-        for path in g.state_manager.clear_history():
-            # CHANGE: Add safeguard to only attempt deletion on valid file paths
-            if path and path not in ["LOG_SAVE_ERROR", "No log generated."]:
-                if is_safe_path(log_dir, os.path.basename(path), allow_file=True):
-                    try: 
-                        full_path = os.path.join(log_dir, os.path.basename(path))
-                        if os.path.exists(full_path):
-                            os.remove(full_path)
-                    except Exception as e: logger.error(f"Could not delete log file {path}: {e}")
+        # The state manager returns the list of log file paths that were cleared
+        for path_from_db in g.state_manager.clear_history():
+            if not path_from_db or path_from_db in ["LOG_SAVE_ERROR", "No log generated."]:
+                continue
+            
+            # SECURITY FIX: Sanitize the path from the database by only using its filename.
+            # This prevents any directory traversal (e.g., ../../) stored in the path.
+            log_filename = os.path.basename(path_from_db)
+            safe_full_path = os.path.join(log_dir, log_filename)
+
+            # Double-check that the constructed path is valid and exists before deleting.
+            if is_safe_path(log_dir, log_filename, allow_file=True) and os.path.exists(safe_full_path):
+                try: 
+                    os.remove(safe_full_path)
+                except Exception as e: 
+                    logger.error(f"Could not delete log file {safe_full_path}: {e}")
         return jsonify({"message": "History cleared."})
 
     @app.route('/history/delete/<int:log_id>', methods=['POST'])
@@ -262,13 +269,18 @@ def register_routes(app):
     def delete_from_history_route(log_id):
         log_dir = os.path.join(g.DATA_DIR, "logs")
         path_to_delete = g.state_manager.delete_from_history(log_id)
-        # CHANGE: Add safeguard to only attempt deletion on valid file paths
+
         if path_to_delete and path_to_delete not in ["LOG_SAVE_ERROR", "No log generated."]:
-            if is_safe_path(log_dir, os.path.basename(path_to_delete), allow_file=True):
+            # SECURITY FIX: Sanitize the path from the database by only using its filename.
+            log_filename = os.path.basename(path_to_delete)
+            safe_full_path = os.path.join(log_dir, log_filename)
+            
+            # Double-check that the constructed path is valid and exists before deleting.
+            if is_safe_path(log_dir, log_filename, allow_file=True) and os.path.exists(safe_full_path):
                 try: 
-                    if os.path.exists(path_to_delete):
-                        os.remove(path_to_delete)
-                except Exception as e: logger.error(f"Could not delete log file {path_to_delete}: {e}")
+                    os.remove(safe_full_path)
+                except Exception as e: 
+                    logger.error(f"Could not delete log file {safe_full_path}: {e}")
         return jsonify({"message": "History item deleted."})
 
     @app.route('/api/history/item/<int:log_id>')
@@ -278,15 +290,21 @@ def register_routes(app):
         
         if request.args.get('include_log') == 'true':
             log_dir = os.path.join(g.DATA_DIR, "logs")
-            log_path = item.get("log_path")
+            log_path_from_db = item.get("log_path")
             log_content = "Log not found or could not be read."
             
-            if log_path and log_path not in ["LOG_SAVE_ERROR", "No log generated."]:
-                if is_safe_path(log_dir, os.path.basename(log_path), allow_file=True):
+            if log_path_from_db and log_path_from_db not in ["LOG_SAVE_ERROR", "No log generated."]:
+                # SECURITY: Use the same sanitization logic for reading files.
+                log_filename = os.path.basename(log_path_from_db)
+                safe_full_path = os.path.join(log_dir, log_filename)
+
+                if is_safe_path(log_dir, log_filename, allow_file=True) and os.path.exists(safe_full_path):
                     try:
-                        with open(log_path, 'r', encoding='utf-8') as f: log_content = f.read()
-                    except Exception as e: log_content = f"ERROR: Could not read log file: {e}"
-            elif log_path:
+                        with open(safe_full_path, 'r', encoding='utf-8') as f: 
+                            log_content = f.read()
+                    except Exception as e: 
+                        log_content = f"ERROR: Could not read log file: {e}"
+            elif log_path_from_db:
                 log_content = "There was an error saving or generating the log file for this job."
             
             item['log_content'] = log_content
