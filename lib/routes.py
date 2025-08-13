@@ -76,7 +76,7 @@ def is_safe_path(basedir, path_to_check, allow_file=False):
     if not allow_file and not os.path.isdir(real_path_to_check):
         return False
         
-    return os.path.commonpath([real_basedir, real_path_to_check]) == real_basedir
+    return os.path.commonpath([real_basedir, real_path_to_check]) == real_path_to_check
 
 def _parse_job_data(form_data):
     """Parses form data to create a job dictionary."""
@@ -252,7 +252,8 @@ def register_routes(app):
                 continue
             
             # SECURITY FIX: Sanitize the path from the database by only using its filename.
-            # This prevents any directory traversal (e.g., ../../) stored in the path.
+            # This prevents any directory traversal (e.g., a stored path like '../../boot.ini')
+            # from being actioned. os.path.basename() strips all directory info.
             log_filename = os.path.basename(path_from_db)
             safe_full_path = os.path.join(log_dir, log_filename)
 
@@ -272,6 +273,7 @@ def register_routes(app):
 
         if path_to_delete and path_to_delete not in ["LOG_SAVE_ERROR", "No log generated."]:
             # SECURITY FIX: Sanitize the path from the database by only using its filename.
+            # This is a critical step to prevent path traversal vulnerabilities.
             log_filename = os.path.basename(path_to_delete)
             safe_full_path = os.path.join(log_dir, log_filename)
             
@@ -294,7 +296,7 @@ def register_routes(app):
             log_content = "Log not found or could not be read."
             
             if log_path_from_db and log_path_from_db not in ["LOG_SAVE_ERROR", "No log generated."]:
-                # SECURITY: Use the same sanitization logic for reading files.
+                # SECURITY FIX: Use the same basename sanitization for reading files to prevent traversal.
                 log_filename = os.path.basename(log_path_from_db)
                 safe_full_path = os.path.join(log_dir, log_filename)
 

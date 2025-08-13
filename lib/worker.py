@@ -127,7 +127,7 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
     elif mode == 'clip': cmd.extend(_get_clip_args(job))
     elif mode == 'custom':
         custom_args_str = job.get('custom_args', '')
-        cmd.extend(custom_args_str.split())
+        cmd.extend(shlex.split(custom_args_str))
     
     # Output and progress settings
     cmd.extend(['--progress', '--progress-template', '%(progress)j', '--print-json'])
@@ -197,8 +197,6 @@ def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name
             def log(message): log_file.write(message + '\n')
             log(f"\n--- Finalizing job with status: {final_status} ---")
             
-            # CHANGE: Added a conditional check. Files should only be moved if the job was not cancelled.
-            # This prevents partially downloaded files from being saved when the user intended to discard them.
             if final_status != "CANCELLED":
                 if os.path.exists(temp_dir_path):
                     target_ext = None
@@ -230,7 +228,6 @@ def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name
                 
                 temp_archive_path = os.path.join(temp_dir_path, "archive.temp.txt")
                 if os.path.exists(temp_archive_path):
-                    # The archive should only be updated on a successful or partially successful stop.
                     if final_status in ["COMPLETED", "PARTIAL", "STOPPED"]:
                         final_archive_path = os.path.join(final_dest_dir, "archive.txt")
                         try:
