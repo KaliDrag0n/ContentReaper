@@ -24,7 +24,7 @@ class Scheduler:
         self.config = config
         self.stop_event = threading.Event()
         # The observer for watchdog is no longer needed.
-        self.observer = None 
+        self.observer = None
         self._load_and_schedule_jobs()
 
     def _load_and_schedule_jobs(self):
@@ -52,7 +52,7 @@ class Scheduler:
                 try:
                     interval = schedule_info.get("interval")
                     at_time_user = schedule_info.get("time") # e.g., "14:30"
-                    
+
                     now_user_tz = datetime.now(user_tz)
                     hour, minute = map(int, at_time_user.split(':'))
                     user_time = now_user_tz.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -74,15 +74,15 @@ class Scheduler:
                             elif day_index == 4: job = schedule.every().friday.at(at_time_server)
                             elif day_index == 5: job = schedule.every().saturday.at(at_time_server)
                             elif day_index == 6: job = schedule.every().sunday.at(at_time_server)
-                            
+
                             if job:
                                 job.do(self._reap_scythe, scythe_id=scythe.get("id"))
                         count += 1
 
                 except Exception as e:
                     logger.error(f"Failed to schedule Scythe '{scythe.get('name')}': {e}")
-        
-        next_run_datetime = schedule.next_run() if schedule.jobs else None
+
+        next_run_datetime = schedule.next_run if schedule.jobs else None
         next_run_time = next_run_datetime.strftime('%Y-%m-%d %H:%M:%S') if next_run_datetime else "Not scheduled"
         logger.info(f"Successfully scheduled {count} Scythe(s). Next run at (server time): {next_run_time}")
 
@@ -96,34 +96,36 @@ class Scheduler:
         if not scythe or not scythe.get("job_data"):
             logger.error(f"Scheduled reap failed: Scythe ID {scythe_id} not found or is invalid.")
             return
-        
+
         if not scythe.get("schedule", {}).get("enabled"):
             logger.warning(f"Skipping scheduled reap for Scythe ID {scythe_id} as it is now disabled.")
             return
 
         job_to_reap = scythe["job_data"]
         job_to_reap["resolved_folder"] = job_to_reap.get("folder")
-        
+
         # Use the global state_manager
         g.state_manager.add_notification_to_history(
             f"Scythe '{scythe.get('name')}' was automatically reaped."
         )
         g.state_manager.add_to_queue(job_to_reap)
-        
+
 
     def run_pending(self):
         """The main loop for the scheduler thread."""
-        # CHANGE: Removed all watchdog file monitoring logic.
-        # The scheduler no longer needs to watch a file for changes.
-        # It will only load the schedule on application start.
         logger.info("Scheduler thread started. Running pending jobs...")
 
         while not self.stop_event.is_set():
             schedule.run_pending()
-            # Use a simple sleep instead of calculating idle_seconds
-            # This is sufficient for a scheduler that runs tasks at specific times.
-            time.sleep(1)
-        
+
+            # Efficiently sleep until the next scheduled job, but wake up at least
+            # every 60 seconds to ensure the stop_event is checked periodically.
+            idle_secs = schedule.idle_seconds
+            sleep_duration = min(idle_secs, 60) if idle_secs is not None and idle_secs > 0 else 60
+
+            # Use the stop_event's wait method for an interruptible sleep
+            self.stop_event.wait(sleep_duration)
+
         logger.info("Scheduler thread has gracefully exited.")
 
     def stop(self):

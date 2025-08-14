@@ -7,6 +7,7 @@ import threading
 import glob
 import secrets
 import json
+import time
 
 from flask import Flask
 from flask_wtf.csrf import CSRFProtect
@@ -33,14 +34,14 @@ def get_secret_key():
             return json.load(f)["secret_key"]
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
         logger.info("Secret key file not found, invalid, or key is missing. Generating a new one.")
-        new_key = secrets.token_hex(24)
         try:
             with open(key_file, 'w') as f:
+                new_key = secrets.token_hex(24)
                 json.dump({"secret_key": new_key}, f)
             return new_key
         except OSError as e:
             logger.critical(f"Could not write new secret key file: {e}. Using ephemeral key.")
-            return new_key
+            return secrets.token_hex(24)
 
 
 def state_emitter():
@@ -70,6 +71,33 @@ def state_emitter():
             # This is a general catch-all for the thread to prevent it from dying.
             logger.error(f"Error in state_emitter thread: {e}", exc_info=True)
             g.socketio.sleep(5)
+
+def thread_monitor():
+    """
+    Periodically checks the health of critical background threads.
+    If a thread has died, it logs a critical error.
+    """
+    logger.info("Thread monitor started.")
+    reported_dead = set()
+
+    while not g.STOP_EVENT.is_set():
+        threads_to_check = {
+            "Worker": g.WORKER_THREAD,
+            "Scheduler": g.SCHEDULER_THREAD
+        }
+
+        for name, thread_obj in threads_to_check.items():
+            if thread_obj and not thread_obj.is_alive() and name not in reported_dead:
+                logger.critical(
+                    f"CRITICAL ERROR: The '{name}' thread has died unexpectedly! "
+                    "The application is in a broken state and requires a restart."
+                )
+                reported_dead.add(name)
+
+        # Wait for 15 seconds before the next check
+        g.STOP_EVENT.wait(15)
+    logger.info("Thread monitor has gracefully exited.")
+
 
 def create_app():
     """The main application factory."""
@@ -124,14 +152,17 @@ def create_app():
 
     logger.info("--- [5/5] Starting Background Threads ---")
     cookie_file = os.path.join(g.DATA_DIR, "cookies.txt")
-    g.WORKER_THREAD = threading.Thread(target=worker.yt_dlp_worker, args=(g.state_manager, g.CONFIG, log_dir, cookie_file, g.YT_DLP_PATH, g.FFMPEG_PATH, g.STOP_EVENT))
+    g.WORKER_THREAD = threading.Thread(target=worker.yt_dlp_worker, name="WorkerThread", args=(g.state_manager, g.CONFIG, log_dir, cookie_file, g.YT_DLP_PATH, g.FFMPEG_PATH, g.STOP_EVENT))
     g.WORKER_THREAD.start()
 
     g.scheduler = sched.Scheduler(g.scythe_manager, g.state_manager, g.CONFIG)
-    g.SCHEDULER_THREAD = threading.Thread(target=g.scheduler.run_pending)
+    g.SCHEDULER_THREAD = threading.Thread(target=g.scheduler.run_pending, name="SchedulerThread")
     g.SCHEDULER_THREAD.start()
 
     g.STATE_EMITTER_THREAD = g.socketio.start_background_task(target=state_emitter)
+
+    g.MONITOR_THREAD = threading.Thread(target=thread_monitor, name="MonitorThread")
+    g.MONITOR_THREAD.start()
 
     register_routes(g.app)
 

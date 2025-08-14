@@ -24,6 +24,7 @@ scheduler = None
 WORKER_THREAD = None
 SCHEDULER_THREAD = None
 STATE_EMITTER_THREAD = None
+MONITOR_THREAD = None
 STOP_EVENT = threading.Event()
 first_run_lock = threading.Lock() # Added for session setup
 

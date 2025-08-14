@@ -4,7 +4,6 @@ waitress
 requests
 Werkzeug
 schedule
-watchdog
 Flask-SocketIO
 eventlet
 pytz

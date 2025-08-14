@@ -77,6 +77,7 @@ def download_file(url, dest_path):
                     bytes_downloaded += len(chunk)
                     if total_size > 0:
                         progress = (bytes_downloaded / total_size) * 100
+                        # Use sys.stdout directly for the progress bar to avoid spamming the log file
                         sys.stdout.write(f"\rProgress: {progress:.1f}%")
                         sys.stdout.flush()
         sys.stdout.write("\n") # Newline after progress bar
@@ -130,7 +131,7 @@ def ensure_yt_dlp(bin_dir, platform_info):
     Ensures yt-dlp is available, downloading it if necessary.
     Returns the path to the executable, or None on failure.
     """
-    logger.info("\n--- Checking for yt-dlp ---")
+    logger.info("--- Checking for yt-dlp ---")
     system_path = find_binary('yt-dlp')
     if system_path:
         return system_path
@@ -172,7 +173,7 @@ def ensure_ffmpeg(bin_dir, platform_info):
     Ensures ffmpeg is available, downloading it if necessary.
     Returns the path to the executable, or None on failure.
     """
-    logger.info("\n--- Checking for ffmpeg ---")
+    logger.info("--- Checking for ffmpeg ---")
     system_path = find_binary('ffmpeg')
     if system_path:
         return system_path
