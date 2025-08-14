@@ -497,11 +497,14 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
         state_manager.queue_paused_event.wait()
 
         try:
-            job = state_manager.queue.get(timeout=1)
-            if job is None:
-                break
+            # FIX: Use the new atomic get-and-persist method
+            job = state_manager.get_from_queue_and_persist(block=True, timeout=1)
         except queue.Empty:
             continue
+
+        # FIX: Handle the sentinel value used for graceful shutdown
+        if job is None:
+            break
 
         state_manager.cancel_event.clear()
         state_manager.stop_mode = "CANCEL"
@@ -539,7 +542,18 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
 
             state_manager.reset_current_download()
 
+            # This logic correctly creates a new history entry for the processed job
             log_id_for_file = state_manager.add_to_history({})
+            if log_id_for_file is None:
+                logger.error("Failed to create a history entry, cannot save log file for job.")
+                # Attempt to clean up the active log anyway
+                if temp_log_path and os.path.exists(temp_log_path):
+                    try:
+                        os.remove(temp_log_path)
+                    except OSError as e:
+                        logger.error(f"Could not remove orphaned active log {temp_log_path}: {e}")
+                continue # Move to the next job
+
             final_log_path = os.path.join(log_dir, f"job_{log_id_for_file}.log")
             log_path_for_history = "LOG_SAVE_ERROR"
             try:
