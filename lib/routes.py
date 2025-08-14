@@ -182,8 +182,16 @@ def register_routes(app):
             if not urls: return jsonify({"error": "No valid URLs provided."}), 400
 
             job_base = _parse_job_data(request.form)
+            
+            # Create a list of all jobs to be added
+            jobs_to_add = []
             for url in urls:
-                g.state_manager.add_to_queue({**job_base, "url": url})
+                jobs_to_add.append({**job_base, "url": url})
+
+            # Add all jobs in a single, efficient operation
+            if jobs_to_add:
+                g.state_manager.add_many_to_queue(jobs_to_add)
+
             return jsonify({"message": f"Added {len(urls)} job(s) to the queue."})
         except ValueError as e:
             return jsonify({"error": str(e)}), 400

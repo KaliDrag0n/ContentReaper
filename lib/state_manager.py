@@ -6,6 +6,7 @@ import os
 import time
 import shutil
 import logging
+import sqlite3
 from .database import get_db_connection
 
 logger = logging.getLogger()
@@ -28,7 +29,7 @@ class StateManager:
         self.history_state_version = 0
         self.queue_state_version = 0
         self.current_download_version = 0
-        self.scythe_state_version = 0 # CHANGE: Added version counter for Scythes
+        self.scythe_state_version = 0
 
         # Worker control events
         self.cancel_event = threading.Event()
@@ -103,19 +104,33 @@ class StateManager:
             # Re-raise the exception so the caller can handle it (e.g., the worker loop)
             raise
 
-    def add_to_queue(self, job_data: dict):
-        """Adds a new job to the in-memory queue with a unique ID and persists the change."""
+    def add_many_to_queue(self, jobs: list[dict]):
+        """
+        Adds a list of jobs to the in-memory queue efficiently with unique IDs,
+        then persists the entire queue to the database once.
+        """
+        if not jobs:
+            return
+
         with self._lock:
+            # Find the current maximum ID in the queue to ensure new IDs are unique
             max_id = -1
             for item in list(self.queue.queue):
                 if item.get('id', -1) > max_id:
                     max_id = item.get('id')
 
-            new_id = max_id + 1
-            job_data['id'] = new_id
-            self.queue.put(job_data)
+            # Add all new jobs to the in-memory queue with sequential IDs
+            for job_data in jobs:
+                max_id += 1
+                job_data['id'] = max_id
+                self.queue.put(job_data)
 
+        # Persist the entire queue to the database in a single transaction
         self._persist_queue()
+
+    def add_to_queue(self, job_data: dict):
+        """Adds a single new job to the queue. Wraps add_many_to_queue for consistency."""
+        self.add_many_to_queue([job_data])
 
     def get_queue_list(self):
         with self._lock:
