@@ -7,7 +7,6 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 VENV_DIR="$SCRIPT_DIR/bin/.venv"
 PYTHON_EXEC="$VENV_DIR/bin/python3"
 PIP_EXEC="$VENV_DIR/bin/pip"
-# CHANGE: Added a flag file to track if systemd setup has been offered.
 SYSTEMD_FLAG_FILE="$SCRIPT_DIR/data/.systemd_configured"
 
 # --- Dependency and Environment Check ---
@@ -41,13 +40,13 @@ fi
 
 # --- Systemd Service Setup (First Run Only) ---
 if [ ! -f "$SYSTEMD_FLAG_FILE" ]; then
-    # Check if systemctl exists
-    if command -v systemctl &> /dev/null; then
+    # Check if systemd is the init system by checking for the systemd directory and the systemctl command.
+    if [ -d /run/systemd/system ] && command -v systemctl &> /dev/null; then
         read -p "--> Would you like to set up ContentReaper as a systemd service to run on boot? (y/N) " choice
-        case "$choice" in 
-          y|Y ) 
+        case "$choice" in
+          y|Y )
             echo "--> Setting up systemd service..."
-            
+
             # Dynamically get the current user and the absolute path to the run script
             CURRENT_USER=$(whoami)
             RUN_SCRIPT_PATH="$SCRIPT_DIR/run.sh"
@@ -83,7 +82,7 @@ WantedBy=multi-user.target"
                 echo "--> You can check its status with: sudo systemctl status downloader.service"
             fi
             ;;
-          * ) 
+          * )
             echo "--> Skipping systemd setup."
             ;;
         esac

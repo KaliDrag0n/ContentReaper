@@ -21,7 +21,7 @@ def update_via_git(project_root):
         logger.info("Fetching latest release information from GitHub API...")
         latest_tag = None
         try:
-            res = requests.get(f"https://api.github.com/repos/{GITHUB_REPO_SLUG}/releases/latest", timeout=15)
+            res = requests.get(f"https://api.github.com/repos/{GITHUB_REPO_SLUG}/releases/latest", timeout=30)
             res.raise_for_status()
             latest_tag = res.json().get("tag_name")
         except requests.RequestException as e:
@@ -51,7 +51,7 @@ def update_via_zip(project_root):
     temp_extract_dir = os.path.join(project_root, "update_temp")
     try:
         logger.info("Fetching latest release information...")
-        res = requests.get(f"https://api.github.com/repos/{GITHUB_REPO_SLUG}/releases/latest", timeout=15)
+        res = requests.get(f"https://api.github.com/repos/{GITHUB_REPO_SLUG}/releases/latest", timeout=30)
         res.raise_for_status()
         release_data = res.json()
         zip_url = release_data.get("zipball_url")
@@ -61,7 +61,7 @@ def update_via_zip(project_root):
             return False
 
         logger.info(f"Downloading release from {zip_url}...")
-        res = requests.get(zip_url, timeout=60)
+        res = requests.get(zip_url, timeout=180)
         res.raise_for_status()
 
         zip_file = zipfile.ZipFile(io.BytesIO(res.content))
