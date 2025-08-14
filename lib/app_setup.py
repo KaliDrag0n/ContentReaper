@@ -20,7 +20,7 @@ from . import user_manager as um
 from . import scheduler as sched
 from . import worker
 from . import config_manager
-from . import database 
+from . import database
 from .routes import register_routes
 
 logger = logging.getLogger()
@@ -31,41 +31,44 @@ def get_secret_key():
     try:
         with open(key_file, 'r') as f:
             return json.load(f)["secret_key"]
-    except (FileNotFoundError, json.JSONDecodeError):
-        logger.info("Secret key file not found or invalid. Generating a new one.")
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        logger.info("Secret key file not found, invalid, or key is missing. Generating a new one.")
         new_key = secrets.token_hex(24)
-        with open(key_file, 'w') as f:
-            json.dump({"secret_key": new_key}, f)
-        return new_key
+        try:
+            with open(key_file, 'w') as f:
+                json.dump({"secret_key": new_key}, f)
+            return new_key
+        except OSError as e:
+            logger.critical(f"Could not write new secret key file: {e}. Using ephemeral key.")
+            return new_key
+
 
 def state_emitter():
     """Monitors the state manager and emits updates to clients via SocketIO."""
     from .routes import get_current_state
-    # CHANGE: Added 'scythes' to the version tracking dictionary.
     last_versions = {"queue": -1, "history": -1, "current": -1, "scythes": -1}
-    
+
     while not g.STOP_EVENT.is_set():
         try:
             with g.state_manager._lock:
                 q_ver = g.state_manager.queue_state_version
                 h_ver = g.state_manager.history_state_version
                 c_ver = g.state_manager.current_download_version
-                s_ver = g.state_manager.scythe_state_version # CHANGE: Get scythe version
+                s_ver = g.state_manager.scythe_state_version
 
-            # CHANGE: Added scythe version to the condition.
             if (q_ver != last_versions["queue"] or
                 h_ver != last_versions["history"] or
                 c_ver != last_versions["current"] or
                 s_ver != last_versions["scythes"]):
-                
-                # CHANGE: Update all last known versions.
+
                 last_versions.update({"queue": q_ver, "history": h_ver, "current": c_ver, "scythes": s_ver})
                 state = get_current_state()
                 g.socketio.emit('state_update', state)
 
             g.socketio.sleep(0.5)
         except Exception as e:
-            logger.error(f"Error in state_emitter thread: {e}")
+            # This is a general catch-all for the thread to prevent it from dying.
+            logger.error(f"Error in state_emitter thread: {e}", exc_info=True)
             g.socketio.sleep(5)
 
 def create_app():
@@ -85,7 +88,7 @@ def create_app():
     g.state_manager = sm.StateManager()
 
     config_manager.load_config()
-    
+
     logger.info("--- [2/5] Initializing Dependency Manager ---")
     g.YT_DLP_PATH, g.FFMPEG_PATH = dm.ensure_dependencies(g.APP_ROOT)
     if not g.YT_DLP_PATH or not g.FFMPEG_PATH:
@@ -96,32 +99,41 @@ def create_app():
     logger.info("--- [3/5] Checking for yt-dlp updates ---")
     try:
         update_result = subprocess.run([g.YT_DLP_PATH, '-U'], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
-        if update_result.stdout.strip(): logger.info(f"yt-dlp update check: {update_result.stdout.strip()}")
-        if update_result.returncode != 0: logger.warning(f"yt-dlp update check stderr: {update_result.stderr.strip()}")
-    except Exception as e: logger.warning(f"An unexpected error occurred while trying to update yt-dlp: {e}")
+        if update_result.stdout and update_result.stdout.strip():
+            logger.info(f"yt-dlp update check: {update_result.stdout.strip()}")
+        if update_result.returncode != 0 and update_result.stderr:
+             logger.warning(f"yt-dlp update check stderr: {update_result.stderr.strip()}")
+    except subprocess.TimeoutExpired:
+        logger.warning("yt-dlp update check timed out.")
+    except (OSError, FileNotFoundError) as e:
+        logger.error(f"Could not execute yt-dlp for update check: {e}")
+    except Exception as e:
+        logger.warning(f"An unexpected error occurred while trying to update yt-dlp: {e}")
 
     logger.info("--- [4/5] Loading State from Database ---")
     log_dir = os.path.join(g.DATA_DIR, "logs")
     os.makedirs(log_dir, exist_ok=True)
-    
+
     for log_path in glob.glob(os.path.join(log_dir, "job_active_*.log")):
-        try: os.remove(log_path)
-        except OSError as e: logger.error(f"Failed to remove stale active log file {log_path}: {e}")
-        
+        try:
+            os.remove(log_path)
+        except OSError as e:
+            logger.error(f"Failed to remove stale active log file {log_path}: {e}")
+
     g.state_manager.load_state()
 
     logger.info("--- [5/5] Starting Background Threads ---")
     cookie_file = os.path.join(g.DATA_DIR, "cookies.txt")
     g.WORKER_THREAD = threading.Thread(target=worker.yt_dlp_worker, args=(g.state_manager, g.CONFIG, log_dir, cookie_file, g.YT_DLP_PATH, g.FFMPEG_PATH, g.STOP_EVENT))
     g.WORKER_THREAD.start()
-    
+
     g.scheduler = sched.Scheduler(g.scythe_manager, g.state_manager, g.CONFIG)
     g.SCHEDULER_THREAD = threading.Thread(target=g.scheduler.run_pending)
     g.SCHEDULER_THREAD.start()
 
     g.STATE_EMITTER_THREAD = g.socketio.start_background_task(target=state_emitter)
-    
+
     register_routes(g.app)
-    
+
     logger.info("--- Application Initialized Successfully ---")
     return g.app

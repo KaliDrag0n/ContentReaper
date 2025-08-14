@@ -5,6 +5,7 @@ import threading
 import platform
 import subprocess
 import requests
+import json
 
 from flask import request, jsonify
 from . import app_globals as g
@@ -22,15 +23,20 @@ def _run_update_check():
         with g.state_manager._lock:
             if latest_version_tag > g.APP_VERSION:
                 g.update_status.update({
-                    "update_available": True, 
-                    "latest_version": latest_version_tag, 
-                    "release_url": latest_release.get("html_url"), 
+                    "update_available": True,
+                    "latest_version": latest_version_tag,
+                    "release_url": latest_release.get("html_url"),
                     "release_notes": latest_release.get("body")
                 })
-            else: 
+            else:
                 g.update_status["update_available"] = False
-    except Exception as e: 
-        logger.warning(f"Update check failed: {e}")
+    except requests.RequestException as e:
+        logger.warning(f"Update check failed due to a network error: {e}")
+    except json.JSONDecodeError:
+        logger.warning("Update check failed: Could not decode JSON response from GitHub API.")
+    except Exception as e:
+        logger.warning(f"An unexpected error occurred during update check: {e}")
+
 
 def scheduled_update_check():
     """Periodically checks for updates in a background thread."""
@@ -43,29 +49,37 @@ def shutdown_server():
     logger.info("Shutdown initiated via API. Signaling threads and server to stop.")
     g.STOP_EVENT.set()
     if g.socketio:
-        g.socketio.stop()
+        # This function is designed to be called from a request handler,
+        # so it's safe to use the 'shutdown' function provided by the server.
+        # We add a small delay to allow the response to be sent.
+        threading.Timer(1, g.socketio.stop).start()
+
 
 def run_update_script():
     """Launches the external updater script in a new, detached process."""
     import time
     import sys
-    
+
     time.sleep(2)
     updater_script_path = os.path.join(g.APP_ROOT, 'lib', 'updater.py')
     command = [sys.executable, updater_script_path]
-    
+
     logger.info(f"Starting update process with command: {' '.join(command)}")
-    
-    if platform.system() == "Windows":
-        subprocess.Popen(command, creationflags=subprocess.CREATE_NEW_CONSOLE)
-    else:
-        # Use start_new_session to detach the process on Linux/macOS
-        subprocess.Popen(command, start_new_session=True)
+
+    try:
+        if platform.system() == "Windows":
+            subprocess.Popen(command, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        else:
+            # Use start_new_session to detach the process on Linux/macOS
+            subprocess.Popen(command, start_new_session=True)
+    except (OSError, FileNotFoundError) as e:
+        logger.critical(f"Failed to launch updater script: {e}")
+        return
 
     shutdown_server()
 
 def setup_system_routes(app):
-    
+
     # Start the scheduled update checker in a background thread
     threading.Thread(target=scheduled_update_check, daemon=True).start()
 
@@ -89,15 +103,15 @@ def setup_system_routes(app):
                 logger.warning(f"Invalid server_port value: {data.get('server_port')}. Retaining existing.")
 
             save_config()
-            
+
             cookie_file = os.path.join(g.DATA_DIR, "cookies.txt")
             try:
                 with open(cookie_file, 'w', encoding='utf-8') as f:
                     f.write(data.get("cookie_content", ""))
-            except Exception as e:
+            except OSError as e:
                 logger.error(f"Failed to write to cookie file: {e}")
                 return jsonify({"error": "Failed to save cookie file."}), 500
-            
+
             logger.info("Settings saved. Host/port/log level changes apply on restart.")
             return jsonify({"message": "Settings saved successfully. Restart required for some changes."})
 
@@ -107,7 +121,8 @@ def setup_system_routes(app):
         if os.path.exists(cookie_file):
             try:
                 with open(cookie_file, 'r', encoding='utf-8') as f: cookie_content = f.read()
-            except Exception as e: logger.error(f"Could not read cookie file: {e}")
+            except OSError as e:
+                logger.error(f"Could not read cookie file: {e}")
 
         return jsonify({
             "config": g.CONFIG,
@@ -152,17 +167,20 @@ def setup_system_routes(app):
     def list_logs_route():
         log_dir = os.path.join(g.DATA_DIR, "logs")
         logs = []
-        
+
         startup_log = os.path.join(g.DATA_DIR, 'startup.log')
         if os.path.exists(startup_log):
             logs.append({"filename": "startup.log", "display_name": "Application Log (startup.log)"})
 
         import glob
-        job_logs = sorted(glob.glob(os.path.join(log_dir, "job_*.log")), reverse=True)
-        for log_path in job_logs:
-            filename = os.path.basename(log_path)
-            logs.append({"filename": f"logs/{filename}", "display_name": f"Job Log ({filename})"})
-            
+        try:
+            job_logs = sorted(glob.glob(os.path.join(log_dir, "job_*.log")), reverse=True)
+            for log_path in job_logs:
+                filename = os.path.basename(log_path)
+                logs.append({"filename": f"logs/{filename}", "display_name": f"Job Log ({filename})"})
+        except OSError as e:
+            logger.error(f"Could not scan for job logs: {e}")
+
         return jsonify(logs)
 
     @app.route('/api/logs/<path:filename>', methods=['GET'])
@@ -170,12 +188,12 @@ def setup_system_routes(app):
     def get_log_content_route(filename):
         if '..' in filename or filename.startswith('/'):
             return jsonify({"error": "Invalid filename."}), 400
-            
+
         full_path = os.path.join(g.DATA_DIR, filename)
-        
+
         if not is_safe_path(g.DATA_DIR, filename, allow_file=True):
             return jsonify({"error": "Access denied."}), 403
-            
+
         try:
             with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
                 f.seek(0, os.SEEK_END)
@@ -185,10 +203,10 @@ def setup_system_routes(app):
             return jsonify({"content": content})
         except FileNotFoundError:
             return jsonify({"error": "Log file not found."}), 404
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Error reading log file {filename}: {e}")
             return jsonify({"error": "Could not read log file."}), 500
-            
+
     @app.route('/api/log/live/content')
     def live_log_content_route():
         log_dir = os.path.join(g.DATA_DIR, "logs")
@@ -197,5 +215,8 @@ def setup_system_routes(app):
         if log_path and is_safe_path(log_dir, os.path.basename(log_path), allow_file=True):
             try:
                 with open(log_path, 'r', encoding='utf-8') as f: log_content = f.read()
-            except Exception as e: log_content = f"ERROR: Could not read live log file. Reason: {e}"
+            except FileNotFoundError:
+                log_content = "Live log file not found. It may have been rotated or deleted."
+            except OSError as e:
+                log_content = f"ERROR: Could not read live log file. Reason: {e}"
         return jsonify({"log": log_content})

@@ -17,58 +17,69 @@ def dict_factory(cursor, row):
 def get_db_connection():
     """Establishes a connection to the SQLite database."""
     db_path = os.path.join(g.DATA_DIR, 'contentreaper.db')
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = dict_factory
-    return conn
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = dict_factory
+        return conn
+    except sqlite3.Error as e:
+        logger.critical(f"Failed to connect to database at {db_path}: {e}")
+        raise
+
 
 def create_tables():
     """Creates all necessary database tables if they don't already exist."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Users table
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS users (
-        username TEXT PRIMARY KEY,
-        password_hash TEXT,
-        permissions TEXT NOT NULL
-    )''')
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
 
-    # Scythes table
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS scythes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        job_data TEXT NOT NULL,
-        schedule TEXT
-    )''')
+        # Users table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT,
+            permissions TEXT NOT NULL
+        )''')
 
-    # History table
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS history (
-        log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        url TEXT,
-        title TEXT,
-        folder TEXT,
-        filenames TEXT,
-        job_data TEXT,
-        status TEXT,
-        log_path TEXT,
-        error_summary TEXT,
-        timestamp REAL
-    )''')
+        # Scythes table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS scythes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            job_data TEXT NOT NULL,
+            schedule TEXT
+        )''')
 
-    # Queue table
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS queue (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_data TEXT NOT NULL,
-        queue_order INTEGER NOT NULL
-    )''')
+        # History table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS history (
+            log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT,
+            title TEXT,
+            folder TEXT,
+            filenames TEXT,
+            job_data TEXT,
+            status TEXT,
+            log_path TEXT,
+            error_summary TEXT,
+            timestamp REAL
+        )''')
 
-    conn.commit()
-    conn.close()
-    logger.info("Database tables created or verified successfully.")
+        # Queue table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_data TEXT NOT NULL,
+            queue_order INTEGER NOT NULL
+        )''')
+
+        conn.commit()
+        logger.info("Database tables created or verified successfully.")
+    except sqlite3.Error as e:
+        logger.critical(f"Failed to create database tables: {e}", exc_info=True)
+        raise
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
 
 def migrate_json_to_db():
     """
@@ -80,16 +91,17 @@ def migrate_json_to_db():
         return # Migration has already been done
 
     logger.info("Performing one-time migration from JSON files to database...")
-    conn = get_db_connection()
-    
-    # --- File Paths ---
-    users_file = os.path.join(g.DATA_DIR, "users.json")
-    scythes_file = os.path.join(g.DATA_DIR, "scythes.json")
-    state_file = os.path.join(g.DATA_DIR, "state.json")
-
-    migrated_something = False
-
+    conn = None
     try:
+        conn = get_db_connection()
+
+        # --- File Paths ---
+        users_file = os.path.join(g.DATA_DIR, "users.json")
+        scythes_file = os.path.join(g.DATA_DIR, "scythes.json")
+        state_file = os.path.join(g.DATA_DIR, "state.json")
+
+        migrated_something = False
+
         # --- Migrate Users ---
         if os.path.exists(users_file):
             with open(users_file, 'r', encoding='utf-8') as f:
@@ -118,7 +130,7 @@ def migrate_json_to_db():
         if os.path.exists(state_file):
             with open(state_file, 'r', encoding='utf-8') as f:
                 state_data = json.load(f)
-                
+
                 # History
                 history_data = state_data.get('history', [])
                 for item in history_data:
@@ -153,14 +165,20 @@ def migrate_json_to_db():
             for f in [users_file, scythes_file, state_file]:
                 if os.path.exists(f):
                     os.rename(f, f + '.bak')
-            
+
             with open(migration_flag_file, 'w') as f:
                 f.write('Migration completed.')
         else:
             logger.info("No JSON files found to migrate.")
+            # Still create the flag file to avoid re-checking every time
+            with open(migration_flag_file, 'w') as f:
+                f.write('No migration needed.')
 
-    except Exception as e:
-        conn.rollback()
+
+    except (json.JSONDecodeError, sqlite3.Error, OSError) as e:
+        if conn:
+            conn.rollback()
         logger.critical(f"Database migration failed: {e}. Rolling back changes.", exc_info=True)
     finally:
-        conn.close()
+        if conn:
+            conn.close()

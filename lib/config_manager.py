@@ -9,7 +9,7 @@ logger = logging.getLogger()
 def load_config():
     """Loads configuration, sets defaults, and validates paths."""
     config_path = os.path.join(g.DATA_DIR, "config.json")
-    
+
     defaults = {
         "download_dir": os.path.join(g.APP_ROOT, "downloads"),
         "temp_dir": os.path.join(g.APP_ROOT, ".temp"),
@@ -19,7 +19,7 @@ def load_config():
         "public_user": None,
         "user_timezone": "UTC"
     }
-    
+
     g.CONFIG.update(defaults)
     config_updated = False
 
@@ -27,7 +27,7 @@ def load_config():
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 loaded_config = json.load(f)
-                
+
                 # This handles the legacy migration logic from the old web_tool.py
                 if "users" in loaded_config or "guest_permissions" in loaded_config:
                     logger.warning("Old user config format detected. Migrating to users.json.")
@@ -49,11 +49,13 @@ def load_config():
                         g.user_manager._save_users(all_users)
 
                     config_updated = True
-                
+
                 g.CONFIG.update(loaded_config)
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning(f"Could not load config.json, using defaults. Error: {e}")
-    
+        except json.JSONDecodeError as e:
+            logger.warning(f"Could not parse config.json, using defaults. Error: {e}")
+        except OSError as e:
+            logger.warning(f"Could not read config.json, using defaults. Error: {e}")
+
     log_level = g.CONFIG.get("log_level", "INFO").upper()
     if log_level in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
         logger.setLevel(getattr(logging, log_level))
@@ -70,8 +72,8 @@ def load_config():
             os.makedirs(path, exist_ok=True)
             if not os.access(path, os.W_OK):
                 raise OSError("No write permissions.")
-        except Exception as e:
-            logger.critical(f"Path for '{key}' ('{path}') is invalid: {e}")
+        except OSError as e:
+            logger.critical(f"Path for '{key}' ('{path}') is invalid or not writable: {e}")
             raise RuntimeError(f"Configuration validation failed for '{key}'.")
 
     if config_updated or not os.path.exists(config_path):
@@ -83,5 +85,8 @@ def save_config():
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(g.CONFIG, f, indent=4)
-    except Exception as e:
-        logger.error(f"Failed to save config: {e}")
+    except OSError as e:
+        logger.error(f"Failed to save config file: {e}")
+    except TypeError as e:
+        logger.error(f"Failed to serialize config to JSON: {e}")
+

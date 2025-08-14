@@ -16,6 +16,25 @@ from .sanitizer import sanitize_filename
 
 logger = logging.getLogger()
 
+# --- Security Whitelist for Custom Arguments ---
+# Flags are options that don't take a value (e.g., --no-playlist)
+ALLOWED_FLAGS = {
+    '--ignore-errors', '--no-playlist', '--write-thumbnail', '--write-description',
+    '--write-info-json', '--no-warnings', '--continue', '--no-overwrites',
+    '--force-overwrites', '--no-post-overwrites', '--no-keep-video',
+    '--write-all-thumbnails', '--embed-chapters', '--no-write-comments'
+}
+# Options take a value (e.g., --audio-format mp3)
+ALLOWED_OPTIONS = {
+    '--audio-format', '--audio-quality', '--recode-video', '--sub-langs',
+    '--write-subs', '--embed-subs', '--playlist-items', '--date',
+    '--datebefore', '--dateafter', '--match-filter', '--reject-title',
+    '--min-filesize', '--max-filesize', '--max-downloads'
+}
+# Disallowed options that are handled internally or pose a security risk.
+DISALLOWED_OPTIONS = {'-o', '--output', '--output-na-placeholder'}
+
+
 # --- Helper Functions ---
 
 def format_bytes(b):
@@ -32,28 +51,36 @@ def format_bytes(b):
 
 def _read_file_in_reverse(filename, buf_size=8192):
     """A generator that reads a file line by line in reverse for efficiency."""
-    with open(filename, 'rb') as f:
-        segment = None
-        offset = 0
-        f.seek(0, os.SEEK_END)
-        file_size = remaining_size = f.tell()
-        while remaining_size > 0:
-            offset = min(file_size, offset + buf_size)
-            f.seek(file_size - offset)
-            buffer = f.read(min(remaining_size, buf_size))
-            remaining_size -= buf_size
-            lines = buffer.decode('utf-8', errors='replace').splitlines()
+    try:
+        with open(filename, 'rb') as f:
+            segment = None
+            offset = 0
+            f.seek(0, os.SEEK_END)
+            file_size = remaining_size = f.tell()
+            while remaining_size > 0:
+                offset = min(file_size, offset + buf_size)
+                f.seek(file_size - offset)
+                buffer = f.read(min(remaining_size, buf_size))
+                remaining_size -= buf_size
+                lines = buffer.decode('utf-8', errors='replace').splitlines()
+                if segment is not None:
+                    if buffer and buffer[-1] not in (b'\n', b'\r'):
+                        lines[-1] += segment
+                    else:
+                        yield segment
+                segment = lines[0]
+                for index in range(len(lines) - 1, 0, -1):
+                    if lines[index]:
+                        yield lines[index]
             if segment is not None:
-                if buffer and buffer[-1] not in (b'\n', b'\r'):
-                    lines[-1] += segment
-                else:
-                    yield segment
-            segment = lines[0]
-            for index in range(len(lines) - 1, 0, -1):
-                if lines[index]:
-                    yield lines[index]
-        if segment is not None:
-            yield segment
+                yield segment
+    except FileNotFoundError:
+        logger.warning(f"Log file {filename} not found for reading in reverse.")
+        return
+    except OSError as e:
+        logger.error(f"Could not read log file {filename}: {e}")
+        return
+
 
 def _enqueue_output(stream, q):
     """Reads decoded text lines from a stream and puts them into a queue."""
@@ -67,7 +94,7 @@ def _get_music_args(job, is_playlist):
     """Builds the yt-dlp argument list for 'music' mode."""
     args = [
         '-f', 'bestaudio/best', '-x', '--audio-format', job.get("format", "mp3"),
-        '--audio-quality', job.get("quality", "0"), 
+        '--audio-quality', job.get("quality", "0"),
         '--embed-metadata', '--embed-thumbnail',
         '--parse-metadata', 'playlist_index:%(track_number)s',
         '--parse-metadata', 'uploader:%(artist)s'
@@ -86,12 +113,12 @@ def _get_video_args(job):
     video_format = job.get('format', 'mp4')
     codec_pref = job.get('codec', 'compatibility')
     quality_filter = f"[height<={quality[:-1]}]" if quality.endswith('p') else ""
-    
+
     if codec_pref == 'compatibility':
         format_str = f"bestvideo{quality_filter}[vcodec^=avc]+bestaudio[acodec^=m4a]/bestvideo{quality_filter}+bestaudio/best"
     else: # 'quality'
         format_str = f"bestvideo{quality_filter}+bestaudio/best"
-        
+
     args = ['-f', format_str, '--merge-output-format', video_format]
     if job.get('embed_subs'):
         args.extend(['--embed-subs', '--sub-langs', 'en.*,en-US,en-GB'])
@@ -104,20 +131,56 @@ def _get_clip_args(job):
     else:
         return ['-f', 'bestvideo+bestaudio/best', '--merge-output-format', 'mp4']
 
+def _get_sanitized_custom_args(custom_args_str):
+    """
+    Parses a string of custom arguments and returns a list containing only
+    whitelisted, safe arguments.
+    """
+    sanitized_args = []
+    try:
+        args = shlex.split(custom_args_str)
+    except ValueError as e:
+        logger.warning(f"Could not parse custom arguments string: '{custom_args_str}'. Error: {e}")
+        return []
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in DISALLOWED_OPTIONS:
+            logger.warning(f"Ignoring disallowed custom argument: {arg}")
+            i += 1
+            continue
+
+        if arg in ALLOWED_FLAGS:
+            sanitized_args.append(arg)
+            i += 1
+        elif arg in ALLOWED_OPTIONS:
+            if i + 1 < len(args):
+                sanitized_args.extend([arg, args[i+1]])
+                i += 2
+            else:
+                logger.warning(f"Ignoring custom argument '{arg}' which requires a value but none was provided.")
+                i += 1
+        else:
+            logger.warning(f"Ignoring unknown or disallowed custom argument: {arg}")
+            i += 1
+    return sanitized_args
+
+
 def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmpeg_path):
     """Constructs the full yt-dlp command line argument list for a given download job."""
     cmd = [yt_dlp_path]
     mode = job.get("mode")
     is_playlist = "playlist?list=" in job.get("url", "")
-    
+
     # Basic settings
     cmd.extend(['--sleep-interval', '5', '--max-sleep-interval', '15'])
     cmd.extend(['--ffmpeg-location', os.path.dirname(ffmpeg_path)])
-    
+
     # Optional settings
     if job.get('proxy'): cmd.extend(['--proxy', job['proxy']])
     if job.get('rate_limit'): cmd.extend(['--limit-rate', job['rate_limit']])
-    
+
     if job.get('embed_lyrics'): cmd.append('--embed-lyrics')
     if job.get('split_chapters'): cmd.append('--split-chapters')
 
@@ -127,28 +190,31 @@ def build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmp
     elif mode == 'clip': cmd.extend(_get_clip_args(job))
     elif mode == 'custom':
         custom_args_str = job.get('custom_args', '')
-        cmd.extend(shlex.split(custom_args_str))
-    
+        sanitized_custom_args = _get_sanitized_custom_args(custom_args_str)
+        cmd.extend(sanitized_custom_args)
+
     # Output and progress settings
     cmd.extend(['--progress', '--progress-template', '%(progress)j', '--print-json'])
+    # Only set the output template if it hasn't been set by a custom argument.
+    # The custom arg itself is sanitized to prevent path traversal.
     if '-o' not in cmd and '--output' not in cmd:
-        output_template = os.path.join(temp_dir_path, 
+        output_template = os.path.join(temp_dir_path,
             "%(playlist_index)s - %(title)s.%(ext)s" if is_playlist and mode == 'music' else "%(title)s.%(ext)s")
         cmd.extend(['-o', output_template])
-        
+
     # Playlist settings
     start, end = job.get("playlist_start"), job.get("playlist_end")
     if start and end: cmd.extend(['--playlist-items', f'{start}-{end}'])
     elif start: cmd.extend(['--playlist-items', f'{start}:'])
     elif end: cmd.extend(['--playlist-items', f':{end}'])
     if is_playlist: cmd.append('--ignore-errors')
-    
+
     # Authentication and archive
     if os.path.exists(cookie_file_path) and os.path.getsize(cookie_file_path) > 0:
         cmd.extend(['--cookies', cookie_file_path])
     if job.get("archive"):
         cmd.extend(['--download-archive', os.path.join(temp_dir_path, "archive.temp.txt")])
-        
+
     cmd.append(job["url"])
     return cmd
 
@@ -160,7 +226,7 @@ def _generate_error_summary(log_path, return_code):
     try:
         if not os.path.exists(log_path):
             return "Log file was not created."
-        
+
         for line in _read_file_in_reverse(log_path):
             if "ERROR:" in line or "WARNING:" in line:
                 safe_line = re.sub(r'[\x00-\x1f]', '', line)
@@ -171,9 +237,9 @@ def _generate_error_summary(log_path, return_code):
                         break
         error_lines.reverse()
 
-    except Exception as e:
+    except OSError as e:
         return f"Could not read log file to generate error summary: {e}"
-        
+
     if not error_lines:
         if return_code != 0:
             return f"Process exited with a non-zero status code ({return_code}) but no specific error was found in the log. This could indicate a network issue or an external problem."
@@ -196,7 +262,7 @@ def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name
         with open(temp_log_path, 'a', encoding='utf-8') as log_file:
             def log(message): log_file.write(message + '\n')
             log(f"\n--- Finalizing job with status: {final_status} ---")
-            
+
             if final_status != "CANCELLED":
                 if os.path.exists(temp_dir_path):
                     target_ext = None
@@ -223,9 +289,9 @@ def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name
                             try:
                                 shutil.move(source_path, dest_path)
                                 final_filenames.append(safe_f)
-                            except Exception as e:
+                            except OSError as e:
                                 log(f"ERROR: Could not move file {f}: {e}")
-                
+
                 temp_archive_path = os.path.join(temp_dir_path, "archive.temp.txt")
                 if os.path.exists(temp_archive_path):
                     if final_status in ["COMPLETED", "PARTIAL", "STOPPED"]:
@@ -234,7 +300,7 @@ def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name
                             os.makedirs(final_dest_dir, exist_ok=True)
                             shutil.move(temp_archive_path, final_archive_path)
                             log(f"Updated main archive file at: {final_archive_path}")
-                        except Exception as e:
+                        except OSError as e:
                             log(f"ERROR: Could not move and update archive file: {e}")
                     else:
                         log(f"Job status is '{final_status}'. Discarding temporary archive to preserve the original.")
@@ -242,14 +308,17 @@ def _finalize_job(job, final_status, temp_log_path, config, resolved_folder_name
             if final_status == "FAILED" and final_filenames:
                 final_status = "PARTIAL"
                 log("Status updated to PARTIAL due to partial success.")
-            
+
             if final_status in ["FAILED", "ERROR", "ABANDONED", "PARTIAL", "CANCELLED"]:
                 error_summary = _generate_error_summary(temp_log_path, return_code)
 
+    except OSError as e:
+        logger.error(f"OS ERROR during job finalization: {e}", exc_info=True)
+        error_summary = f"A critical OS error occurred during job finalization: {e}"
     except Exception as e:
-        logger.error(f"ERROR during job finalization: {e}")
-        error_summary = f"A critical error occurred during job finalization: {e}"
-    
+        logger.error(f"UNEXPECTED ERROR during job finalization: {e}", exc_info=True)
+        error_summary = f"An unexpected critical error occurred during job finalization: {e}"
+
     if os.path.exists(temp_dir_path):
         try:
             shutil.rmtree(temp_dir_path)
@@ -265,16 +334,16 @@ def _prepare_job_environment(job, config, log_dir):
     temp_dir_path = os.path.join(config["temp_dir"], f"job_{job['id']}")
     temp_log_path = os.path.join(log_dir, f"job_active_{job['id']}.log")
     os.makedirs(temp_dir_path, exist_ok=True)
-    
+
     if job.get("archive"):
         folder_name = sanitize_filename(job.get("resolved_folder") or job.get("folder")) or "Misc Downloads"
         main_archive_file = os.path.join(config["download_dir"], folder_name, "archive.txt")
         if os.path.exists(main_archive_file):
             try:
                 shutil.copy2(main_archive_file, os.path.join(temp_dir_path, "archive.temp.txt"))
-            except Exception as e:
+            except OSError as e:
                 logger.warning(f"Warning: Could not copy existing archive file: {e}")
-            
+
     return temp_dir_path, temp_log_path
 
 def _process_yt_dlp_output(line, state_manager, job):
@@ -284,7 +353,7 @@ def _process_yt_dlp_output(line, state_manager, job):
     """
     line = line.strip()
     if not line: return None
-    
+
     if line.startswith('{'):
         try:
             data = json.loads(line)
@@ -316,10 +385,10 @@ def _process_yt_dlp_output(line, state_manager, job):
                     return resolved_title
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
-            
+
     elif any(s in line for s in ("[ExtractAudio]", "[Merger]", "[Fixup", "[Split]")):
         state_manager.update_current_download({"status": 'Processing...'})
-        
+
     return None
 
 
@@ -330,7 +399,7 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
     """
     status = "PENDING"
     resolved_folder_name = job.get("folder")
-    
+
     popen_kwargs = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
@@ -346,7 +415,7 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
 
     process = subprocess.Popen(cmd, **popen_kwargs)
     state_manager.update_current_download({"pid": process.pid})
-    
+
     output_q = queue.Queue()
     reader_thread = threading.Thread(target=_enqueue_output, args=(process.stdout, output_q), daemon=True)
     reader_thread.start()
@@ -358,17 +427,18 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
             if skip_next:
                 skip_next = False
                 continue
+            # Redact sensitive info like proxies for the log file
             if arg == '--proxy':
                 safe_cmd_for_log.append('--proxy')
                 safe_cmd_for_log.append("'REDACTED'")
                 skip_next = True
             else:
                 safe_cmd_for_log.append(shlex.quote(arg))
-        
+
         safe_cmd_str = ' '.join(safe_cmd_for_log)
         log_file.write(f"--- Job {job['id']} Started ---\nCommand: {safe_cmd_str}\n\n")
         log_file.flush()
-        
+
         while process.poll() is None:
             if state_manager.cancel_event.is_set():
                 break
@@ -381,7 +451,7 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
                     resolved_folder_name = newly_resolved_title
             except queue.Empty:
                 continue
-        
+
         while not output_q.empty():
             line = output_q.get_nowait()
             if line: log_file.write(line)
@@ -393,15 +463,17 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
                 subprocess.run(['taskkill', '/F', '/T', '/PID', str(process.pid)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
                 os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-            
+
             process.wait(timeout=10)
-        except (subprocess.TimeoutExpired, ProcessLookupError):
+        except subprocess.TimeoutExpired:
             logger.warning(f"Process {process.pid} did not terminate gracefully after SIGTERM. Killing.")
             if platform.system() != "Windows":
                 try: os.killpg(os.getpgid(process.pid), signal.SIGKILL)
                 except ProcessLookupError: pass # Already dead
             process.wait()
-        except Exception as e:
+        except ProcessLookupError:
+             logger.info(f"Process {process.pid} already terminated.")
+        except OSError as e:
             logger.error(f"Error during process termination: {e}")
             process.kill() # Fallback
             process.wait()
@@ -413,7 +485,7 @@ def _run_download_process(state_manager, job, cmd, temp_log_path):
         status = "COMPLETED"
     else:
         status = "FAILED"
-        
+
     return status, resolved_folder_name, return_code
 
 # --- Main Worker Thread ---
@@ -423,49 +495,50 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
     logger.info("Worker thread started.")
     while not stop_event.is_set():
         state_manager.queue_paused_event.wait()
-        
+
         try:
             job = state_manager.queue.get(timeout=1)
             if job is None:
                 break
         except queue.Empty:
             continue
-            
+
         state_manager.cancel_event.clear()
         state_manager.stop_mode = "CANCEL"
-        
+
         state_manager.update_current_download({
             "url": job["url"], "progress": 0, "status": "Preparing...",
             "title": job.get("folder") or job["url"], "job_data": job,
             "pid": None
         })
-        
+
         status = "PENDING"
         temp_log_path = ""
         resolved_folder_name = job.get("folder")
         return_code = -1
-        
+
         try:
             temp_dir_path, temp_log_path = _prepare_job_environment(job, config, log_dir)
             state_manager.update_current_download({"log_path": temp_log_path})
-            
+
             cmd = build_yt_dlp_command(job, temp_dir_path, cookie_file_path, yt_dlp_path, ffmpeg_path)
-            
+
             status, resolved_folder_name, return_code = _run_download_process(state_manager, job, cmd, temp_log_path)
-            
+
         except Exception as e:
+            # This is a safety net for unexpected errors in the worker loop itself.
             status = "ERROR"
-            logger.error(f"WORKER EXCEPTION for job {job.get('id', 'N/A')}: {e}", exc_info=True)
+            logger.critical(f"WORKER EXCEPTION for job {job.get('id', 'N/A')}: {e}", exc_info=True)
             if temp_log_path and os.path.exists(temp_log_path):
                 try:
                     with open(temp_log_path, 'a', encoding='utf-8') as log_file:
                         log_file.write(f"\n--- WORKER THREAD EXCEPTION ---\n{e}\n-------------------------------\n")
-                except: pass
+                except OSError: pass
         finally:
             final_status, final_folder, final_filenames, error_summary = _finalize_job(job, status, temp_log_path, config, resolved_folder_name, return_code)
-            
+
             state_manager.reset_current_download()
-            
+
             log_id_for_file = state_manager.add_to_history({})
             final_log_path = os.path.join(log_dir, f"job_{log_id_for_file}.log")
             log_path_for_history = "LOG_SAVE_ERROR"
@@ -473,9 +546,9 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                 if os.path.exists(temp_log_path):
                     shutil.move(temp_log_path, final_log_path)
                     log_path_for_history = final_log_path
-            except Exception as e:
+            except OSError as e:
                 logger.error(f"ERROR: Could not move log file {temp_log_path}: {e}")
-            
+
             history_item = {
                 "log_id": log_id_for_file,
                 "url": job["url"],
@@ -487,9 +560,9 @@ def yt_dlp_worker(state_manager, config, log_dir, cookie_file_path, yt_dlp_path,
                 "log_path": log_path_for_history,
                 "error_summary": error_summary
             }
-            
+
             state_manager.update_history_item(log_id_for_file, history_item)
-            
+
             state_manager.queue.task_done()
-            
+
     logger.info("Worker thread has gracefully exited.")

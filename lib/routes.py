@@ -25,7 +25,7 @@ def permission_required(permission):
             role = session.get('role')
             if not role:
                 return jsonify({"error": "Authentication required. Please log in."}), 401
-            
+
             if role == 'admin':
                 return f(*args, **kwargs)
 
@@ -51,11 +51,11 @@ def page_permission_required(permission):
                     user = g.user_manager.get_user(role)
                     if user and user.get("permissions", {}).get(permission, False):
                         has_permission = True
-            
+
             if not has_permission:
                 flash("You do not have permission to access this page. Please log in as an administrator.", "danger")
                 return redirect(url_for('index_route'))
-            
+
             return f(*args, **kwargs)
         return decorated_function
     return decorator
@@ -71,11 +71,11 @@ def is_safe_path(basedir, path_to_check, allow_file=False):
         real_path_to_check = os.path.realpath(combined_path)
     except OSError:
         return False
-    
+
     # For directories, check if it's a directory
     if not allow_file and not os.path.isdir(real_path_to_check):
         return False
-        
+
     return os.path.commonpath([real_basedir, real_path_to_check]) == real_path_to_check
 
 def _parse_job_data(form_data):
@@ -99,7 +99,7 @@ def _parse_job_data(form_data):
         job_base["playlist_end"] = int(p_end) if p_end else None
     except ValueError:
         raise ValueError("Playlist start/end must be a number.")
-    
+
     if mode == 'music':
         job_base.update({"format": form_data.get("music_audio_format"), "quality": form_data.get("music_audio_quality")})
     elif mode == 'video':
@@ -111,7 +111,7 @@ def _parse_job_data(form_data):
         job_base.update({"format": form_data.get("clip_format")})
     elif mode == 'custom':
         job_base.update({"custom_args": form_data.get("custom_args")})
-    
+
     return job_base
 
 def get_current_state():
@@ -129,11 +129,11 @@ def get_current_state():
 # --- Route Registration ---
 
 def register_routes(app):
-    
+
     @app.context_processor
     def inject_globals():
         return dict(
-            app_name=g.APP_NAME, 
+            app_name=g.APP_NAME,
             app_version=g.APP_VERSION,
             csrf_token=generate_csrf
         )
@@ -167,7 +167,7 @@ def register_routes(app):
             current_update_status = g.update_status.copy()
         timezones = pytz.common_timezones
         return render_template("settings.html", update_info=current_update_status, timezones=timezones)
-    
+
     @app.route("/logs")
     @page_permission_required('admin')
     def logs_route():
@@ -180,7 +180,7 @@ def register_routes(app):
         try:
             urls = [line.strip() for line in request.form.get("urls", "").strip().splitlines() if line.strip()]
             if not urls: return jsonify({"error": "No valid URLs provided."}), 400
-            
+
             job_base = _parse_job_data(request.form)
             for url in urls:
                 g.state_manager.add_to_queue({**job_base, "url": url})
@@ -196,13 +196,13 @@ def register_routes(app):
     def continue_job_route():
         data = request.get_json()
         if not data or "log_id" not in data: return jsonify({"error": "Invalid request. Missing log_id."}), 400
-        
+
         history_item = g.state_manager.get_history_item_by_log_id(data["log_id"])
         if not history_item or not history_item.get("job_data"): return jsonify({"error": "Could not find original job data."}), 404
-            
+
         job_to_continue = history_item["job_data"]
         job_to_continue["resolved_folder"] = history_item.get("folder")
-        
+
         g.state_manager.add_to_queue(job_to_continue)
         return jsonify({"message": f"Re-queued job for URL: {job_to_continue['url']}"})
 
@@ -250,8 +250,8 @@ def register_routes(app):
         for path_from_db in g.state_manager.clear_history():
             if not path_from_db or path_from_db in ["LOG_SAVE_ERROR", "No log generated."]:
                 continue
-            
-            # SECURITY FIX: Sanitize the path from the database by only using its filename.
+
+            # SECURITY: Sanitize the path from the database by only using its filename.
             # This prevents any directory traversal (e.g., a stored path like '../../boot.ini')
             # from being actioned. os.path.basename() strips all directory info.
             log_filename = os.path.basename(path_from_db)
@@ -259,9 +259,9 @@ def register_routes(app):
 
             # Double-check that the constructed path is valid and exists before deleting.
             if is_safe_path(log_dir, log_filename, allow_file=True) and os.path.exists(safe_full_path):
-                try: 
+                try:
                     os.remove(safe_full_path)
-                except Exception as e: 
+                except OSError as e:
                     logger.error(f"Could not delete log file {safe_full_path}: {e}")
         return jsonify({"message": "History cleared."})
 
@@ -272,16 +272,16 @@ def register_routes(app):
         path_to_delete = g.state_manager.delete_from_history(log_id)
 
         if path_to_delete and path_to_delete not in ["LOG_SAVE_ERROR", "No log generated."]:
-            # SECURITY FIX: Sanitize the path from the database by only using its filename.
+            # SECURITY: Sanitize the path from the database by only using its filename.
             # This is a critical step to prevent path traversal vulnerabilities.
             log_filename = os.path.basename(path_to_delete)
             safe_full_path = os.path.join(log_dir, log_filename)
-            
+
             # Double-check that the constructed path is valid and exists before deleting.
             if is_safe_path(log_dir, log_filename, allow_file=True) and os.path.exists(safe_full_path):
-                try: 
+                try:
                     os.remove(safe_full_path)
-                except Exception as e: 
+                except OSError as e:
                     logger.error(f"Could not delete log file {safe_full_path}: {e}")
         return jsonify({"message": "History item deleted."})
 
@@ -289,26 +289,26 @@ def register_routes(app):
     def get_history_item_route(log_id):
         item = g.state_manager.get_history_item_by_log_id(log_id)
         if not item: return jsonify({"error": "History item not found."}), 404
-        
+
         if request.args.get('include_log') == 'true':
             log_dir = os.path.join(g.DATA_DIR, "logs")
             log_path_from_db = item.get("log_path")
             log_content = "Log not found or could not be read."
-            
+
             if log_path_from_db and log_path_from_db not in ["LOG_SAVE_ERROR", "No log generated."]:
-                # SECURITY FIX: Use the same basename sanitization for reading files to prevent traversal.
+                # SECURITY: Use the same basename sanitization for reading files to prevent traversal.
                 log_filename = os.path.basename(log_path_from_db)
                 safe_full_path = os.path.join(log_dir, log_filename)
 
                 if is_safe_path(log_dir, log_filename, allow_file=True) and os.path.exists(safe_full_path):
                     try:
-                        with open(safe_full_path, 'r', encoding='utf-8') as f: 
+                        with open(safe_full_path, 'r', encoding='utf-8') as f:
                             log_content = f.read()
-                    except Exception as e: 
+                    except OSError as e:
                         log_content = f"ERROR: Could not read log file: {e}"
             elif log_path_from_db:
                 log_content = "There was an error saving or generating the log file for this job."
-            
+
             item['log_content'] = log_content
         return jsonify(item)
 
@@ -340,7 +340,7 @@ def register_routes(app):
     def update_scythe_route(scythe_id):
         data = request.get_json()
         if not data or not data.get("name") or not data.get("job_data"): return jsonify({"error": "Invalid payload."}), 400
-        
+
         if g.scythe_manager.update(scythe_id, data):
             g.scheduler._load_and_schedule_jobs()
             return jsonify({"message": "Scythe updated."})
@@ -359,7 +359,7 @@ def register_routes(app):
     def reap_scythe_route(scythe_id):
         scythe = g.scythe_manager.get_by_id(scythe_id)
         if not scythe or not scythe.get("job_data"): return jsonify({"error": "Scythe not found."}), 404
-        
+
         job_to_reap = scythe["job_data"]
         job_to_reap["resolved_folder"] = job_to_reap.get("folder")
         g.state_manager.add_to_queue(job_to_reap)
@@ -371,7 +371,7 @@ def register_routes(app):
         base_dir = g.CONFIG.get("download_dir")
         req_path = request.args.get('path', '')
         if not is_safe_path(base_dir, req_path): return jsonify({"error": "Access Denied"}), 403
-        
+
         current_dir = os.path.join(base_dir, req_path)
         items = []
         try:
@@ -386,9 +386,11 @@ def register_routes(app):
                     items.append(item_data)
                 except OSError:
                     continue # Skip files we can't access
+        except FileNotFoundError:
+            return jsonify({"error": "Directory not found."}), 404
         except OSError as e:
             return jsonify({"error": f"Cannot access directory: {e.strerror}"}), 500
-        
+
         return jsonify(sorted(items, key=lambda x: (x['type'] == 'file', x['name'].lower())))
 
     @app.route("/download_item")
@@ -397,13 +399,13 @@ def register_routes(app):
         paths = request.args.getlist('paths')
         base_dir = g.CONFIG.get("download_dir")
         if not paths: return "Missing path parameter.", 400
-        
+
         safe_paths = [os.path.join(base_dir, p) for p in paths if is_safe_path(base_dir, p, allow_file=True)]
         if not safe_paths: return "No valid files or access denied.", 404
-        
+
         if len(safe_paths) == 1 and os.path.isfile(safe_paths[0]):
             return send_file(safe_paths[0], as_attachment=True)
-            
+
         zip_buffer = io.BytesIO()
         zip_name = f"{os.path.basename(safe_paths[0]) if len(safe_paths) == 1 else 'ContentReaper_Selection'}.zip"
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -425,7 +427,7 @@ def register_routes(app):
     def delete_item_route():
         paths = (request.get_json() or {}).get('paths', [])
         if not paths: return jsonify({"error": "Missing 'paths' parameter."}), 400
-        
+
         base_dir = g.CONFIG.get("download_dir")
         deleted_count, errors = 0, []
         for item_path in paths:
@@ -438,8 +440,12 @@ def register_routes(app):
                 if os.path.isdir(full_path): shutil.rmtree(full_path)
                 else: os.remove(full_path)
                 deleted_count += 1
-            except Exception as e: errors.append(f"Error deleting {item_path}: {e}")
-        
+            except OSError as e:
+                 errors.append(f"Error deleting {item_path}: {e}")
+            except Exception as e:
+                 errors.append(f"An unexpected error occurred while deleting {item_path}: {e}")
+
+
         if errors: return jsonify({"message": f"Deleted {deleted_count} item(s) with errors.", "errors": errors}), 500
         return jsonify({"message": f"Successfully deleted {deleted_count} item(s)."})
 
