@@ -6,6 +6,7 @@ import platform
 import subprocess
 import requests
 import json
+import signal
 
 from flask import request, jsonify
 from . import app_globals as g
@@ -45,14 +46,14 @@ def scheduled_update_check():
         g.STOP_EVENT.wait(3600) # Check every hour
 
 def shutdown_server():
-    """Triggers a graceful shutdown of the application."""
-    logger.info("Shutdown initiated via API. Signaling threads and server to stop.")
-    g.STOP_EVENT.set()
-    if g.socketio:
-        # This function is designed to be called from a request handler,
-        # so it's safe to use the 'shutdown' function provided by the server.
-        # We add a small delay to allow the response to be sent.
-        threading.Timer(1, g.socketio.stop).start()
+    """Triggers a graceful shutdown by sending a SIGINT to the current process."""
+    logger.info("Shutdown initiated via API. Signaling process to terminate.")
+    # This sends a SIGINT signal (like Ctrl+C) to the current process.
+    # The main web_tool.py script will catch this as a KeyboardInterrupt
+    # and trigger the graceful shutdown sequence in its 'finally' block.
+    # This is a more reliable way to shut down than calling socketio.stop().
+    pid = os.getpid()
+    os.kill(pid, signal.SIGINT)
 
 
 def run_update_script():
