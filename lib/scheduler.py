@@ -117,10 +117,7 @@ class Scheduler:
 
         while not self.stop_event.is_set():
             schedule.run_pending()
-
-            # Efficiently sleep until the next scheduled job, but wake up at least
-            # every 60 seconds to ensure the stop_event is checked periodically.
-            idle_secs = schedule.idle_seconds
+            idle_secs = schedule.idle_seconds()
             sleep_duration = min(idle_secs, 60) if idle_secs is not None and idle_secs > 0 else 60
 
             # Use the stop_event's wait method for an interruptible sleep
